@@ -1,0 +1,6 @@
+{
+  "name": "RaOne AI",
+  "description": "RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Intelligent multi-faceted AI platform with 'Hey RaOne' voice activation.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
