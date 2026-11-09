@@ -11,8 +11,11 @@ import { ChatInputDock } from './components/ChatInputDock.tsx';
 import { OutputDrawer } from './components/OutputDrawer.tsx';
 import { SettingsModal } from './components/SettingsModal.tsx';
 import { VoiceModal } from './components/VoiceModal.tsx';
+import { AuthModal } from './components/AuthModal.tsx';
+import { AIStudioHubModal } from './components/AIStudioHubModal.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage } from './types/index.ts';
+import { subscribeToAuth } from './lib/firebase.ts';
 
 const INITIAL_CONVERSATIONS: Conversation[] = [
   {
@@ -99,6 +102,33 @@ Symbolic Geometry:
 - Central Quantum Crest: 10-spoke celestial glyph
 - Color Matrix: Celestial Electric Cyan (#06B6D4) & Deep Solar Amber (#F59E0B)
 - Typography: Outfit Display Bold + JetBrains Tabular Monospace`,
+          },
+          {
+            id: 'spec-firebase',
+            title: 'Firebase Architecture & Config (raoneai)',
+            type: 'blueprint',
+            content: `Project Name: RaOne
+Project ID: raoneai
+Project Number: 348832701843
+Billing Plan: Blaze Plan (Pay-as-you-go)
+
+Activated Services:
+1. Firebase Authentication:
+   - Email Sign-in (Active)
+   - Google Sign-in (Active)
+   - Authorized Domains: localhost, raoneai.firebaseapp.com, raoneai.web.app
+2. Cloud Firestore:
+   - Database: (default) (FIRESTORE_NATIVE)
+   - Location: nam5 (US Multi-region)
+3. Firebase Realtime Database:
+   - Instance: raoneai-default-rtdb (Active)
+   - URL: https://raoneai-default-rtdb.firebaseio.com
+4. AI Logic & Gemini Integration:
+   - Gemini Developer API (Active)
+   - Vertex AI Gemini API (Active)
+5. Google Analytics:
+   - Property ID: 563366712
+   - Measurement ID: G-04CTJ02EJ7`,
           },
         ],
       },
@@ -211,6 +241,17 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [showScrollDown, setShowScrollDown] = useState<boolean>(false);
   const [shareCopied, setShareCopied] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [isStudioHubOpen, setIsStudioHubOpen] = useState<boolean>(false);
+  const [studioHubTab, setStudioHubTab] = useState<'image' | 'music' | 'video' | 'transcribe' | 'cloudguide'>('image');
+
+  useEffect(() => {
+    const unsubscribe = subscribeToAuth((user) => {
+      setCurrentUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -277,7 +318,20 @@ export default function App() {
 
   // Send message
   const handleSendMessage = useCallback(
-    async (text: string) => {
+    async (
+      text: string,
+      options?: {
+        enableSearch?: boolean;
+        enableMaps?: boolean;
+        media?: {
+          imageUrl?: string;
+          prompt?: string;
+          audioUrl?: string;
+          lyrics?: string;
+          videoUrl?: string;
+        };
+      }
+    ) => {
       if (!text.trim() || isLoading) return;
 
       const userMessage: ChatMessage = {
@@ -285,6 +339,15 @@ export default function App() {
         role: 'user',
         content: text,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        generatedImage: options?.media?.imageUrl
+          ? { url: options.media.imageUrl, prompt: options.media.prompt || text }
+          : undefined,
+        generatedAudio: options?.media?.audioUrl
+          ? { url: options.media.audioUrl, lyrics: options.media.lyrics, prompt: text }
+          : undefined,
+        generatedVideo: options?.media?.videoUrl
+          ? { url: options.media.videoUrl, prompt: text }
+          : undefined,
       };
 
       const updatedMessages = [...activeConversation.messages, userMessage];
@@ -306,6 +369,9 @@ export default function App() {
           body: JSON.stringify({
             prompt: text,
             mode: 'think',
+            model: selectedModel,
+            enableSearch: options?.enableSearch,
+            enableMaps: options?.enableMaps,
             messages: updatedMessages.slice(-6).map((m) => ({
               role: m.role,
               content: m.content,
@@ -320,9 +386,12 @@ export default function App() {
           id: `m-${Date.now()}`,
           role: 'model',
           content: replyText,
+          model: data.model || selectedModel,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           thinkingTime: '12s',
-          thoughtProcess: `Cognitive synthesis across RaOne AI vectors:\n- Invariant check completed\n- Multilingual Sinhala/English context preserved\n- Signature validated: RaOne AI by RavanaTec — Think. Create. Act.`,
+          thoughtProcess: `Cognitive synthesis across RaOne AI vectors:\n- Model: ${data.model || selectedModel}\n- Multimodal groundings: Search (${Boolean(options?.enableSearch)}), Maps (${Boolean(options?.enableMaps)})\n- Invariant check: RaOne AI by RavanaTec — Think. Create. Act.`,
+          groundingSources: data.groundingSources,
+          mapsSources: data.mapsSources,
         };
 
         setConversations((prev) =>
@@ -342,7 +411,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [activeConversation, activeId, isLoading, isVoiceModalOpen, voice]
+    [activeConversation, activeId, isLoading, isVoiceModalOpen, selectedModel, voice]
   );
 
   // New Chat
@@ -399,6 +468,12 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
+        currentUser={currentUser}
+        onOpenAuth={() => setIsAuthModalOpen(true)}
+        onOpenStudioHub={(tab) => {
+          if (tab) setStudioHubTab(tab);
+          setIsStudioHubOpen(true);
+        }}
       />
 
       {/* Main Chat Workspace */}
@@ -507,6 +582,10 @@ export default function App() {
           onScrollToBottom={() => scrollToBottom('smooth')}
           selectedModel={selectedModel}
           onSelectModel={setSelectedModel}
+          onOpenStudioHub={(tab) => {
+            if (tab) setStudioHubTab(tab);
+            setIsStudioHubOpen(true);
+          }}
         />
       </div>
 
@@ -544,6 +623,23 @@ export default function App() {
         onToggleContinuousWake={voice.toggleContinuousWakeListening}
         onStopSpeaking={voice.stopSpeaking}
         onSendVoiceQuery={(query) => handleSendMessage(query)}
+      />
+
+      {/* Firebase Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        currentUser={currentUser}
+      />
+
+      {/* RaOne AI Studio Hub Modal (Image, Music, Video, Transcribe, Cloud Guide) */}
+      <AIStudioHubModal
+        isOpen={isStudioHubOpen}
+        onClose={() => setIsStudioHubOpen(false)}
+        initialTab={studioHubTab}
+        onInsertToChat={(content, media) => {
+          handleSendMessage(content, { media });
+        }}
       />
     </div>
   );

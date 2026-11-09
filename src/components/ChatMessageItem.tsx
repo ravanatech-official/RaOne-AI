@@ -10,7 +10,13 @@ import {
   ChevronDown,
   ChevronRight,
   Brain,
-  Sparkles,
+  Globe,
+  MapPin,
+  ExternalLink,
+  Download,
+  Image as ImageIcon,
+  Music,
+  Video,
 } from 'lucide-react';
 import { ChatMessage } from '../types/index.ts';
 
@@ -61,9 +67,14 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
         />
         <span className="text-xs font-semibold text-white">RaOne AI</span>
         <span className="text-[11px] text-[#8E8E8E]">by RavanaTec</span>
+        {message.model && (
+          <span className="text-[10px] text-amber-400/90 font-mono bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20 ml-1">
+            {message.model}
+          </span>
+        )}
       </div>
 
-      {/* Collapsible Thinking Section (as seen in screenshot: 'Worked for 58s >') */}
+      {/* Collapsible Thinking Section */}
       {message.thoughtProcess && (
         <div className="mb-3">
           <button
@@ -94,7 +105,116 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
         {message.content}
       </div>
 
-      {/* Action Toolbar Below Message (Matches exact icons from screenshot) */}
+      {/* Generated Media Attachments (Image, Audio, Video) */}
+      {message.generatedImage && (
+        <div className="mt-4 rounded-xl overflow-hidden border border-amber-500/30 bg-[#1A1A1A] p-3 max-w-md">
+          <div className="flex items-center justify-between text-xs font-medium text-amber-300 mb-2">
+            <span className="flex items-center gap-1.5">
+              <ImageIcon className="w-3.5 h-3.5" />
+              <span>Synthesized Image (gemini-nano-banana-2.1)</span>
+            </span>
+            <a
+              href={message.generatedImage.url}
+              download="RaOne_Image.png"
+              className="text-[11px] text-amber-400 hover:underline flex items-center gap-1"
+            >
+              <Download className="w-3 h-3" />
+              <span>Download</span>
+            </a>
+          </div>
+          <img
+            src={message.generatedImage.url}
+            alt={message.generatedImage.prompt}
+            className="rounded-lg w-full h-auto object-cover max-h-80 shadow-lg"
+          />
+        </div>
+      )}
+
+      {message.generatedAudio && (
+        <div className="mt-4 rounded-xl overflow-hidden border border-cyan-500/30 bg-[#1A1A1A] p-4 max-w-lg">
+          <div className="flex items-center justify-between text-xs font-medium text-cyan-300 mb-2">
+            <span className="flex items-center gap-1.5">
+              <Music className="w-3.5 h-3.5" />
+              <span>Lyria Audio Synthesis</span>
+            </span>
+            <a
+              href={message.generatedAudio.url}
+              download="RaOne_Audio.mp3"
+              className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1"
+            >
+              <Download className="w-3 h-3" />
+              <span>Download MP3</span>
+            </a>
+          </div>
+          <audio src={message.generatedAudio.url} controls className="w-full my-2" />
+          {message.generatedAudio.lyrics && (
+            <div className="mt-2 text-xs font-mono text-slate-300 bg-black/40 p-2.5 rounded-lg whitespace-pre-wrap max-h-32 overflow-y-auto">
+              {message.generatedAudio.lyrics}
+            </div>
+          )}
+        </div>
+      )}
+
+      {message.generatedVideo && (
+        <div className="mt-4 rounded-xl overflow-hidden border border-purple-500/30 bg-[#1A1A1A] p-4 max-w-lg">
+          <div className="flex items-center justify-between text-xs font-medium text-purple-300 mb-2">
+            <span className="flex items-center gap-1.5">
+              <Video className="w-3.5 h-3.5" />
+              <span>Omni Flash Video (gemini-omni-1.2-flash)</span>
+            </span>
+          </div>
+          {message.generatedVideo.url ? (
+            <video src={message.generatedVideo.url} controls className="w-full rounded-lg" />
+          ) : (
+            <div className="p-3 bg-black/40 rounded-lg text-xs font-mono text-purple-200">
+              {message.generatedVideo.storyboard?.map((s, i) => (
+                <div key={i}>▸ {s}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Grounding Sources (Search & Maps) */}
+      {((message.groundingSources && message.groundingSources.length > 0) ||
+        (message.mapsSources && message.mapsSources.length > 0)) && (
+        <div className="mt-3.5 pt-3 border-t border-[#2F2F2F]">
+          <div className="text-[11px] font-semibold text-[#8E8E8E] mb-2 flex items-center gap-1.5">
+            <Globe className="w-3 h-3 text-emerald-400" />
+            <span>Verified Grounding Sources</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {message.groundingSources?.map((source, index) => (
+              <a
+                key={index}
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#262626] hover:bg-[#303030] text-[11px] text-[#ECECEC] transition-colors border border-[#383838]"
+              >
+                <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span className="truncate max-w-[180px]">{source.title}</span>
+                <ExternalLink className="w-2.5 h-2.5 text-[#8E8E8E] shrink-0" />
+              </a>
+            ))}
+            {message.mapsSources?.map((place, index) => (
+              <a
+                key={index}
+                href={place.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#262626] hover:bg-[#303030] text-[11px] text-[#ECECEC] transition-colors border border-cyan-500/30"
+              >
+                <MapPin className="w-3 h-3 text-cyan-400 shrink-0" />
+                <span className="truncate max-w-[180px]">{place.title}</span>
+                <ExternalLink className="w-2.5 h-2.5 text-[#8E8E8E] shrink-0" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Action Toolbar Below Message */}
       <div className="flex items-center gap-1 mt-3 text-[#8E8E8E] select-none">
         <button
           onClick={handleCopy}

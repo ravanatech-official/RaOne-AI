@@ -57,7 +57,7 @@ export const Footer: React.FC<FooterProps> = ({ setActiveTab }) => {
         {/* Brand signature & contact */}
         <div className="text-center sm:text-right">
           <div className="text-slate-300 font-medium">RaOne AI by RavanaTec</div>
-          <div className="text-[11px] text-slate-400 mt-0.5">hello.ravanatech@gmail.com</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">firebase00.ravanatech@gmail.com</div>
         </div>
       </div>
     </footer>

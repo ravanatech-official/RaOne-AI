@@ -1,15 +1,39 @@
 export type Mode = 'think' | 'create' | 'act';
 export type NavTab = 'studio' | 'think' | 'create' | 'act' | 'vision';
 
+export interface GroundingSource {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
   content: string;
   timestamp: string;
   mode?: Mode;
+  model?: string;
   thinkingTime?: string;
   thoughtProcess?: string;
   sourcesCount?: number;
+  groundingSources?: GroundingSource[];
+  mapsSources?: GroundingSource[];
+  generatedImage?: {
+    url: string;
+    prompt: string;
+    aspectRatio?: string;
+  };
+  generatedAudio?: {
+    url: string;
+    lyrics?: string;
+    prompt: string;
+  };
+  generatedVideo?: {
+    url?: string;
+    prompt: string;
+    storyboard?: string[];
+  };
   outputs?: {
     id: string;
     title: string;

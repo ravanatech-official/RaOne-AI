@@ -42,7 +42,36 @@ Symbolic Geometry:
 - Typography: Outfit Display Bold + JetBrains Tabular Monospace.`,
   };
 
-  const currentOutputs = outputs.length > 0 ? outputs : [defaultLogoArtifact];
+  const defaultFirebaseArtifact = {
+    id: 'firebase-spec-1',
+    title: 'Firebase Architecture & Active Services (raoneai)',
+    type: 'blueprint' as const,
+    content: `Project Name: RaOne
+Project ID: raoneai
+Project Number: 348832701843
+Billing Plan: Blaze Plan (Pay-as-you-go)
+
+Activated Services & Configurations:
+1. Firebase Authentication:
+   - Email Sign-in: Active
+   - Google Sign-in: Active
+   - Authorized Domains: localhost, raoneai.firebaseapp.com, raoneai.web.app
+2. Cloud Firestore (Primary NoSQL DB):
+   - Database: (default) (FIRESTORE_NATIVE)
+   - Location: nam5 (US Multi-region)
+3. Firebase Realtime Database:
+   - Instance: raoneai-default-rtdb (ACTIVE)
+   - URL: https://raoneai-default-rtdb.firebaseio.com
+4. AI Logic & Gemini Integration:
+   - Gemini Developer API: Active
+   - Vertex AI Gemini API: Active
+   - Monitoring: Metrics, Logging & Tracing Active
+5. Google Analytics:
+   - Property ID: 563366712
+   - Measurement ID: G-04CTJ02EJ7`,
+  };
+
+  const currentOutputs = outputs.length > 0 ? outputs : [defaultLogoArtifact, defaultFirebaseArtifact];
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
