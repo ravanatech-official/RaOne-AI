@@ -242,7 +242,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: text,
-            mode: 'think',
+            mode: 'chat',
             model: selectedModel,
             enableSearch: options?.enableSearch,
             enableMaps: options?.enableMaps,

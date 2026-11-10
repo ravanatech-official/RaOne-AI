@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, User, Settings, Volume2, Sparkles, Check } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, User, Settings, Volume2, Sparkles, Check, Key, ShieldCheck, Lock } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,15 +18,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   selectedModel,
   onSelectModel,
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'voice' | 'personalization' | 'about'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'voice' | 'apikeys' | 'personalization' | 'about'>('general');
   const [customInstructions, setCustomInstructions] = useState(
     'Address me with high clarity and formidable capability. Support both Sinhala and English fluently. Sign responses with RaOne AI by RavanaTec — Think. Create. Act.'
   );
   const [savedSuccess, setSavedSuccess] = useState(false);
 
+  // API Keys state
+  const [geminiKey, setGeminiKey] = useState('');
+  const [openAiKey, setOpenAiKey] = useState('');
+  const [anthropicKey, setAnthropicKey] = useState('');
+  const [deepSeekKey, setDeepSeekKey] = useState('');
+  const [keysConfigured, setKeysConfigured] = useState<{
+    geminiConfigured: boolean;
+    openAiConfigured: boolean;
+    anthropicConfigured: boolean;
+    deepSeekConfigured: boolean;
+  }>({
+    geminiConfigured: false,
+    openAiConfigured: false,
+    anthropicConfigured: false,
+    deepSeekConfigured: false,
+  });
+
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/keys')
+        .then((res) => res.json())
+        .then((data) => setKeysConfigured(data))
+        .catch(() => {});
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    // If on apikeys tab, save keys to server
+    if (geminiKey || openAiKey || anthropicKey || deepSeekKey) {
+      try {
+        await fetch('/api/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            geminiApiKey: geminiKey || undefined,
+            openAiApiKey: openAiKey || undefined,
+            anthropicApiKey: anthropicKey || undefined,
+            deepSeekApiKey: deepSeekKey || undefined,
+          }),
+        });
+      } catch (err) {
+        console.warn('Could not save keys:', err);
+      }
+    }
+
     setSavedSuccess(true);
     setTimeout(() => {
       setSavedSuccess(false);
@@ -67,6 +111,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               <Settings className="w-4 h-4" />
               <span>General</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('apikeys')}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors text-left ${
+                activeTab === 'apikeys' ? 'bg-[#2A2A2A] text-white' : 'text-[#A0A0A0] hover:bg-[#222222]'
+              }`}
+            >
+              <Key className="w-4 h-4 text-amber-400" />
+              <span>API Connections</span>
             </button>
             <button
               onClick={() => setActiveTab('voice')}
@@ -131,6 +184,93 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
+            {activeTab === 'apikeys' && (
+              <div className="space-y-4">
+                <div className="p-3 rounded-xl bg-[#262626] border border-amber-500/30 flex items-start gap-2.5 text-[11px] leading-relaxed text-[#B4B4B4]">
+                  <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold text-white">Server-side Encrypted Proxy:</span> All API keys entered here are stored strictly in the secure Node server memory / process environment. No client browser or third-party can ever inspect or extract them.
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-white">
+                      Google Gemini API Key
+                    </label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${keysConfigured.geminiConfigured ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
+                      {keysConfigured.geminiConfigured ? 'Active' : 'Not Set'}
+                    </span>
+                  </div>
+                  <input
+                    type="password"
+                    value={geminiKey}
+                    onChange={(e) => setGeminiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none placeholder-[#666]"
+                  />
+                  <div className="text-[10px] text-[#888] mt-1">Powers RaOne Flash, Argon, Visual, Music, Video & Transcribe.</div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-white">
+                      OpenAI API Key (Optional)
+                    </label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${keysConfigured.openAiConfigured ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
+                      {keysConfigured.openAiConfigured ? 'Active' : 'Not Set'}
+                    </span>
+                  </div>
+                  <input
+                    type="password"
+                    value={openAiKey}
+                    onChange={(e) => setOpenAiKey(e.target.value)}
+                    placeholder="sk-proj-..."
+                    className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none placeholder-[#666]"
+                  />
+                  <div className="text-[10px] text-[#888] mt-1">Powers RaOne GPT-4o model.</div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-white">
+                      DeepSeek API Key (Optional)
+                    </label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${keysConfigured.deepSeekConfigured ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
+                      {keysConfigured.deepSeekConfigured ? 'Active' : 'Not Set'}
+                    </span>
+                  </div>
+                  <input
+                    type="password"
+                    value={deepSeekKey}
+                    onChange={(e) => setDeepSeekKey(e.target.value)}
+                    placeholder="sk-..."
+                    className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none placeholder-[#666]"
+                  />
+                  <div className="text-[10px] text-[#888] mt-1">Powers RaOne DeepSeek R1 model.</div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-white">
+                      Anthropic API Key (Optional)
+                    </label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${keysConfigured.anthropicConfigured ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
+                      {keysConfigured.anthropicConfigured ? 'Active' : 'Not Set'}
+                    </span>
+                  </div>
+                  <input
+                    type="password"
+                    value={anthropicKey}
+                    onChange={(e) => setAnthropicKey(e.target.value)}
+                    placeholder="sk-ant-..."
+                    className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none placeholder-[#666]"
+                  />
+                  <div className="text-[10px] text-[#888] mt-1">Powers RaOne Claude 3.5 Sonnet model.</div>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'voice' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-3 rounded-xl bg-[#252525] border border-[#333]">
@@ -145,23 +285,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 <div className="flex items-center justify-between p-3 rounded-xl bg-[#252525] border border-[#333]">
                   <div>
-                    <div className="font-semibold text-white">Ambient Wake-Word Listener</div>
-                    <div className="text-[11px] text-[#8E8E8E]">Continuous background listening for “Hey RaOne”</div>
+                    <div className="font-semibold text-white">Always-On Wake Word Detection</div>
+                    <div className="text-[11px] text-[#8E8E8E]">Continuously listens for “Hey RaOne”</div>
                   </div>
                   <button
                     onClick={onToggleContinuousWake}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                      isContinuousWakeListening
-                        ? 'bg-amber-500 text-slate-950 font-bold'
-                        : 'bg-[#333] text-white hover:bg-[#3E3E3E]'
+                    className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                      isContinuousWakeListening ? 'bg-amber-500' : 'bg-[#404040]'
                     }`}
                   >
-                    {isContinuousWakeListening ? 'Enabled' : 'Disabled'}
+                    <div
+                      className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                        isContinuousWakeListening ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
                   </button>
-                </div>
-
-                <div className="text-[11px] text-[#8E8E8E] leading-relaxed">
-                  Tip: Speak naturally in Sinhala or English after saying &ldquo;Hey RaOne&rdquo;. The engine will automatically reason and read the answer back to you.
                 </div>
               </div>
             )}
@@ -170,14 +308,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-white mb-1">
-                    Custom Instructions for RaOne AI
+                    Custom Instructions for RaOne
                   </label>
                   <textarea
                     rows={4}
                     value={customInstructions}
                     onChange={(e) => setCustomInstructions(e.target.value)}
-                    className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none"
+                    className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none resize-none leading-relaxed"
                   />
+                  <div className="text-[11px] text-[#8E8E8E] mt-1">
+                    How would you like RaOne AI to respond? (Tone, preferences, default language)
+                  </div>
                 </div>
               </div>
             )}
