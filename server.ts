@@ -1436,8 +1436,8 @@ async function startServer() {
     });
   }
 
-  app.listen(port, () => {
-    console.log(`RaOne AI server listening on http://localhost:${port}`);
+  app.listen(Number(port), '0.0.0.0', () => {
+    console.log(`RaOne AI server listening on http://0.0.0.0:${port}`);
   });
 }
 
