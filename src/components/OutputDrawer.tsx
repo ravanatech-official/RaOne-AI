@@ -42,36 +42,52 @@ Symbolic Geometry:
 - Typography: Outfit Display Bold + JetBrains Tabular Monospace.`,
   };
 
-  const defaultFirebaseArtifact = {
-    id: 'firebase-spec-1',
-    title: 'Firebase Architecture & Active Services (raoneai)',
+  const defaultSystemArtifact = {
+    id: 'raone-system-spec',
+    title: 'RaOne AI Autonomous Neural Matrix & System Architecture',
     type: 'blueprint' as const,
-    content: `Project Name: RaOne
-Project ID: raoneai
-Project Number: 348832701843
-Billing Plan: Blaze Plan (Pay-as-you-go)
+    content: `Brand: RaOne
+Product Name: RaOne AI
+Brand Signature: RaOne AI by RavanaTec
+Tagline: Think. Create. Act.
+Philosophy: Ravana + One — One AI for Your World.
 
-Activated Services & Configurations:
-1. Firebase Authentication:
-   - Email Sign-in: Active
-   - Google Sign-in: Active
-   - Authorized Domains: localhost, raoneai.firebaseapp.com, raoneai.web.app
-2. Cloud Firestore (Primary NoSQL DB):
-   - Database: (default) (FIRESTORE_NATIVE)
-   - Location: nam5 (US Multi-region)
-3. Firebase Realtime Database:
-   - Instance: raoneai-default-rtdb (ACTIVE)
-   - URL: https://raoneai-default-rtdb.firebaseio.com
-4. AI Logic & Gemini Integration:
-   - Gemini Developer API: Active
-   - Vertex AI Gemini API: Active
-   - Monitoring: Metrics, Logging & Tracing Active
-5. Google Analytics:
-   - Property ID: 563366712
-   - Measurement ID: G-04CTJ02EJ7`,
+Cognitive Triad Architecture:
+1. Think Engine (Deep Multi-Dimensional Reasoning):
+   - Multi-perspectival strategy & invariant analysis
+   - Native bilingual Sinhala & English synthesis
+   - Ten-discipline analytical decomposition
+2. Create Studio (Generative Synthesis):
+   - High-fidelity visual creation & rendering
+   - Acoustic composition & audio generation
+   - Production code, blueprints & architectural schemas
+3. Act Matrix (Autonomous Execution):
+   - Executive mission decomposition
+   - Actionable checklists & operational blueprints
+   - Verification milestones & sovereign governance`,
   };
 
-  const currentOutputs = outputs.length > 0 ? outputs : [defaultLogoArtifact, defaultFirebaseArtifact];
+  const defaultDisciplinesArtifact = {
+    id: 'raone-ten-disciplines',
+    title: 'The Ten Intellectual Disciplines of Ravana Matrix',
+    type: 'blueprint' as const,
+    content: `RaOne Core Knowledge Matrix (Inspired by King Ravana's Mastery):
+
+1. Strategy & Statecraft (රාජ්‍ය තාන්ත්‍රිකත්වය සහ ක්‍රමෝපාය)
+2. Advanced Aerospace & Kinetic Physics (අභ්‍යවකාශ සහ යාන්ත්‍රික විද්‍යාව)
+3. Computational Architecture & Structures (ගෘහ නිර්මාණ සහ ව්‍යුහාත්මක ඉංජිනේරු විද්‍යාව)
+4. Empirical Chemistry & Natural Systems (ස්වාභාවික රසායන හා ජෛව පද්ධති)
+5. Linguistics, Semantics & Phonetics (භාෂා ශාස්ත්‍රය හා නාද විද්‍යාව)
+6. Philosophy, Ethics & Metaphysics (දර්ශනය සහ තර්ක න්‍යාය)
+7. Law, Governance & Compacts (නීතිය සහ යුක්ති ධර්මය)
+8. Tactical Warfare & Cybernetic Defense (උපක්‍රමික ආරක්ෂාව සහ සයිබර් විද්‍යාව)
+9. Fine Arts, Acoustics & Harmony (ලලිත කලාව සහ නාද සංයෝජනය)
+10. Long-Horizon Foresight & Quantum Logic (දීර්ඝකාලීන අනාගත දැක්ම සහ ක්වොන්ටම් තර්කනය)
+
+RaOne AI by RavanaTec — Think. Create. Act.`,
+  };
+
+  const currentOutputs = outputs.length > 0 ? outputs : [defaultLogoArtifact, defaultSystemArtifact, defaultDisciplinesArtifact];
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);

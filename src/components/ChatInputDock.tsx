@@ -12,8 +12,8 @@ import {
   Image as ImageIcon,
   Music,
   Video,
-  Flame,
-  Layers,
+  Brain,
+  Paperclip,
 } from 'lucide-react';
 
 interface ChatInputDockProps {
@@ -26,7 +26,7 @@ interface ChatInputDockProps {
   onScrollToBottom: () => void;
   selectedModel: string;
   onSelectModel: (model: string) => void;
-  onOpenStudioHub: (tab?: 'image' | 'music' | 'video' | 'transcribe' | 'cloudguide') => void;
+  onOpenStudioHub: (tab?: 'image' | 'music' | 'video' | 'transcribe') => void;
 }
 
 export const ChatInputDock: React.FC<ChatInputDockProps> = ({
@@ -49,9 +49,12 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const models = [
-    { id: 'gemini-3.8-flash', name: 'RaOne Flash (Gemini 3.8)', tag: 'Fast & Multimodal' },
-    { id: 'gemini-4-argon', name: 'RaOne Argon (Gemini 4)', tag: 'Deep Reasoning & Code' },
-    { id: 'gemini-3.1-flash-lite', name: 'RaOne Lite (Gemini 3.1)', tag: 'Ultra High Speed' },
+    { id: 'gemini-3.8-flash', name: 'RaOne Flash', tag: 'High Velocity' },
+    { id: 'gemini-4-argon', name: 'RaOne Argon Medium', tag: 'Deep Reasoning & Code' },
+    { id: 'raone-deepseek-r1', name: 'RaOne DeepSeek R1', tag: 'Reasoning Matrix' },
+    { id: 'raone-gpt4o', name: 'RaOne GPT-4o', tag: 'Omni Intelligence' },
+    { id: 'raone-claude', name: 'RaOne Claude 3.5', tag: 'Code & Architecture' },
+    { id: 'gemini-3.1-flash-lite', name: 'RaOne Lite', tag: 'Ultra Fast' },
   ];
 
   const currentModelObj = models.find((m) => m.id === selectedModel) || models[0];
@@ -82,7 +85,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   };
 
   return (
-    <div className="relative w-full max-w-3xl mx-auto px-4 pb-4 select-none">
+    <div className="relative w-full max-w-[760px] mx-auto px-4 pb-3 select-none">
       {/* Floating Scroll to Bottom Arrow */}
       {showScrollDown && (
         <div className="flex justify-center mb-2">
@@ -96,13 +99,13 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
         </div>
       )}
 
-      {/* Active Grounding Badges Strip */}
+      {/* Grounding Badges */}
       {(enableSearch || enableMaps) && (
         <div className="flex items-center gap-2 mb-2 px-3">
           {enableSearch && (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium animate-in fade-in">
               <Globe className="w-3 h-3 text-emerald-400" />
-              <span>Google Search Grounding Active</span>
+              <span>Search Grounding Active</span>
               <button
                 onClick={() => setEnableSearch(false)}
                 className="hover:text-white ml-0.5"
@@ -114,7 +117,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
           {enableMaps && (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 text-[11px] font-medium animate-in fade-in">
               <MapPin className="w-3 h-3 text-cyan-400" />
-              <span>Google Maps Grounding Active</span>
+              <span>Maps Grounding Active</span>
               <button
                 onClick={() => setEnableMaps(false)}
                 className="hover:text-white ml-0.5"
@@ -126,8 +129,8 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
         </div>
       )}
 
-      {/* Main Input Container Pill */}
-      <div className="relative bg-[#2F2F2F] border border-[#3A3A3A] focus-within:border-[#525252] rounded-[26px] p-3 shadow-xl transition-all">
+      {/* Main Input Container Pill (Exact ChatGPT Styling) */}
+      <div className="relative bg-[#2f2f2f] border border-[#3a3a3a] focus-within:border-[#525252] rounded-[26px] p-3 shadow-2xl transition-all">
         {/* Text Area */}
         <textarea
           ref={textareaRef}
@@ -135,28 +138,27 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
           value={inputText}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
-          placeholder="Ask RaOne in Sinhala, English, or Singlish (e.g. 'Hey RaOne, think through our strategy')..."
-          className="w-full bg-transparent text-[#ECECEC] placeholder-[#8E8E8E] text-sm focus:outline-none resize-none px-2 py-1 max-h-44 leading-relaxed"
+          placeholder="Message RaOne"
+          className="w-full bg-transparent text-[#ECECEC] placeholder-[#8E8E8E] text-sm focus:outline-none resize-none px-2 py-1 max-h-44 leading-relaxed font-normal"
         />
 
         {/* Bottom Actions Row inside Input Bar */}
         <div className="flex items-center justify-between pt-2 px-1">
-          {/* Left cluster: Plus Menu & Grounding toggles */}
+          {/* Left: Plus attachment menu */}
           <div className="flex items-center gap-1.5">
-            {/* Plus button with popover */}
             <div className="relative">
               <button
                 onClick={() => setPlusMenuOpen(!plusMenuOpen)}
                 className="p-1.5 rounded-full hover:bg-[#383838] text-[#B4B4B4] hover:text-white transition-colors"
-                title="Add attachment or open AI Studio Hub"
+                title="Add attachment or open studios"
               >
                 <Plus className="w-4 h-4" />
               </button>
 
               {plusMenuOpen && (
-                <div className="absolute bottom-full left-0 mb-2 w-64 bg-[#1F2430] border border-amber-500/30 rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in duration-150">
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-amber-400 uppercase tracking-wider">
-                    RaOne AI Studio Hub
+                <div className="absolute bottom-full left-0 mb-2 w-64 bg-[#212121] border border-[#333333] rounded-2xl shadow-2xl p-2 z-50 text-xs animate-in fade-in duration-150">
+                  <div className="px-2.5 py-1 text-[10px] font-bold text-[#8E8E8E] uppercase tracking-wider">
+                    Tools & Studios
                   </div>
 
                   <button
@@ -164,14 +166,30 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
                       onOpenStudioHub('image');
                       setPlusMenuOpen(false);
                     }}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-slate-800 transition-colors"
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-[#2C2C2C] transition-colors"
                   >
                     <div className="w-6 h-6 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400">
                       <ImageIcon className="w-3.5 h-3.5" />
                     </div>
                     <div className="text-left">
-                      <div className="font-semibold text-white">Image Studio</div>
-                      <div className="text-[10px] text-slate-400">gemini-nano-banana-2.1 (4K)</div>
+                      <div className="font-semibold text-white">Create image</div>
+                      <div className="text-[10px] text-[#8E8E8E]">Photorealistic 4K visual synthesis</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setEnableSearch(!enableSearch);
+                      setPlusMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-[#2C2C2C] transition-colors"
+                  >
+                    <div className="w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                      <Globe className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="text-left">
+                      <div className="font-semibold text-white">Search web</div>
+                      <div className="text-[10px] text-[#8E8E8E]">Live verification & citations</div>
                     </div>
                   </button>
 
@@ -180,14 +198,14 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
                       onOpenStudioHub('music');
                       setPlusMenuOpen(false);
                     }}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-slate-800 transition-colors"
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-[#2C2C2C] transition-colors"
                   >
                     <div className="w-6 h-6 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400">
                       <Music className="w-3.5 h-3.5" />
                     </div>
                     <div className="text-left">
-                      <div className="font-semibold text-white">Music Studio</div>
-                      <div className="text-[10px] text-slate-400">Lyria Pro & Clip (MP3)</div>
+                      <div className="font-semibold text-white">Music studio</div>
+                      <div className="text-[10px] text-[#8E8E8E]">Acoustic generation & lyrics</div>
                     </div>
                   </button>
 
@@ -196,53 +214,21 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
                       onOpenStudioHub('video');
                       setPlusMenuOpen(false);
                     }}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-slate-800 transition-colors"
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-[#2C2C2C] transition-colors"
                   >
                     <div className="w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400">
                       <Video className="w-3.5 h-3.5" />
                     </div>
                     <div className="text-left">
-                      <div className="font-semibold text-white">Video Studio</div>
-                      <div className="text-[10px] text-slate-400">gemini-omni-1.2-flash</div>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      onOpenStudioHub('transcribe');
-                      setPlusMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-[#ECECEC] hover:bg-slate-800 transition-colors"
-                  >
-                    <div className="w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-                      <Mic className="w-3.5 h-3.5" />
-                    </div>
-                    <div className="text-left">
-                      <div className="font-semibold text-white">Audio Transcribe</div>
-                      <div className="text-[10px] text-slate-400">gemini-3.5-transcribe</div>
-                    </div>
-                  </button>
-
-                  <div className="my-1 border-t border-slate-700/60" />
-
-                  <button
-                    onClick={() => {
-                      onOpenStudioHub('cloudguide');
-                      setPlusMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs text-amber-300 hover:bg-amber-500/10 transition-colors"
-                  >
-                    <Flame className="w-4 h-4 text-amber-400" />
-                    <div className="text-left">
-                      <div className="font-semibold">Firebase & GCP Guide</div>
-                      <div className="text-[10px] text-amber-400/80">Project: raoneai nanosteps</div>
+                      <div className="font-semibold text-white">Video studio</div>
+                      <div className="text-[10px] text-[#8E8E8E]">Cinematic motion direction</div>
                     </div>
                   </button>
                 </div>
               )}
             </div>
 
-            {/* Quick Web Search Grounding toggle */}
+            {/* Quick Web Search Button */}
             <button
               onClick={() => {
                 setEnableSearch(!enableSearch);
@@ -253,49 +239,28 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
                   ? 'bg-emerald-500/20 text-emerald-400'
                   : 'text-[#B4B4B4] hover:bg-[#383838] hover:text-white'
               }`}
-              title="Google Search Grounding"
+              title="Search Grounding"
             >
               <Globe className="w-4 h-4" />
             </button>
-
-            {/* Quick Google Maps Grounding toggle */}
-            <button
-              onClick={() => {
-                setEnableMaps(!enableMaps);
-                if (!enableMaps) setEnableSearch(false);
-              }}
-              className={`p-1.5 rounded-full transition-colors ${
-                enableMaps
-                  ? 'bg-cyan-500/20 text-cyan-400'
-                  : 'text-[#B4B4B4] hover:bg-[#383838] hover:text-white'
-              }`}
-              title="Google Maps Grounding"
-            >
-              <MapPin className="w-4 h-4" />
-            </button>
           </div>
 
-          {/* Right cluster: Model Selector + Voice Mic + Send Arrow */}
+          {/* Right cluster: Model Selector Pill + Voice Mic + Send Arrow */}
           <div className="flex items-center gap-2">
-            {/* Model Selector dropdown */}
+            {/* Model Selector Pill (Matches screenshot: GPT-6 Astra Medium v) */}
             <div className="relative">
               <button
                 onClick={() => setModelMenuOpen(!modelMenuOpen)}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-full hover:bg-[#3A3A3A] text-[#B4B4B4] hover:text-white transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full hover:bg-[#3A3A3A] text-[#B4B4B4] hover:text-white transition-colors"
               >
-                <img
-                  src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
-                  alt="RaOne"
-                  className="w-3.5 h-3.5 rounded-full object-cover shrink-0"
-                />
                 <span>{currentModelObj.name}</span>
-                <ChevronDown className="w-3.5 h-3.5" />
+                <ChevronDown className="w-3 h-3 text-[#8E8E8E]" />
               </button>
 
               {modelMenuOpen && (
-                <div className="absolute bottom-full right-0 mb-2 w-72 bg-[#1B202C] border border-amber-500/30 rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in duration-150">
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-amber-400 uppercase tracking-wider">
-                    Select RaOne AI Engine
+                <div className="absolute bottom-full right-0 mb-2 w-72 bg-[#212121] border border-[#333333] rounded-2xl shadow-2xl p-2 z-50 text-xs animate-in fade-in duration-150">
+                  <div className="px-2.5 py-1 text-[10px] font-bold text-[#8E8E8E] uppercase tracking-wider">
+                    Model
                   </div>
                   {models.map((m) => (
                     <button
@@ -306,15 +271,15 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
                       }}
                       className={`w-full text-left p-2.5 rounded-xl text-xs transition-colors flex items-center justify-between ${
                         selectedModel === m.id
-                          ? 'bg-amber-500/20 text-white font-medium border border-amber-500/40'
-                          : 'text-[#B4B4B4] hover:bg-[#252C3D]'
+                          ? 'bg-[#2F2F2F] text-white font-medium'
+                          : 'text-[#B4B4B4] hover:bg-[#282828]'
                       }`}
                     >
                       <div>
                         <div className="font-semibold text-white">{m.name}</div>
-                        <div className="text-[10px] text-slate-400">{m.tag}</div>
+                        <div className="text-[10px] text-[#8E8E8E]">{m.tag}</div>
                       </div>
-                      {selectedModel === m.id && <Check className="w-3.5 h-3.5 text-amber-400" />}
+                      {selectedModel === m.id && <Check className="w-3.5 h-3.5 text-white" />}
                     </button>
                   ))}
                 </div>
@@ -350,9 +315,9 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
         </div>
       </div>
 
-      {/* Footer Disclaimer */}
+      {/* Footer Disclaimer (Exact ChatGPT wording: RaOne can make mistakes. Check important info.) */}
       <div className="text-center mt-2 text-[11px] text-[#8E8E8E]">
-        RaOne AI by RavanaTec — Think. Create. Act. · One AI for Your World
+        RaOne can make mistakes. Check important info.
       </div>
     </div>
   );

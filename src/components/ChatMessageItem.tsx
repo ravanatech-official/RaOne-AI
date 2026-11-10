@@ -9,7 +9,6 @@ import {
   MoreHorizontal,
   ChevronDown,
   ChevronRight,
-  Brain,
   Globe,
   MapPin,
   ExternalLink,
@@ -17,6 +16,7 @@ import {
   Image as ImageIcon,
   Music,
   Video,
+  Share2,
 } from 'lucide-react';
 import { ChatMessage } from '../types/index.ts';
 
@@ -47,44 +47,25 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
 
   if (isUser) {
     return (
-      <div className="flex justify-end my-4 max-w-3xl mx-auto px-4">
-        <div className="bg-[#284860] text-[#ECECEC] rounded-2xl px-5 py-3 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed shadow-sm font-normal break-words">
+      <div className="flex justify-end my-3 max-w-[760px] mx-auto px-4">
+        <div className="bg-[#2f2f2f] text-white rounded-2xl px-5 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed shadow-sm font-normal break-words">
           {message.content}
         </div>
       </div>
     );
   }
 
-  // Model response
+  // Model response matching ChatGPT exactly
   return (
-    <div className="my-6 max-w-3xl mx-auto px-4 group">
-      {/* Model Identity Header with Logo */}
-      <div className="flex items-center gap-2 mb-2.5">
-        <img
-          src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
-          alt="RaOne AI"
-          className="w-5 h-5 rounded-full object-cover border border-amber-500/40 shadow-[0_0_8px_rgba(245,158,11,0.3)] shrink-0"
-        />
-        <span className="text-xs font-semibold text-white">RaOne AI</span>
-        <span className="text-[11px] text-[#8E8E8E]">by RavanaTec</span>
-        {message.model && (
-          <span className="text-[10px] text-amber-400/90 font-mono bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20 ml-1">
-            {message.model}
-          </span>
-        )}
-      </div>
-
-      {/* Collapsible Thinking Section */}
+    <div className="my-5 max-w-[760px] mx-auto px-4 group">
+      {/* Collapsible Thinking Section (Matches ChatGPT screenshot: 'Worked for 58s >') */}
       {message.thoughtProcess && (
-        <div className="mb-3">
+        <div className="mb-2">
           <button
             onClick={() => setIsThinkingOpen(!isThinkingOpen)}
-            className="flex items-center gap-1.5 text-xs text-[#9E9E9E] hover:text-white transition-colors py-1 px-1.5 rounded-md hover:bg-[#2F2F2F]"
+            className="flex items-center gap-1.5 text-xs text-[#8E8E8E] hover:text-[#B4B4B4] transition-colors py-1 px-1 rounded-md"
           >
-            <Brain className="w-3.5 h-3.5 text-amber-400" />
-            <span className="font-medium">
-              Worked for {message.thinkingTime || '14s'}
-            </span>
+            <span>Worked for {message.thinkingTime || '14s'}</span>
             {isThinkingOpen ? (
               <ChevronDown className="w-3.5 h-3.5" />
             ) : (
@@ -93,7 +74,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
           </button>
 
           {isThinkingOpen && (
-            <div className="mt-2 p-3.5 rounded-xl bg-[#1A1A1A] border border-[#2F2F2F] text-xs font-mono text-[#B4B4B4] leading-relaxed whitespace-pre-wrap animate-in fade-in duration-150">
+            <div className="mt-2 mb-3 p-3.5 rounded-xl bg-[#1A1A1A] border border-[#2F2F2F] text-xs font-mono text-[#B4B4B4] leading-relaxed whitespace-pre-wrap animate-in fade-in duration-150">
               {message.thoughtProcess}
             </div>
           )}
@@ -107,16 +88,16 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
 
       {/* Generated Media Attachments (Image, Audio, Video) */}
       {message.generatedImage && (
-        <div className="mt-4 rounded-xl overflow-hidden border border-amber-500/30 bg-[#1A1A1A] p-3 max-w-md">
-          <div className="flex items-center justify-between text-xs font-medium text-amber-300 mb-2">
+        <div className="mt-4 rounded-2xl overflow-hidden border border-[#333333] bg-[#1A1A1A] p-3 max-w-md shadow-xl">
+          <div className="flex items-center justify-between text-xs font-medium text-white mb-2">
             <span className="flex items-center gap-1.5">
-              <ImageIcon className="w-3.5 h-3.5" />
-              <span>Synthesized Image (gemini-nano-banana-2.1)</span>
+              <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+              <span>Created with Visual Studio</span>
             </span>
             <a
               href={message.generatedImage.url}
               download="RaOne_Image.png"
-              className="text-[11px] text-amber-400 hover:underline flex items-center gap-1"
+              className="text-[11px] text-[#B4B4B4] hover:text-white flex items-center gap-1 transition-colors"
             >
               <Download className="w-3 h-3" />
               <span>Download</span>
@@ -125,22 +106,22 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
           <img
             src={message.generatedImage.url}
             alt={message.generatedImage.prompt}
-            className="rounded-lg w-full h-auto object-cover max-h-80 shadow-lg"
+            className="rounded-xl w-full h-auto object-cover max-h-80 shadow-lg"
           />
         </div>
       )}
 
       {message.generatedAudio && (
-        <div className="mt-4 rounded-xl overflow-hidden border border-cyan-500/30 bg-[#1A1A1A] p-4 max-w-lg">
-          <div className="flex items-center justify-between text-xs font-medium text-cyan-300 mb-2">
+        <div className="mt-4 rounded-2xl overflow-hidden border border-[#333333] bg-[#1A1A1A] p-4 max-w-lg shadow-xl">
+          <div className="flex items-center justify-between text-xs font-medium text-white mb-2">
             <span className="flex items-center gap-1.5">
-              <Music className="w-3.5 h-3.5" />
-              <span>Lyria Audio Synthesis</span>
+              <Music className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Music Studio Synthesis</span>
             </span>
             <a
               href={message.generatedAudio.url}
               download="RaOne_Audio.mp3"
-              className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1"
+              className="text-[11px] text-[#B4B4B4] hover:text-white flex items-center gap-1 transition-colors"
             >
               <Download className="w-3 h-3" />
               <span>Download MP3</span>
@@ -156,17 +137,17 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
       )}
 
       {message.generatedVideo && (
-        <div className="mt-4 rounded-xl overflow-hidden border border-purple-500/30 bg-[#1A1A1A] p-4 max-w-lg">
-          <div className="flex items-center justify-between text-xs font-medium text-purple-300 mb-2">
+        <div className="mt-4 rounded-2xl overflow-hidden border border-[#333333] bg-[#1A1A1A] p-4 max-w-lg shadow-xl">
+          <div className="flex items-center justify-between text-xs font-medium text-white mb-2">
             <span className="flex items-center gap-1.5">
-              <Video className="w-3.5 h-3.5" />
-              <span>Omni Flash Video (gemini-omni-1.2-flash)</span>
+              <Video className="w-3.5 h-3.5 text-purple-400" />
+              <span>Video Studio Synthesis</span>
             </span>
           </div>
           {message.generatedVideo.url ? (
-            <video src={message.generatedVideo.url} controls className="w-full rounded-lg" />
+            <video src={message.generatedVideo.url} controls className="w-full rounded-xl" />
           ) : (
-            <div className="p-3 bg-black/40 rounded-lg text-xs font-mono text-purple-200">
+            <div className="p-3 bg-black/40 rounded-xl text-xs font-mono text-purple-200">
               {message.generatedVideo.storyboard?.map((s, i) => (
                 <div key={i}>▸ {s}</div>
               ))}
@@ -181,7 +162,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
         <div className="mt-3.5 pt-3 border-t border-[#2F2F2F]">
           <div className="text-[11px] font-semibold text-[#8E8E8E] mb-2 flex items-center gap-1.5">
             <Globe className="w-3 h-3 text-emerald-400" />
-            <span>Verified Grounding Sources</span>
+            <span>Sources</span>
           </div>
           <div className="flex flex-wrap gap-2">
             {message.groundingSources?.map((source, index) => (
@@ -214,12 +195,22 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
         </div>
       )}
 
-      {/* Action Toolbar Below Message */}
-      <div className="flex items-center gap-1 mt-3 text-[#8E8E8E] select-none">
+      {/* Action Toolbar Below Message (Matches Screenshot) */}
+      <div className="flex items-center gap-1 mt-2.5 text-[#8E8E8E] select-none">
+        <button
+          onClick={() => onSpeak(message.content)}
+          className={`p-1.5 rounded-lg hover:bg-[#2F2F2F] hover:text-white transition-colors ${
+            isSpeaking ? 'text-amber-400 animate-pulse' : ''
+          }`}
+          title="Read aloud"
+        >
+          <Volume2 className="w-3.5 h-3.5" />
+        </button>
+
         <button
           onClick={handleCopy}
           className="p-1.5 rounded-lg hover:bg-[#2F2F2F] hover:text-white transition-colors"
-          title="Copy response"
+          title="Copy"
         >
           {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
         </button>
@@ -244,29 +235,27 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
           <ThumbsDown className="w-3.5 h-3.5" />
         </button>
 
-        <button
-          onClick={() => onSpeak(message.content)}
-          className={`p-1.5 rounded-lg hover:bg-[#2F2F2F] hover:text-white transition-colors ${
-            isSpeaking ? 'text-amber-400 animate-pulse' : ''
-          }`}
-          title="Read aloud"
-        >
-          <Volume2 className="w-3.5 h-3.5" />
-        </button>
-
         {onRegenerate && (
           <button
             onClick={onRegenerate}
             className="p-1.5 rounded-lg hover:bg-[#2F2F2F] hover:text-white transition-colors"
-            title="Regenerate"
+            title="Try again"
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
         )}
 
         <button
+          onClick={handleCopy}
           className="p-1.5 rounded-lg hover:bg-[#2F2F2F] hover:text-white transition-colors"
-          title="More options"
+          title="Share response"
+        >
+          <Share2 className="w-3.5 h-3.5" />
+        </button>
+
+        <button
+          className="p-1.5 rounded-lg hover:bg-[#2F2F2F] hover:text-white transition-colors"
+          title="More"
         >
           <MoreHorizontal className="w-3.5 h-3.5" />
         </button>

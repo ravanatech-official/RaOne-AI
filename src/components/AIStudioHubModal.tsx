@@ -9,25 +9,15 @@ import {
   Copy,
   Check,
   Download,
-  Play,
-  Pause,
   Upload,
-  Globe,
-  MapPin,
-  ExternalLink,
-  ShieldCheck,
-  Database,
-  Terminal,
-  Layers,
   ArrowRight,
-  Flame,
 } from 'lucide-react';
 
 interface AIStudioHubModalProps {
   isOpen: boolean;
   onClose: () => void;
   onInsertToChat: (content: string, media?: any) => void;
-  initialTab?: 'image' | 'music' | 'video' | 'transcribe' | 'cloudguide';
+  initialTab?: 'image' | 'music' | 'video' | 'transcribe';
 }
 
 export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
@@ -36,7 +26,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
   onInsertToChat,
   initialTab = 'image',
 }) => {
-  const [activeTab, setActiveTab] = useState<'image' | 'music' | 'video' | 'transcribe' | 'cloudguide'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'image' | 'music' | 'video' | 'transcribe'>(initialTab);
 
   // --- Image Studio State ---
   const [imagePrompt, setImagePrompt] = useState('Futuristic cybernetic Ravana with golden solar armor and celestial cyan circuits, 8k render');
@@ -48,7 +38,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
 
   // --- Music Studio State ---
   const [musicPrompt, setMusicPrompt] = useState('Cinematic sci-fi orchestral track with ancient Ravana temple drums, ambient electronic brass, and heroic buildup');
-  const [musicModel, setMusicModel] = useState<'lyria-3-clip-preview' | 'lyria-3-pro-preview'>('lyria-3-clip-preview');
+  const [musicDuration, setMusicDuration] = useState<'clip' | 'full'>('clip');
   const [musicLoading, setMusicLoading] = useState(false);
   const [musicResult, setMusicResult] = useState<{ audioUrl: string | null; lyrics: string; prompt: string } | null>(null);
   const [isPlayingMusic, setIsPlayingMusic] = useState(false);
@@ -115,7 +105,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: musicPrompt,
-          model: musicModel,
+          model: musicDuration === 'full' ? 'lyria-3-pro-preview' : 'lyria-3-clip-preview',
         }),
       });
       const data = await res.json();
@@ -256,10 +246,10 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold font-display text-white tracking-tight">
-                  RaOne AI Studio Hub
+                  RaOne Studio Hub
                 </h2>
                 <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30">
-                  Multimodal Suite
+                  Creative Suite
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
@@ -276,14 +266,13 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Navigation Navigation Strip */}
+        {/* Tab Navigation Strip */}
         <div className="flex items-center gap-2 px-6 py-2.5 bg-[#0A0D14] border-b border-slate-800/80 overflow-x-auto shrink-0 scrollbar-none">
           {[
-            { id: 'image', label: 'Image Studio', icon: ImageIcon, model: 'gemini-nano-banana-2.1' },
-            { id: 'music', label: 'Music Studio', icon: Music, model: 'Lyria Pro / Clip' },
-            { id: 'video', label: 'Video Studio', icon: Video, model: 'gemini-omni-1.2-flash' },
-            { id: 'transcribe', label: 'Audio Transcribe', icon: Mic, model: 'gemini-3.5-transcribe' },
-            { id: 'cloudguide', label: '🔥 Firebase & Cloud Setup', icon: Flame, model: 'raoneai Guide' },
+            { id: 'image', label: 'Visual Studio', icon: ImageIcon, badge: '4K Synthesis' },
+            { id: 'music', label: 'Music Studio', icon: Music, badge: 'Acoustic Audio' },
+            { id: 'video', label: 'Video Studio', icon: Video, badge: 'Cinematic Motion' },
+            { id: 'transcribe', label: 'Voice Transcribe', icon: Mic, badge: 'Speech to Text' },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -300,7 +289,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                 <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
                 <span>{tab.label}</span>
                 <span className="text-[9px] text-slate-400 opacity-60 ml-0.5 hidden sm:inline">
-                  ({tab.model})
+                  ({tab.badge})
                 </span>
               </button>
             );
@@ -309,7 +298,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
 
         {/* Main Body View */}
         <div className="flex-1 min-h-0 overflow-y-auto p-6 bg-[#0B0F19]">
-          {/* TAB 1: IMAGE STUDIO */}
+          {/* TAB 1: VISUAL STUDIO */}
           {activeTab === 'image' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
               {/* Controls Column */}
@@ -318,9 +307,9 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
                       <ImageIcon className="w-3.5 h-3.5" />
-                      Model: gemini-nano-banana-2.1
+                      RaOne Visual Engine
                     </span>
-                    <span className="text-[10px] text-slate-400">High-Fidelity 4K Synthesis</span>
+                    <span className="text-[10px] text-slate-400">4K Ultra-Resolution</span>
                   </div>
 
                   {/* Prompt Textarea */}
@@ -360,7 +349,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                   {/* Resolution Selector */}
                   <div className="mt-4">
                     <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                      Resolution
+                      Resolution Quality
                     </label>
                     <div className="grid grid-cols-3 gap-2">
                       {['1K', '2K', '4K'].map((res) => (
@@ -420,7 +409,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                     className="w-full mt-5 py-2.5 text-xs font-semibold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     <Sparkles className="w-4 h-4" />
-                    <span>{imageLoading ? 'Synthesizing Image with RaOne...' : 'Generate with RaOne AI'}</span>
+                    <span>{imageLoading ? 'Synthesizing Visual Canvas...' : 'Generate with RaOne AI'}</span>
                   </button>
                 </div>
               </div>
@@ -436,7 +425,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                       <div className="flex items-center gap-2">
                         <a
                           href={generatedImage}
-                          download="RaOne_AI_Generation.png"
+                          download="RaOne_Visual_Creation.png"
                           className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 transition-colors"
                         >
                           <Download className="w-3.5 h-3.5" />
@@ -444,7 +433,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                         </a>
                         <button
                           onClick={() => {
-                            onInsertToChat(`Here is the image generated with RaOne AI: "${imagePrompt}"`, {
+                            onInsertToChat(`Here is the visual piece synthesized by RaOne AI: "${imagePrompt}"`, {
                               imageUrl: generatedImage,
                               prompt: imagePrompt,
                             });
@@ -464,7 +453,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                       <div className="text-center space-y-3">
                         <div className="w-12 h-12 rounded-full border-2 border-amber-400 border-t-transparent animate-spin mx-auto" />
                         <p className="text-xs font-mono text-amber-300">
-                          RaOne is rendering with gemini-nano-banana-2.1...
+                          RaOne is synthesizing visual canvas...
                         </p>
                       </div>
                     ) : generatedImage ? (
@@ -481,10 +470,10 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                           <ImageIcon className="w-7 h-7" />
                         </div>
                         <h3 className="text-sm font-semibold text-slate-300">
-                          No image rendered yet
+                          No visual render yet
                         </h3>
                         <p className="text-xs text-slate-500">
-                          Enter your prompt on the left and tap &ldquo;Generate with RaOne AI&rdquo; to experience ultra-high-definition visual synthesis.
+                          Enter your prompt on the left and tap &ldquo;Generate with RaOne AI&rdquo; to experience sovereign high-definition synthesis.
                         </p>
                       </div>
                     )}
@@ -502,9 +491,9 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
                       <Music className="w-3.5 h-3.5" />
-                      Lyria Music Engine
+                      RaOne Acoustic Engine
                     </span>
-                    <span className="text-[10px] text-slate-400">Standard Encoded MP3</span>
+                    <span className="text-[10px] text-slate-400">Mastered Audio MP3</span>
                   </div>
 
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">
@@ -518,33 +507,33 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                     className="w-full bg-[#080B12] border border-slate-700 focus:border-amber-400 rounded-xl p-3 text-xs text-slate-100 placeholder-slate-500 focus:outline-none resize-none leading-relaxed"
                   />
 
-                  {/* Model Toggle: Clip (30s) vs Pro (Full Track) */}
+                  {/* Duration Toggle */}
                   <div className="mt-4">
                     <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                      Track Length & Model
+                      Track Length
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       <button
-                        onClick={() => setMusicModel('lyria-3-clip-preview')}
+                        onClick={() => setMusicDuration('clip')}
                         className={`p-2.5 rounded-xl border text-left transition-all ${
-                          musicModel === 'lyria-3-clip-preview'
+                          musicDuration === 'clip'
                             ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
                             : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                         }`}
                       >
-                        <div className="font-semibold text-xs">Lyria Clip</div>
-                        <div className="text-[10px] text-slate-500">Up to 30s audio preview</div>
+                        <div className="font-semibold text-xs">Short Clip</div>
+                        <div className="text-[10px] text-slate-500">30s audio prelude</div>
                       </button>
                       <button
-                        onClick={() => setMusicModel('lyria-3-pro-preview')}
+                        onClick={() => setMusicDuration('full')}
                         className={`p-2.5 rounded-xl border text-left transition-all ${
-                          musicModel === 'lyria-3-pro-preview'
+                          musicDuration === 'full'
                             ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
                             : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                         }`}
                       >
-                        <div className="font-semibold text-xs">Lyria Pro</div>
-                        <div className="text-[10px] text-slate-500">Full-length multi-section track</div>
+                        <div className="font-semibold text-xs">Full Track</div>
+                        <div className="text-[10px] text-slate-500">Multi-section production</div>
                       </button>
                     </div>
                   </div>
@@ -558,7 +547,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                       {[
                         'Ravana Cosmic War Drums & Brass',
                         'Sigiriya Ambient Lo-Fi Rain & Flute',
-                        'Cyberpunk 2050 Kinetic Synthwave',
+                        'Cyberpunk Kinetic Synthwave',
                         'Sri Lankan Fusion Orchestral',
                       ].map((preset) => (
                         <button
@@ -578,7 +567,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                     className="w-full mt-5 py-2.5 text-xs font-semibold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     <Sparkles className="w-4 h-4" />
-                    <span>{musicLoading ? 'Generating Composition with Lyria...' : 'Compose Track with RaOne'}</span>
+                    <span>{musicLoading ? 'Composing Track with RaOne...' : 'Compose Track with RaOne'}</span>
                   </button>
                 </div>
               </div>
@@ -590,7 +579,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                     <div>
                       <h3 className="text-sm font-bold text-white">Audio Waveform & Player</h3>
                       <p className="text-xs text-slate-400 mt-0.5">
-                        Synthesized directly by Google Lyria via RaOne AI backend
+                        Synthesized by RaOne AI Acoustic Studio
                       </p>
                     </div>
                     {musicResult?.audioUrl && (
@@ -611,7 +600,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                       <div className="py-8 text-center space-y-3">
                         <div className="w-10 h-10 rounded-full border-2 border-amber-400 border-t-transparent animate-spin mx-auto" />
                         <p className="text-xs font-mono text-amber-300">
-                          Composing stems & synthesizing MP3 audio...
+                          Composing stems & synthesizing audio...
                         </p>
                       </div>
                     ) : musicResult?.audioUrl ? (
@@ -679,9 +668,9 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
                       <Video className="w-3.5 h-3.5" />
-                      Model: gemini-omni-1.2-flash
+                      RaOne Motion Engine
                     </span>
-                    <span className="text-[10px] text-slate-400">Interactions API</span>
+                    <span className="text-[10px] text-slate-400">Neural Video Direction</span>
                   </div>
 
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">
@@ -725,7 +714,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
 
                   <div className="mt-4 pt-3 border-t border-slate-800">
                     <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                      Optional Starting Frame (Image-to-Video Animation)
+                      Optional Keyframe (Image-to-Video Animation)
                     </label>
                     <div className="flex items-center gap-3">
                       <label className="flex items-center gap-2 px-3 py-2 text-xs bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl cursor-pointer text-slate-300 transition-colors">
@@ -762,7 +751,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                     className="w-full mt-5 py-2.5 text-xs font-semibold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     <Sparkles className="w-4 h-4" />
-                    <span>{videoLoading ? 'Synthesizing Video with Omni Flash...' : 'Render Video with RaOne'}</span>
+                    <span>{videoLoading ? 'Rendering Video Sequence...' : 'Render Video with RaOne'}</span>
                   </button>
                 </div>
               </div>
@@ -784,7 +773,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                       <div className="text-center space-y-3">
                         <div className="w-10 h-10 rounded-full border-2 border-amber-400 border-t-transparent animate-spin mx-auto" />
                         <p className="text-xs font-mono text-amber-300">
-                          Rendering video sequence with gemini-omni-1.2-flash...
+                          Rendering video sequence with RaOne...
                         </p>
                       </div>
                     ) : videoResult?.videoUrl ? (
@@ -833,10 +822,10 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <Mic className="w-4 h-4 text-amber-400" />
-                    <h3 className="text-sm font-bold text-white">Audio Transcription Matrix</h3>
+                    <h3 className="text-sm font-bold text-white">Voice Transcription Matrix</h3>
                   </div>
                   <span className="text-[10px] font-mono text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
-                    gemini-3.5-transcribe
+                    High Accuracy
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 mb-6 leading-relaxed">
@@ -882,7 +871,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                   <div className="text-center py-4 space-y-2">
                     <div className="w-6 h-6 rounded-full border-2 border-amber-400 border-t-transparent animate-spin mx-auto" />
                     <p className="text-xs font-mono text-amber-300">
-                      gemini-3.5-transcribe is processing speech...
+                      RaOne is transcribing speech...
                     </p>
                   </div>
                 )}
@@ -917,172 +906,6 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
                     </div>
                   </div>
                 )}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 5: FIREBASE & GOOGLE CLOUD CONSOLE CHECKLIST */}
-          {activeTab === 'cloudguide' && (
-            <div className="max-w-4xl mx-auto space-y-6">
-              <div className="p-5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-cyan-500/5 to-transparent border border-amber-500/30">
-                <div className="flex items-center gap-2 text-amber-400 font-bold text-sm mb-1">
-                  <Flame className="w-4 h-4" />
-                  <span>Firebase & Google Cloud Console Configuration Checklist</span>
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Project: <strong className="text-white">RaOne</strong> | Project ID: <strong className="text-amber-400">raoneai</strong> | Project Number: <strong className="text-cyan-400">348832701843</strong> | Plan: <strong className="text-emerald-400">Blaze Plan</strong>.
-                  Follow these exact nanosteps in Firebase Console & Google Cloud Console to ensure complete production functionality.
-                </p>
-              </div>
-
-              {/* Checklist Sections */}
-              <div className="space-y-4">
-                {/* 1. Firestore Security Rules */}
-                <div className="p-4 rounded-xl bg-[#121724] border border-slate-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-semibold text-xs text-amber-300 flex items-center gap-1.5">
-                      <Database className="w-4 h-4" />
-                      1. Cloud Firestore Rules Update (Unlock from Locked Mode)
-                    </span>
-                    <button
-                      onClick={() =>
-                        handleCopyText(
-                          `rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-    match /conversations/{convId} {
-      allow read, write: if request.auth != null;
-    }
-    match /public_specs/{docId} {
-      allow read: if true;
-      allow write: if request.auth != null;
-    }
-  }
-}`,
-                          'rule-copy'
-                        )
-                      }
-                      className="text-[11px] text-amber-400 hover:underline flex items-center gap-1"
-                    >
-                      {copiedId === 'rule-copy' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      <span>Copy Rules</span>
-                    </button>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-2">
-                    Go to <strong>Firebase Console &gt; Build &gt; Firestore Database &gt; Rules</strong>. Change from locked (<code className="text-rose-400">allow read, write: if false;</code>) to user-authenticated rules.
-                  </p>
-                  <pre className="p-3 rounded-lg bg-black/40 border border-slate-800 text-[11px] font-mono text-cyan-200">
-{`rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-    match /conversations/{convId} {
-      allow read, write: if request.auth != null;
-    }
-  }
-}`}
-                  </pre>
-                </div>
-
-                {/* 2. Realtime Database Rules */}
-                <div className="p-4 rounded-xl bg-[#121724] border border-slate-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-semibold text-xs text-amber-300 flex items-center gap-1.5">
-                      <Terminal className="w-4 h-4" />
-                      2. Realtime Database Rules (raoneai-default-rtdb)
-                    </span>
-                    <button
-                      onClick={() =>
-                        handleCopyText(
-                          `{
-  "rules": {
-    "users": {
-      "$uid": {
-        ".read": "$uid === auth.uid",
-        ".write": "$uid === auth.uid"
-      }
-    },
-    "presence": {
-      ".read": "auth != null",
-      ".write": "auth != null"
-    }
-  }
-}`,
-                          'rtdb-copy'
-                        )
-                      }
-                      className="text-[11px] text-amber-400 hover:underline flex items-center gap-1"
-                    >
-                      {copiedId === 'rtdb-copy' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      <span>Copy Rules</span>
-                    </button>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-2">
-                    Go to <strong>Firebase Console &gt; Build &gt; Realtime Database &gt; Rules</strong>.
-                  </p>
-                  <pre className="p-3 rounded-lg bg-black/40 border border-slate-800 text-[11px] font-mono text-cyan-200">
-{`{
-  "rules": {
-    "users": {
-      "$uid": {
-        ".read": "$uid === auth.uid",
-        ".write": "$uid === auth.uid"
-      }
-    }
-  }
-}`}
-                  </pre>
-                </div>
-
-                {/* 3. Authentication & Authorized Domains */}
-                <div className="p-4 rounded-xl bg-[#121724] border border-slate-800">
-                  <span className="font-semibold text-xs text-amber-300 flex items-center gap-1.5 mb-2">
-                    <ShieldCheck className="w-4 h-4" />
-                    3. Firebase Authentication Authorized Domains
-                  </span>
-                  <p className="text-xs text-slate-400 mb-2">
-                    Go to <strong>Firebase Console &gt; Build &gt; Authentication &gt; Settings &gt; Authorized domains</strong>.
-                  </p>
-                  <ul className="list-disc list-inside text-xs text-slate-300 space-y-1">
-                    <li><code className="text-amber-400">localhost</code> (Already active)</li>
-                    <li><code className="text-amber-400">raoneai.firebaseapp.com</code> (Already active)</li>
-                    <li><code className="text-amber-400">raoneai.web.app</code> (Already active)</li>
-                    <li>
-                      Add current Cloud Run / Preview domain:
-                      <code className="text-cyan-400 ml-1">ais-dev-n77l27ysw264s5attvwclq-178908302670.asia-southeast1.run.app</code>
-                    </li>
-                  </ul>
-                </div>
-
-                {/* 4. Google Cloud Console APIs */}
-                <div className="p-4 rounded-xl bg-[#121724] border border-slate-800">
-                  <span className="font-semibold text-xs text-amber-300 flex items-center gap-1.5 mb-2">
-                    <Layers className="w-4 h-4" />
-                    4. Google Cloud Console: Enable Necessary APIs
-                  </span>
-                  <p className="text-xs text-slate-400 mb-2">
-                    In <strong>Google Cloud Console</strong> (<a href="https://console.cloud.google.com" target="_blank" rel="noreferrer" className="text-cyan-400 underline">console.cloud.google.com</a>), select project <strong className="text-white">raoneai</strong>:
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                    <div className="p-2.5 rounded-lg bg-black/30 border border-slate-800">
-                      <span className="text-emerald-400 font-bold">✓ Active:</span> Gemini Developer API & Vertex AI
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-black/30 border border-slate-800">
-                      <span className="text-emerald-400 font-bold">✓ Active:</span> Firebase Auth & Firestore API
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-black/30 border border-slate-800">
-                      <span className="text-amber-400 font-bold">→ Verify:</span> Cloud Storage API (for media assets)
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-black/30 border border-slate-800">
-                      <span className="text-amber-400 font-bold">→ Verify:</span> Maps JavaScript API (for Maps Grounding)
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           )}

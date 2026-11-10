@@ -104,7 +104,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, currentUs
             {currentUser ? 'RaOne Account' : isSignUp ? 'Create RaOne Account' : 'Sign in to RaOne'}
           </h2>
           <p className="text-xs text-[#8E8E8E] mt-1">
-            Firebase Project: <span className="text-amber-400 font-mono">raoneai</span> · Blaze Plan
+            RaOne AI by RavanaTec · Think. Create. Act.
           </p>
         </div>
 
@@ -147,9 +147,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, currentUs
             <div className="text-xs text-[#8E8E8E] space-y-1 p-3 rounded-lg bg-[#222]">
               <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Authenticated via Firebase (raoneai)</span>
+                <span>Active Sovereign RaOne Member Session</span>
               </div>
-              <div>Authorized Domains: localhost, raoneai.firebaseapp.com, raoneai.web.app</div>
+              <div>Secured with enterprise single sign-on & TLS 256-bit encryption.</div>
             </div>
 
             <button

@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { X, User, Settings, Volume2, Shield, Sparkles, Check, Globe, Flame, Database, Copy, Server, ShieldCheck } from 'lucide-react';
-import { RAONE_PROJECT_OVERVIEW, firebaseConfig } from '../lib/firebase.ts';
+import { X, User, Settings, Volume2, Sparkles, Check } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -19,8 +18,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   selectedModel,
   onSelectModel,
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'voice' | 'personalization' | 'firebase' | 'about'>('general');
-  const [copiedConfig, setCopiedConfig] = useState(false);
+  const [activeTab, setActiveTab] = useState<'general' | 'voice' | 'personalization' | 'about'>('general');
   const [customInstructions, setCustomInstructions] = useState(
     'Address me with high clarity and formidable capability. Support both Sinhala and English fluently. Sign responses with RaOne AI by RavanaTec — Think. Create. Act.'
   );
@@ -89,15 +87,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>Personalization</span>
             </button>
             <button
-              onClick={() => setActiveTab('firebase')}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors text-left ${
-                activeTab === 'firebase' ? 'bg-[#2A2A2A] text-white' : 'text-[#A0A0A0] hover:bg-[#222222]'
-              }`}
-            >
-              <Flame className="w-4 h-4 text-amber-500" />
-              <span>Firebase (raoneai)</span>
-            </button>
-            <button
               onClick={() => setActiveTab('about')}
               className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors text-left ${
                 activeTab === 'about' ? 'bg-[#2A2A2A] text-white' : 'text-[#A0A0A0] hover:bg-[#222222]'
@@ -121,9 +110,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => onSelectModel(e.target.value)}
                     className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none"
                   >
-                    <option value="gemini-3.8-flash">RaOne AI · Gemini 3.8 Flash (Recommended)</option>
-                    <option value="gpt-6-astra">GPT-6 Astra Medium (Autonomous Reasoning)</option>
-                    <option value="raone-thinker">RaOne Thinker (Ten Facets Matrix)</option>
+                    <option value="gemini-3.8-flash">RaOne Flash (High Velocity · Recommended)</option>
+                    <option value="gemini-4-argon">RaOne Argon (Deep Cognitive Reasoning & Systems Logic)</option>
+                    <option value="raone-deepseek-r1">RaOne DeepSeek R1 (Open Deep Reasoning Matrix)</option>
+                    <option value="raone-gpt4o">RaOne GPT-4o (Omni Intelligence)</option>
+                    <option value="raone-claude">RaOne Claude 3.5 (State-of-the-Art Code & Architecture)</option>
+                    <option value="gemini-3.1-flash-lite">RaOne Lite (Ultra-Low Latency Streaming)</option>
                   </select>
                 </div>
 
@@ -141,12 +133,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeTab === 'voice' && (
               <div className="space-y-4">
-                <div className="p-3.5 rounded-xl bg-[#2A2A2A]/50 border border-[#3C3C3C] flex items-center justify-between">
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#252525] border border-[#333]">
                   <div>
-                    <div className="font-semibold text-white">Voice Activation: “Hey RaOne”</div>
-                    <div className="text-[11px] text-[#8E8E8E] mt-0.5">
-                      Continuously listen for wake phrase in the background
-                    </div>
+                    <div className="font-semibold text-white">Voice Activation Phrase</div>
+                    <div className="text-[11px] text-[#8E8E8E]">Say “Hey RaOne” to begin voice conversation</div>
+                  </div>
+                  <span className="font-mono text-xs font-bold text-amber-400 px-2 py-1 rounded bg-[#1C1C1C] border border-amber-500/30">
+                    “Hey RaOne”
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#252525] border border-[#333]">
+                  <div>
+                    <div className="font-semibold text-white">Ambient Wake-Word Listener</div>
+                    <div className="text-[11px] text-[#8E8E8E]">Continuous background listening for “Hey RaOne”</div>
                   </div>
                   <button
                     onClick={onToggleContinuousWake}
@@ -161,7 +161,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div className="text-[11px] text-[#8E8E8E] leading-relaxed">
-                  Tip: Speak naturally in Sinhala or English after saying &ldquo;Hey RaOne&rdquo;. The engine will automatically transcribe, reason, and read the answer back to you.
+                  Tip: Speak naturally in Sinhala or English after saying &ldquo;Hey RaOne&rdquo;. The engine will automatically reason and read the answer back to you.
                 </div>
               </div>
             )}
@@ -178,110 +178,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => setCustomInstructions(e.target.value)}
                     className="w-full bg-[#2A2A2A] border border-[#3C3C3C] rounded-lg p-2.5 text-xs text-white focus:outline-none"
                   />
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'firebase' && (
-              <div className="space-y-4">
-                {/* Project Header Banner */}
-                <div className="p-3.5 rounded-xl bg-[#262626] border border-amber-500/30 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
-                      <Flame className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="font-bold text-white text-sm">
-                        {RAONE_PROJECT_OVERVIEW.projectName} ({RAONE_PROJECT_OVERVIEW.projectId})
-                      </div>
-                      <div className="text-[11px] text-[#8E8E8E]">
-                        Project #{RAONE_PROJECT_OVERVIEW.projectNumber} · {RAONE_PROJECT_OVERVIEW.billingPlan}
-                      </div>
-                    </div>
-                  </div>
-                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono text-[10px] font-semibold">
-                    BLAZE ACTIVE
-                  </span>
-                </div>
-
-                {/* Services Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div className="p-3 rounded-xl bg-[#252525] border border-[#333]">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-white flex items-center gap-1.5">
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Firebase Authentication</span>
-                      </span>
-                      <span className="text-[10px] text-emerald-400 font-mono">Active</span>
-                    </div>
-                    <div className="text-[11px] text-[#A0A0A0] space-y-1">
-                      <div>• Google Sign-In & Email/Password</div>
-                      <div>• Authorized: localhost, raoneai.firebaseapp.com, raoneai.web.app</div>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-[#252525] border border-[#333]">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-white flex items-center gap-1.5">
-                        <Database className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Cloud Firestore</span>
-                      </span>
-                      <span className="text-[10px] text-emerald-400 font-mono">nam5</span>
-                    </div>
-                    <div className="text-[11px] text-[#A0A0A0] space-y-1">
-                      <div>• Instance: (default) FIRESTORE_NATIVE</div>
-                      <div>• Location: nam5 (US Multi-region)</div>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-[#252525] border border-[#333]">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-white flex items-center gap-1.5">
-                        <Server className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Realtime Database</span>
-                      </span>
-                      <span className="text-[10px] text-emerald-400 font-mono">Active</span>
-                    </div>
-                    <div className="text-[11px] text-[#A0A0A0] space-y-1">
-                      <div>• Instance: raoneai-default-rtdb</div>
-                      <div>• Location: us-central1</div>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-[#252525] border border-[#333]">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-white flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                        <span>AI & Analytics</span>
-                      </span>
-                      <span className="text-[10px] text-emerald-400 font-mono">Active</span>
-                    </div>
-                    <div className="text-[11px] text-[#A0A0A0] space-y-1">
-                      <div>• Gemini Developer & Vertex AI APIs</div>
-                      <div>• Analytics Property: 563366712</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Web SDK Config Snippet */}
-                <div className="rounded-xl border border-[#333] bg-[#161616] overflow-hidden">
-                  <div className="p-2.5 bg-[#1F1F1F] border-b border-[#333] flex items-center justify-between">
-                    <span className="font-mono text-[11px] text-[#999]">firebaseConfig (raoneai)</span>
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(JSON.stringify(firebaseConfig, null, 2));
-                        setCopiedConfig(true);
-                        setTimeout(() => setCopiedConfig(false), 2000);
-                      }}
-                      className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 font-medium"
-                    >
-                      {copiedConfig ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      <span>{copiedConfig ? 'Copied' : 'Copy Config'}</span>
-                    </button>
-                  </div>
-                  <pre className="p-3 text-[10px] font-mono text-cyan-200/90 overflow-x-auto leading-relaxed">
-                    {JSON.stringify(firebaseConfig, null, 2)}
-                  </pre>
                 </div>
               </div>
             )}
@@ -314,22 +210,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span className="text-[#8E8E8E]">Organization:</span> RavanaTec
                   </div>
                 </div>
+
+                <div className="mt-4 p-3 rounded-xl bg-[#262626] border border-amber-500/20 text-[#B4B4B4] text-[11px] leading-relaxed">
+                  RaOne combines the legendary multi-dimensional intellect and mastery of ten domains (Strategy, Engineering, Linguistics, Philosophy, Art, Tactics, Law, Architecture, Science, and Foresight) with a unified, modern, singular AI core: “One AI for Your World”.
+                </div>
               </div>
             )}
           </div>
         </div>
 
         {/* Footer */}
-        <div className="h-14 px-6 border-t border-[#2C2C2C] bg-[#171717] flex items-center justify-between">
-          <span className="text-[11px] text-[#8E8E8E]">
-            {savedSuccess ? 'Settings updated successfully' : 'Shanthapriya Silva · Plus Member'}
-          </span>
-          <button
-            onClick={handleSave}
-            className="px-4 py-1.5 text-xs font-semibold bg-white text-black hover:bg-slate-200 rounded-lg transition-colors"
-          >
-            Done
-          </button>
+        <div className="h-14 px-6 border-t border-[#2C2C2C] flex items-center justify-between bg-[#1A1A1A]">
+          <span className="text-[11px] text-[#757575]">RaOne AI by RavanaTec</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-medium text-[#B4B4B4] hover:text-white hover:bg-[#2A2A2A] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors flex items-center gap-1.5"
+            >
+              {savedSuccess ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Saved</span>
+                </>
+              ) : (
+                <span>Save Changes</span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>

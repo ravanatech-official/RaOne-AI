@@ -128,7 +128,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400 font-medium">
           <span>RaOne Core</span>
           <span aria-hidden="true">·</span>
-          <span>gemini-3.8-flash</span>
+          <span>RaOne Flash</span>
           <span aria-hidden="true">·</span>
           <span className="text-amber-400">One AI for Your World</span>
         </div>

@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
@@ -15,6 +16,30 @@ const port = process.env.PORT || 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// Conversations persistence file
+const CONVERSATIONS_FILE = path.join(__dirname, 'conversations_data.json');
+
+async function getStoredConversations(): Promise<any[]> {
+  try {
+    if (fs.existsSync(CONVERSATIONS_FILE)) {
+      const data = await fs.promises.readFile(CONVERSATIONS_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('Notice: Reading conversations file:', err);
+  }
+  return [];
+}
+
+async function saveStoredConversations(conversations: any[]): Promise<void> {
+  try {
+    await fs.promises.writeFile(CONVERSATIONS_FILE, JSON.stringify(conversations, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving conversations file:', err);
+  }
+}
+
 // Initialize Google GenAI client
 const apiKey = process.env.GEMINI_API_KEY;
 let aiClient: GoogleGenAI | null = null;
@@ -29,6 +54,12 @@ if (apiKey) {
     },
   });
 }
+
+// Global Provider API Keys (Stored only on server, never exposed to browser)
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const XAI_API_KEY = process.env.XAI_API_KEY || '';
 
 // System Persona for RaOne AI
 const RAONE_CORE_SYSTEM_PROMPT = `You are RaOne AI, created by RavanaTec.
@@ -46,6 +77,102 @@ Always conclude complex responses or milestones with the quiet signature mark wh
 "RaOne AI by RavanaTec — Think. Create. Act."
 `;
 
+// Helper: Call OpenAI
+async function callOpenAI(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on server');
+  const formattedMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map((m: any) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content || (m.parts?.[0]?.text ?? ''),
+    })),
+  ];
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: formattedMessages,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenAI API error (${response.status}): ${errText}`);
+  }
+
+  const json = await response.json();
+  return json.choices?.[0]?.message?.content || '';
+}
+
+// Helper: Call Anthropic
+async function callAnthropic(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
+  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on server');
+  const formattedMessages = messages.map((m: any) => ({
+    role: m.role === 'user' ? 'user' : 'assistant',
+    content: m.content || (m.parts?.[0]?.text ?? ''),
+  }));
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: modelName,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: formattedMessages,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+  }
+
+  const json = await response.json();
+  return json.content?.[0]?.text || '';
+}
+
+// Helper: Call DeepSeek
+async function callDeepSeek(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
+  if (!DEEPSEEK_API_KEY) throw new Error('DEEPSEEK_API_KEY is not configured on server');
+  const formattedMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map((m: any) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content || (m.parts?.[0]?.text ?? ''),
+    })),
+  ];
+
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: formattedMessages,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`DeepSeek API error (${response.status}): ${errText}`);
+  }
+
+  const json = await response.json();
+  return json.choices?.[0]?.message?.content || '';
+}
+
 // API Health Route
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -57,10 +184,161 @@ app.get('/api/health', (_req, res) => {
     tagline: 'Think. Create. Act.',
     brandSignature: 'RaOne AI by RavanaTec',
     hasApiKey: Boolean(apiKey),
-    firebaseProjectId: 'raoneai',
-    firebaseProjectNumber: '348832701843',
-    firebasePlan: 'Blaze Plan',
+    providers: {
+      gemini: Boolean(apiKey),
+      openai: Boolean(OPENAI_API_KEY),
+      anthropic: Boolean(ANTHROPIC_API_KEY),
+      deepseek: Boolean(DEEPSEEK_API_KEY),
+      xai: Boolean(XAI_API_KEY),
+    },
   });
+});
+
+// API Models Catalog
+app.get('/api/models', (_req, res) => {
+  res.json({
+    models: [
+      {
+        id: 'gemini-3.8-flash',
+        name: 'RaOne Flash',
+        tag: 'High Velocity · Recommended',
+        description: 'Fast, multimodal & intelligent (Powered by Gemini 2.5 Flash)',
+        active: Boolean(apiKey),
+        provider: 'Gemini',
+      },
+      {
+        id: 'gemini-4-argon',
+        name: 'RaOne Argon',
+        tag: 'Deep Reasoning & Logic',
+        description: 'Deep cognitive reasoning & systems code (Powered by Gemini 2.5 Pro)',
+        active: Boolean(apiKey),
+        provider: 'Gemini',
+      },
+      {
+        id: 'raone-deepseek-r1',
+        name: 'RaOne DeepSeek R1',
+        tag: 'Deep Reasoning Matrix',
+        description: 'Open reasoning & algorithmic proofs (DeepSeek R1 / Gemini CoT)',
+        active: Boolean(DEEPSEEK_API_KEY || apiKey),
+        provider: DEEPSEEK_API_KEY ? 'DeepSeek' : 'Gemini Hybrid',
+      },
+      {
+        id: 'raone-gpt4o',
+        name: 'RaOne GPT-4o',
+        tag: 'Omni Intelligence',
+        description: 'Advanced vision & omni reasoning (OpenAI GPT-4o / Gemini Hybrid)',
+        active: Boolean(OPENAI_API_KEY || apiKey),
+        provider: OPENAI_API_KEY ? 'OpenAI' : 'Gemini Hybrid',
+      },
+      {
+        id: 'raone-claude',
+        name: 'RaOne Claude 3.5',
+        tag: 'Architecture & Prose',
+        description: 'State-of-the-art coding and prose (Claude 3.5 Sonnet / Gemini Hybrid)',
+        active: Boolean(ANTHROPIC_API_KEY || apiKey),
+        provider: ANTHROPIC_API_KEY ? 'Anthropic' : 'Gemini Hybrid',
+      },
+      {
+        id: 'gemini-3.1-flash-lite',
+        name: 'RaOne Lite',
+        tag: 'Ultra Fast',
+        description: 'Ultra-low latency instant streaming (Gemini 2.0 Flash Lite)',
+        active: Boolean(apiKey),
+        provider: 'Gemini',
+      },
+    ],
+    encryption: 'Server-side Environment Proxy (Zero-Client-Exposure)',
+    providers: {
+      gemini: Boolean(apiKey),
+      openai: Boolean(OPENAI_API_KEY),
+      anthropic: Boolean(ANTHROPIC_API_KEY),
+      deepseek: Boolean(DEEPSEEK_API_KEY),
+      xai: Boolean(XAI_API_KEY),
+    },
+  });
+});
+
+// Conversations Persistence Endpoints (Saved on backend, no fake chats in code)
+app.get('/api/conversations', async (_req, res) => {
+  try {
+    const list = await getStoredConversations();
+    res.json(list);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/conversations', async (req, res) => {
+  try {
+    const conversation = req.body;
+    if (!conversation?.id) {
+      return res.status(400).json({ error: 'Conversation id is required' });
+    }
+    const list = await getStoredConversations();
+    const existingIndex = list.findIndex((c: any) => c.id === conversation.id);
+    if (existingIndex >= 0) {
+      list[existingIndex] = {
+        ...list[existingIndex],
+        ...conversation,
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      list.unshift({
+        ...conversation,
+        createdAt: conversation.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    await saveStoredConversations(list);
+    res.json({ success: true, conversation });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/conversations/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let list = await getStoredConversations();
+    list = list.filter((c: any) => c.id !== id);
+    await saveStoredConversations(list);
+    res.json({ success: true, id });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/conversations/:id/rename', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title } = req.body;
+    const list = await getStoredConversations();
+    const item = list.find((c: any) => c.id === id);
+    if (item && title) {
+      item.title = title;
+      item.updatedAt = new Date().toISOString();
+      await saveStoredConversations(list);
+    }
+    res.json({ success: true, item });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/conversations/:id/pin', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const list = await getStoredConversations();
+    const item = list.find((c: any) => c.id === id);
+    if (item) {
+      item.section = item.section === 'pinned' ? 'recents' : 'pinned';
+      item.updatedAt = new Date().toISOString();
+      await saveStoredConversations(list);
+    }
+    res.json({ success: true, item });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // 1. Chat & Multi-Model Engine with Google Search & Maps Grounding
@@ -77,19 +355,6 @@ app.post('/api/chat', async (req, res) => {
       userLocation = null,
     } = req.body;
 
-    // Validate model selection
-    const allowedModels = ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.1-flash-lite'];
-    const activeModel = allowedModels.includes(model) ? model : 'gemini-3.8-flash';
-
-    if (!aiClient) {
-      return res.status(200).json({
-        text: `[RaOne Core Ready] Greetings! I am RaOne AI by RavanaTec — One AI for Your World.\nTagline: Think. Create. Act.\nRunning with active Firebase project "raoneai". GEMINI_API_KEY is active in proxy mode.\n\nMode: ${mode.toUpperCase()}\nModel: ${activeModel}\nPrompt: "${prompt}"`,
-        mode,
-        model: activeModel,
-        groundingSources: [],
-      });
-    }
-
     let modeInstruction = '';
     if (mode === 'think') {
       modeInstruction = `MODE: THINK (Deep Cognitive Reasoning). Analyze the query from multiple strategic perspectives. Provide deep, structured logic, clear trade-offs, step-by-step reasoning, and counter-perspectives where applicable.`;
@@ -100,6 +365,74 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const fullSystemInstruction = `${RAONE_CORE_SYSTEM_PROMPT}\n\n${modeInstruction}\n${context ? `Additional Context: ${context}` : ''}`;
+
+    // Provider 1: OpenAI (GPT-4o) if requested and configured
+    if (model === 'raone-gpt4o' && OPENAI_API_KEY) {
+      try {
+        const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        return res.json({
+          text,
+          mode,
+          model: 'raone-gpt4o',
+          groundingSources: [],
+          brandSignature: 'RaOne AI by RavanaTec',
+        });
+      } catch (openAiErr: any) {
+        console.warn('OpenAI proxy warning, falling back to RaOne Hybrid:', openAiErr.message);
+      }
+    }
+
+    // Provider 2: Anthropic (Claude 3.5 Sonnet) if requested and configured
+    if (model === 'raone-claude' && ANTHROPIC_API_KEY) {
+      try {
+        const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        return res.json({
+          text,
+          mode,
+          model: 'raone-claude',
+          groundingSources: [],
+          brandSignature: 'RaOne AI by RavanaTec',
+        });
+      } catch (claudeErr: any) {
+        console.warn('Anthropic proxy warning, falling back to RaOne Hybrid:', claudeErr.message);
+      }
+    }
+
+    // Provider 3: DeepSeek (R1 Reasoner) if requested and configured
+    if (model === 'raone-deepseek-r1' && DEEPSEEK_API_KEY) {
+      try {
+        const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        return res.json({
+          text,
+          mode,
+          model: 'raone-deepseek-r1',
+          groundingSources: [],
+          brandSignature: 'RaOne AI by RavanaTec',
+        });
+      } catch (deepseekErr: any) {
+        console.warn('DeepSeek proxy warning, falling back to RaOne Hybrid:', deepseekErr.message);
+      }
+    }
+
+    // Validate Google Gemini model selection
+    const allowedModels = ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.1-flash-lite', 'raone-gpt4o', 'raone-claude', 'raone-deepseek-r1'];
+    let activeModel = 'gemini-3.8-flash';
+    if (model === 'gemini-4-argon' || model === 'raone-argon' || model === 'raone-claude' || model === 'raone-deepseek-r1') {
+      activeModel = 'gemini-4-argon';
+    } else if (model === 'gemini-3.1-flash-lite' || model === 'raone-lite') {
+      activeModel = 'gemini-3.1-flash-lite';
+    } else {
+      activeModel = 'gemini-3.8-flash';
+    }
+
+    if (!aiClient) {
+      return res.status(200).json({
+        text: `[RaOne Core Ready] Greetings! I am RaOne AI by RavanaTec — One AI for Your World.\nTagline: Think. Create. Act.\nRunning with active Firebase project "raoneai". GEMINI_API_KEY is active in proxy mode.\n\nMode: ${mode.toUpperCase()}\nModel: ${model}\nPrompt: "${prompt}"`,
+        mode,
+        model,
+        groundingSources: [],
+      });
+    }
 
     // Format chat history
     let contents: any[] = [];
