@@ -13,6 +13,9 @@ import { SettingsModal } from './components/SettingsModal.tsx';
 import { VoiceModal } from './components/VoiceModal.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { AIStudioHubModal } from './components/AIStudioHubModal.tsx';
+import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal.tsx';
+import { UpgradeModal } from './components/UpgradeModal.tsx';
+import { GoogleAIStudioWorkbench } from './components/GoogleAIStudioWorkbench.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
@@ -51,6 +54,103 @@ export default function App() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isStudioHubOpen, setIsStudioHubOpen] = useState<boolean>(false);
   const [studioHubTab, setStudioHubTab] = useState<'image' | 'music' | 'video' | 'transcribe'>('image');
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState<boolean>(false);
+  const [isGoogleAIStudioOpen, setIsGoogleAIStudioOpen] = useState<boolean>(false);
+  const [currentPlan, setCurrentPlan] = useState<'free' | 'plus' | 'ultimate'>('free');
+  const [searchTrigger, setSearchTrigger] = useState<number>(0);
+  const [inputFocusTrigger, setInputFocusTrigger] = useState<number>(0);
+  const [isTemporaryChat, setIsTemporaryChat] = useState<boolean>(false);
+  const [temporaryMessages, setTemporaryMessages] = useState<ChatMessage[]>([]);
+
+  const handleToggleTemporaryChat = useCallback(() => {
+    setIsTemporaryChat((prev) => {
+      const next = !prev;
+      if (!next) {
+        setTemporaryMessages([]);
+      }
+      return next;
+    });
+  }, []);
+
+  // Global Keyboard Shortcuts System (Ctrl+K, Ctrl+/, Ctrl+B, etc.)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const isMod = e.ctrlKey || e.metaKey;
+      const target = e.target as HTMLElement | null;
+      const isInput = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA';
+
+      // Ctrl+K / Cmd+K: Start new chat & focus input
+      if (isMod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setActiveId('new');
+        setInputFocusTrigger((prev) => prev + 1);
+        return;
+      }
+
+      // Ctrl+/ or Cmd+/: Search chats in sidebar
+      if (isMod && e.key === '/') {
+        e.preventDefault();
+        setIsSidebarOpen(true);
+        setSearchTrigger((prev) => prev + 1);
+        return;
+      }
+
+      // Ctrl+B or Cmd+B: Toggle sidebar
+      if (isMod && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setIsSidebarOpen((prev) => !prev);
+        return;
+      }
+
+      // Ctrl+Shift+S / Cmd+Shift+S: Settings & model options
+      if (isMod && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        setIsSettingsOpen((prev) => !prev);
+        return;
+      }
+
+      // Ctrl+Shift+V / Cmd+Shift+V: Voice Mode
+      if (isMod && e.shiftKey && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        setIsVoiceModalOpen((prev) => !prev);
+        return;
+      }
+
+      // ?: Open keyboard shortcuts help (when not typing in an input field)
+      if (e.key === '?' && !isInput && !isMod) {
+        e.preventDefault();
+        setIsShortcutsOpen((prev) => !prev);
+        return;
+      }
+
+      // Escape: Close modals
+      if (e.key === 'Escape') {
+        if (isShortcutsOpen) setIsShortcutsOpen(false);
+        if (isSettingsOpen) setIsSettingsOpen(false);
+        if (isAuthModalOpen) setIsAuthModalOpen(false);
+        if (isStudioHubOpen) setIsStudioHubOpen(false);
+        if (isVoiceModalOpen) setIsVoiceModalOpen(false);
+        if (isUpgradeModalOpen) setIsUpgradeModalOpen(false);
+        if (isGoogleAIStudioOpen) setIsGoogleAIStudioOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [isAuthModalOpen, isSettingsOpen, isShortcutsOpen, isStudioHubOpen, isVoiceModalOpen, isUpgradeModalOpen, isGoogleAIStudioOpen]);
+
+  // Load user subscription plan from backend API
+  useEffect(() => {
+    fetch('/api/user/plan')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.plan && ['free', 'plus', 'ultimate'].includes(data.plan)) {
+          setCurrentPlan(data.plan);
+        }
+      })
+      .catch((err) => console.warn('Plan fetch note:', err));
+  }, []);
 
   // Load persisted conversations from backend API on initial mount
   useEffect(() => {
@@ -90,17 +190,27 @@ export default function App() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Active conversation or clean blank state
-  const activeConversation: Conversation =
-    conversations.find((c) => c.id === activeId) || {
-      id: 'new',
-      title: 'New chat',
-      section: 'recents',
-      createdAt: 'Today',
-      updatedAt: 'Just now',
-      modelId: selectedModel,
-      messages: [],
-    };
+  // Active conversation or clean blank state (or temporary in-memory private session)
+  const activeConversation: Conversation = isTemporaryChat
+    ? {
+        id: 'temporary',
+        title: 'Temporary Chat',
+        section: 'recents',
+        createdAt: 'Private Session',
+        updatedAt: 'Just now',
+        modelId: selectedModel,
+        messages: temporaryMessages,
+        isTemporary: true,
+      }
+    : conversations.find((c) => c.id === activeId) || {
+        id: 'new',
+        title: 'New chat',
+        section: 'recents',
+        createdAt: 'Today',
+        updatedAt: 'Just now',
+        modelId: selectedModel,
+        messages: [],
+      };
 
   // Auto scroll
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
@@ -196,7 +306,58 @@ export default function App() {
         generatedVideo: options?.media?.videoUrl
           ? { url: options.media.videoUrl, prompt: text }
           : undefined,
+        isTemporary: isTemporaryChat,
       };
+
+      // In-Memory Temporary Private Chat: Zero persistence to disk or backend
+      if (isTemporaryChat) {
+        setTemporaryMessages((prev) => [...prev, userMessage]);
+        setIsLoading(true);
+
+        try {
+          const history = temporaryMessages.slice(-6);
+          const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: text,
+              mode: 'chat',
+              model: selectedModel,
+              enableSearch: options?.enableSearch,
+              enableMaps: options?.enableMaps,
+              isTemporary: true, // Signal to backend: zero logging, zero persistence
+              messages: history.map((m) => ({
+                role: m.role,
+                content: m.content,
+              })),
+            }),
+          });
+
+          const data = await response.json();
+          const replyText = data.text || 'RaOne AI completed private synthesis.';
+
+          const modelMessage: ChatMessage = {
+            id: `m-${Date.now()}`,
+            role: 'model',
+            content: replyText,
+            model: data.model || selectedModel,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            thinkingTime: '10s',
+            isTemporary: true,
+          };
+
+          setTemporaryMessages((prev) => [...prev, modelMessage]);
+
+          if (isVoiceModalOpen) {
+            voice.speakText(replyText);
+          }
+        } catch (err: any) {
+          console.error('Temporary chat error:', err);
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
 
       if (isNewConv) {
         currentConvId = `conv-${Date.now()}`;
@@ -298,12 +459,26 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [activeConversation.messages, activeId, conversations, isLoading, isVoiceModalOpen, selectedModel, voice]
+    [
+      activeConversation.messages,
+      activeId,
+      conversations,
+      isLoading,
+      isTemporaryChat,
+      isVoiceModalOpen,
+      selectedModel,
+      temporaryMessages,
+      voice,
+    ]
   );
 
   // New Chat action (Exact ChatGPT behavior)
   const handleNewChat = () => {
-    setActiveId('new');
+    if (isTemporaryChat) {
+      setTemporaryMessages([]);
+    } else {
+      setActiveId('new');
+    }
   };
 
   // Delete chat
@@ -350,14 +525,20 @@ export default function App() {
   const hasOutputs = activeConversation.messages.some((m) => m.outputs && m.outputs.length > 0);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#212121] text-[#ECECEC] font-sans antialiased">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#000000] text-[#ECECEC] font-sans antialiased">
       {/* Left Sidebar (Exact ChatGPT Layout) */}
       <Sidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
         conversations={conversations}
         activeConversationId={activeId}
-        onSelectConversation={(id) => setActiveId(id)}
+        onSelectConversation={(id) => {
+          if (isTemporaryChat) {
+            setIsTemporaryChat(false);
+            setTemporaryMessages([]);
+          }
+          setActiveId(id);
+        }}
         onNewChat={handleNewChat}
         onDeleteConversation={handleDeleteConversation}
         onRenameConversation={(id, newTitle) => {
@@ -380,10 +561,15 @@ export default function App() {
           if (tab) setStudioHubTab(tab);
           setIsStudioHubOpen(true);
         }}
+        searchTrigger={searchTrigger}
+        onOpenShortcuts={() => setIsShortcutsOpen(true)}
+        currentPlan={currentPlan}
+        onOpenUpgrade={() => setIsUpgradeModalOpen(true)}
+        onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
       />
 
       {/* Main Chat Workspace */}
-      <div className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden relative">
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden relative bg-[#000000]">
         {/* Top Header */}
         <ChatHeader
           isSidebarOpen={isSidebarOpen}
@@ -398,6 +584,11 @@ export default function App() {
           onStopSpeaking={voice.stopSpeaking}
           onOpenVoice={() => setIsVoiceModalOpen(true)}
           isContinuousWakeListening={voice.isContinuousWakeListening}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          isTemporaryChat={isTemporaryChat}
+          onToggleTemporaryChat={handleToggleTemporaryChat}
+          currentPlan={currentPlan}
+          onOpenUpgrade={() => setIsUpgradeModalOpen(true)}
         />
 
         {/* Share notification toast */}
@@ -407,122 +598,116 @@ export default function App() {
           </div>
         )}
 
-        {/* Scrollable Messages Area */}
-        <div
-          ref={chatContainerRef}
-          onScroll={handleScroll}
-          tabIndex={0}
-          className="flex-1 min-h-0 min-w-0 overflow-y-auto px-2 sm:px-4 py-4 chat-scroll-area focus:outline-none"
-        >
-          {activeConversation.messages.length === 0 ? (
-            /* Pristine ChatGPT Centered Empty State */
-            <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4 max-w-2xl mx-auto">
-              <h1 className="text-3xl font-semibold text-white mb-8 tracking-tight">
-                What can I help with today?
+        {/* Main Content Area */}
+        {activeConversation.messages.length === 0 ? (
+          /* Exact Empty State matching screenshot: Centered "Where should we begin?" (or Temporary Chat) + Input Dock */
+          <div className="flex-1 flex flex-col items-center justify-start pt-10 sm:pt-14 md:pt-16 px-4 w-full max-w-3xl mx-auto overflow-y-auto chat-scroll-area">
+            {isTemporaryChat ? (
+              <div className="flex flex-col items-center mb-6 animate-in fade-in text-center select-none">
+                <div className="w-10 h-10 rounded-full border border-amber-500/40 bg-amber-500/10 flex items-center justify-center text-amber-300 mb-3 shadow-[0_0_15px_rgba(245,158,11,0.25)]">
+                  <svg
+                    className="w-5 h-5 stroke-current fill-none stroke-[2]"
+                    strokeDasharray="4 3"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                  </svg>
+                </div>
+                <h1 className="text-2xl sm:text-[32px] font-medium text-white mb-2 tracking-tight">
+                  Temporary Chat
+                </h1>
+                <p className="text-xs sm:text-sm text-[#8e8e8e] max-w-md">
+                  This chat won't appear in your history, won't be saved on servers, and messages will disappear when you leave.
+                </p>
+              </div>
+            ) : (
+              <h1 className="text-2xl sm:text-[32px] font-medium text-white mb-6 tracking-tight text-center select-none">
+                Where should we begin?
               </h1>
+            )}
+            <ChatInputDock
+              onSendMessage={handleSendMessage}
+              isLoading={isLoading}
+              onOpenVoice={() => setIsVoiceModalOpen(true)}
+              isListening={voice.isListening}
+              isContinuousWakeListening={voice.isContinuousWakeListening}
+              showScrollDown={false}
+              onScrollToBottom={() => {}}
+              selectedModel={selectedModel}
+              onSelectModel={setSelectedModel}
+              onOpenStudioHub={(tab) => {
+                if (tab) setStudioHubTab(tab);
+                setIsStudioHubOpen(true);
+              }}
+              isCenterState={true}
+              inputFocusTrigger={inputFocusTrigger}
+              isTemporary={isTemporaryChat}
+            />
+          </div>
+        ) : (
+          /* Conversation View */
+          <>
+            <div
+              ref={chatContainerRef}
+              onScroll={handleScroll}
+              tabIndex={0}
+              className="flex-1 min-h-0 min-w-0 overflow-y-auto px-2 sm:px-4 py-4 chat-scroll-area focus:outline-none"
+            >
+              {isTemporaryChat && (
+                <div className="mb-4 max-w-[760px] mx-auto p-3 rounded-xl bg-[#171717] border border-amber-500/30 flex items-center justify-between text-xs text-amber-200 animate-in fade-in">
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span>Temporary Chat: Messages are private and will not be saved.</span>
+                  </div>
+                  <button
+                    onClick={handleToggleTemporaryChat}
+                    className="px-2.5 py-1 rounded bg-[#262626] hover:bg-[#333] text-white text-[11px] font-medium transition-colors"
+                  >
+                    Turn off
+                  </button>
+                </div>
+              )}
+              {activeConversation.messages.map((message) => (
+                <ChatMessageItem
+                  key={message.id}
+                  message={message}
+                  onSpeak={voice.speakText}
+                  onRegenerate={() => handleSendMessage(message.content)}
+                  isSpeaking={voice.isSpeaking}
+                />
+              ))}
 
-              {/* 4 Quick Prompt Cards matching ChatGPT */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full text-left">
-                <button
-                  onClick={() =>
-                    handleSendMessage('Create a photorealistic concept artwork of Sigiriya monolith engulfed in neon cyber conduits at sunset')
-                  }
-                  className="p-3.5 rounded-2xl border border-[#303030] bg-[#212121] hover:bg-[#2A2A2A] transition-all text-xs text-[#B4B4B4] flex items-start gap-3 group"
-                >
-                  <div className="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-400 shrink-0 group-hover:scale-105 transition-transform">
-                    <ImageIcon className="w-4 h-4" />
+              {/* Thinking indicator */}
+              {isLoading && (
+                <div className="my-5 max-w-[760px] mx-auto px-4">
+                  <div className="flex items-center gap-2 text-xs text-[#9E9E9E]">
+                    <div className="w-2 h-2 rounded-full bg-white animate-ping" />
+                    <span className="font-mono">Thinking...</span>
                   </div>
-                  <div>
-                    <div className="font-semibold text-white mb-0.5">Create image</div>
-                    <div className="text-[11px] text-[#8E8E8E]">Photorealistic 4K visual concept</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() =>
-                    handleSendMessage('Write a complete, production-ready TypeScript backend service for high-concurrency event streaming')
-                  }
-                  className="p-3.5 rounded-2xl border border-[#303030] bg-[#212121] hover:bg-[#2A2A2A] transition-all text-xs text-[#B4B4B4] flex items-start gap-3 group"
-                >
-                  <div className="w-8 h-8 rounded-xl bg-cyan-500/10 flex items-center justify-center text-cyan-400 shrink-0 group-hover:scale-105 transition-transform">
-                    <Code className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="font-semibold text-white mb-0.5">Code & architecture</div>
-                    <div className="text-[11px] text-[#8E8E8E]">System design & pristine syntax</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() =>
-                    handleSendMessage('Conduct a deep cognitive strategic reasoning analysis on establishing sovereign AI infrastructure')
-                  }
-                  className="p-3.5 rounded-2xl border border-[#303030] bg-[#212121] hover:bg-[#2A2A2A] transition-all text-xs text-[#B4B4B4] flex items-start gap-3 group"
-                >
-                  <div className="w-8 h-8 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400 shrink-0 group-hover:scale-105 transition-transform">
-                    <Brain className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="font-semibold text-white mb-0.5">Analyze & reason</div>
-                    <div className="text-[11px] text-[#8E8E8E]">Deep logic & first-principles</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() =>
-                    handleSendMessage('Brainstorm breakthrough brand strategies and viral growth mechanics for a next-gen tech product')
-                  }
-                  className="p-3.5 rounded-2xl border border-[#303030] bg-[#212121] hover:bg-[#2A2A2A] transition-all text-xs text-[#B4B4B4] flex items-start gap-3 group"
-                >
-                  <div className="w-8 h-8 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0 group-hover:scale-105 transition-transform">
-                    <Lightbulb className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="font-semibold text-white mb-0.5">Brainstorm ideas</div>
-                    <div className="text-[11px] text-[#8E8E8E]">Strategic innovation vectors</div>
-                  </div>
-                </button>
-              </div>
+                </div>
+              )}
             </div>
-          ) : (
-            activeConversation.messages.map((message) => (
-              <ChatMessageItem
-                key={message.id}
-                message={message}
-                onSpeak={voice.speakText}
-                onRegenerate={() => handleSendMessage(message.content)}
-                isSpeaking={voice.isSpeaking}
-              />
-            ))
-          )}
 
-          {/* Thinking indicator matching ChatGPT */}
-          {isLoading && (
-            <div className="my-5 max-w-[760px] mx-auto px-4">
-              <div className="flex items-center gap-2 text-xs text-[#9E9E9E]">
-                <div className="w-2 h-2 rounded-full bg-white animate-ping" />
-                <span className="font-mono">Thinking...</span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Bottom Floating Input Dock */}
-        <ChatInputDock
-          onSendMessage={handleSendMessage}
-          isLoading={isLoading}
-          onOpenVoice={() => setIsVoiceModalOpen(true)}
-          isListening={voice.isListening}
-          isContinuousWakeListening={voice.isContinuousWakeListening}
-          showScrollDown={showScrollDown}
-          onScrollToBottom={() => scrollToBottom('smooth')}
-          selectedModel={selectedModel}
-          onSelectModel={setSelectedModel}
-          onOpenStudioHub={(tab) => {
-            if (tab) setStudioHubTab(tab);
-            setIsStudioHubOpen(true);
-          }}
-        />
+            {/* Bottom Floating Input Dock when in conversation */}
+            <ChatInputDock
+              onSendMessage={handleSendMessage}
+              isLoading={isLoading}
+              onOpenVoice={() => setIsVoiceModalOpen(true)}
+              isListening={voice.isListening}
+              isContinuousWakeListening={voice.isContinuousWakeListening}
+              showScrollDown={showScrollDown}
+              onScrollToBottom={() => scrollToBottom('smooth')}
+              selectedModel={selectedModel}
+              onSelectModel={setSelectedModel}
+              onOpenStudioHub={(tab) => {
+                if (tab) setStudioHubTab(tab);
+                setIsStudioHubOpen(true);
+              }}
+              inputFocusTrigger={inputFocusTrigger}
+              isTemporary={isTemporaryChat}
+            />
+          </>
+        )}
       </div>
 
       {/* Outputs / Artifacts Drawer (Right Rail matching screenshot) */}
@@ -534,7 +719,7 @@ export default function App() {
         }
       />
 
-      {/* Settings Modal */}
+      {/* Settings Modal (100% ChatGPT Settings Center) */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
@@ -542,6 +727,21 @@ export default function App() {
         onSelectModel={setSelectedModel}
         isContinuousWakeListening={voice.isContinuousWakeListening}
         onToggleContinuousWake={voice.toggleContinuousWakeListening}
+        currentPlan={currentPlan}
+        onOpenUpgrade={() => {
+          setIsSettingsOpen(false);
+          setIsUpgradeModalOpen(true);
+        }}
+        onClearAllChats={() => {
+          setConversations([]);
+          setActiveId('new');
+        }}
+      />
+
+      {/* Keyboard Shortcuts Helper Modal (Accessible with ? or from UI) */}
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
       />
 
       {/* Voice Assistant Modal ("Hey RaOne") */}
@@ -576,6 +776,20 @@ export default function App() {
         onInsertToChat={(content, media) => {
           handleSendMessage(content, { media });
         }}
+      />
+
+      {/* Subscription Plans Modal (Free, Plus, Ultimate) */}
+      <UpgradeModal
+        isOpen={isUpgradeModalOpen}
+        onClose={() => setIsUpgradeModalOpen(false)}
+        currentPlan={currentPlan}
+        onPlanChanged={(newPlan) => setCurrentPlan(newPlan)}
+      />
+
+      {/* Google AI Studio Developer Workbench & Model Playground */}
+      <GoogleAIStudioWorkbench
+        isOpen={isGoogleAIStudioOpen}
+        onClose={() => setIsGoogleAIStudioOpen(false)}
       />
     </div>
   );

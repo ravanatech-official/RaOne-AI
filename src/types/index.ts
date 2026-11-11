@@ -47,6 +47,7 @@ export interface ChatMessage {
     type: string;
     size?: string;
   }[];
+  isTemporary?: boolean;
 }
 
 export interface Conversation {
@@ -58,6 +59,7 @@ export interface Conversation {
   updatedAt: string;
   messages: ChatMessage[];
   modelId: string;
+  isTemporary?: boolean;
 }
 
 export interface IntellectFacet {

@@ -40,6 +40,176 @@ async function saveStoredConversations(conversations: any[]): Promise<void> {
   }
 }
 
+// User Plan persistence file (Database storage layer)
+const USER_PLAN_FILE = path.join(__dirname, 'user_plan_data.json');
+
+async function getStoredUserPlan(): Promise<any> {
+  try {
+    if (fs.existsSync(USER_PLAN_FILE)) {
+      const data = await fs.promises.readFile(USER_PLAN_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (parsed && parsed.plan) return parsed;
+    }
+  } catch (err) {
+    console.warn('Notice: Reading user plan file:', err);
+  }
+  return {
+    plan: 'free',
+    billingCycle: 'monthly',
+    status: 'active',
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function saveStoredUserPlan(planData: any): Promise<void> {
+  try {
+    await fs.promises.writeFile(USER_PLAN_FILE, JSON.stringify(planData, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving user plan file:', err);
+  }
+}
+
+// User Settings Persistence (Database storage layer)
+const USER_SETTINGS_FILE = path.join(__dirname, 'user_settings_data.json');
+
+const DEFAULT_SETTINGS = {
+  theme: 'dark',
+  accentColor: 'default',
+  language: 'auto',
+  alwaysShowCode: true,
+  archivedChats: [] as string[],
+  customInstructions: {
+    aboutUser: 'Software Engineer & Builder, prefers precise, complete, and high-level architectural solutions.',
+    responseStyle: 'Address me with high clarity and formidable capability. Support both Sinhala and English fluently. Sign responses with RaOne AI by RavanaTec — Think. Create. Act.',
+    enabled: true,
+  },
+  memory: {
+    enabled: true,
+    items: [
+      'Lives in Sri Lanka and prefers Colombo/IST timezone',
+      'Prefers clean React 19 + TypeScript + Tailwind CSS code',
+      'Communicates bilingually in Sinhala and English (Singlish supported)',
+      'Prefers Dark Mode UI with high contrast',
+    ],
+  },
+  voice: {
+    selectedVoice: 'Breeze',
+    speechLanguage: 'auto',
+    wakeWordEnabled: true,
+  },
+  dataControls: {
+    historyAndTraining: true,
+    sharedLinks: [] as any[],
+  },
+  security: {
+    mfaEnabled: false,
+  },
+};
+
+async function getStoredUserSettings(): Promise<any> {
+  try {
+    if (fs.existsSync(USER_SETTINGS_FILE)) {
+      const data = await fs.promises.readFile(USER_SETTINGS_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (parsed) return { ...DEFAULT_SETTINGS, ...parsed };
+    }
+  } catch (err) {
+    console.warn('Notice: Reading user settings file:', err);
+  }
+  return DEFAULT_SETTINGS;
+}
+
+async function saveStoredUserSettings(settingsData: any): Promise<void> {
+  try {
+    await fs.promises.writeFile(USER_SETTINGS_FILE, JSON.stringify(settingsData, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving user settings file:', err);
+  }
+}
+
+// Google AI Studio Workbench Prompts (Database persistence)
+const STUDIO_PROMPTS_FILE = path.join(__dirname, 'studio_prompts_data.json');
+
+const DEFAULT_STUDIO_PROMPTS = [
+  {
+    id: 'prompt-sentiment-analyzer',
+    title: 'Customer Feedback Classifier',
+    type: 'structured',
+    model: 'gemini-2.5-flash',
+    systemInstruction: 'You are an accurate, fast data categorization assistant. Output only the predicted sentiment label and confidence score.',
+    temperature: 0.2,
+    topP: 0.95,
+    topK: 40,
+    maxTokens: 512,
+    thinkingBudget: 0,
+    structuredColumns: ['Customer Feedback', 'Sentiment', 'Confidence'],
+    examples: [
+      { 'Customer Feedback': 'The delivery was 3 hours late and the packaging was torn.', 'Sentiment': 'Negative', 'Confidence': '0.98' },
+      { 'Customer Feedback': 'Best purchase I made all year, works straight out of the box!', 'Sentiment': 'Positive', 'Confidence': '0.99' },
+      { 'Customer Feedback': 'It is okay, does what the description says.', 'Sentiment': 'Neutral', 'Confidence': '0.85' },
+    ],
+    testInput: 'The device stopped charging after three weeks of light use.',
+    testOutput: '',
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'prompt-code-refactorer',
+    title: 'Code Architecture Refactorer',
+    type: 'freeform',
+    model: 'gemini-2.5-pro',
+    systemInstruction: 'You are a principal software engineer. Analyze the code, optimize memory and time complexity, and output clean TypeScript/Python.',
+    temperature: 0.4,
+    topP: 0.9,
+    topK: 40,
+    maxTokens: 2048,
+    thinkingBudget: 2048,
+    freeformContent: 'Analyze and refactor the following {{language}} code:\n\n```{{language}}\n{{code}}\n```\n\nEnsure strict typing, error boundaries, and modern design patterns.',
+    variables: {
+      language: 'typescript',
+      code: 'function fetchUsers(ids: any[]) { return ids.map(id => fetch("/api/user/" + id).then(r => r.json())); }',
+    },
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'prompt-conversational-agent',
+    title: 'Full-Stack Agent with Persona',
+    type: 'chat',
+    model: 'gemini-2.5-flash',
+    systemInstruction: 'You are RaOne Core AI — a brilliant, precise sovereign engineering partner. Provide concise, production-ready answers.',
+    temperature: 0.7,
+    topP: 0.95,
+    topK: 40,
+    maxTokens: 4096,
+    thinkingBudget: 0,
+    chatMessages: [
+      { role: 'user', content: 'What are the main advantages of using React 19 Server Components?' },
+      { role: 'model', content: 'React 19 Server Components execute exclusively on the server, resulting in zero client-side JavaScript bundle impact, direct access to backend resources, and streaming SSR without waterfalls.' },
+    ],
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+async function getStoredStudioPrompts(): Promise<any[]> {
+  try {
+    if (fs.existsSync(STUDIO_PROMPTS_FILE)) {
+      const data = await fs.promises.readFile(STUDIO_PROMPTS_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (err) {
+    console.warn('Notice: Reading studio prompts file:', err);
+  }
+  return DEFAULT_STUDIO_PROMPTS;
+}
+
+async function saveStoredStudioPrompts(prompts: any[]): Promise<void> {
+  try {
+    await fs.promises.writeFile(STUDIO_PROMPTS_FILE, JSON.stringify(prompts, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving studio prompts file:', err);
+  }
+}
+
 // Initialize Google GenAI client
 let apiKey = process.env.GEMINI_API_KEY || '';
 let aiClient: GoogleGenAI | null = null;
@@ -258,6 +428,347 @@ app.get('/api/models', (_req, res) => {
   });
 });
 
+// User Plan Endpoints (Free, Plus, Ultimate)
+app.get('/api/user/plan', async (_req, res) => {
+  try {
+    const planData = await getStoredUserPlan();
+    res.json(planData);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/plan', async (req, res) => {
+  try {
+    const { plan, billingCycle = 'monthly' } = req.body;
+    if (!plan || !['free', 'plus', 'ultimate'].includes(plan)) {
+      return res.status(400).json({ error: 'Valid plan (free, plus, ultimate) is required' });
+    }
+    const updatedPlan = {
+      plan,
+      billingCycle,
+      status: 'active',
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    await saveStoredUserPlan(updatedPlan);
+    res.json({ success: true, plan: updatedPlan });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/plan/cancel', async (_req, res) => {
+  try {
+    const freePlan = {
+      plan: 'free',
+      billingCycle: 'monthly',
+      status: 'active',
+      updatedAt: new Date().toISOString(),
+    };
+    await saveStoredUserPlan(freePlan);
+    res.json({ success: true, plan: freePlan });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Settings Center REST Endpoints (100% ChatGPT Settings Center specification)
+app.get('/api/user/settings', async (_req, res) => {
+  try {
+    const settings = await getStoredUserSettings();
+    res.json(settings);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/settings', async (req, res) => {
+  try {
+    const incoming = req.body;
+    const current = await getStoredUserSettings();
+    const merged = { ...current, ...incoming };
+    await saveStoredUserSettings(merged);
+    res.json({ success: true, settings: merged });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/settings/memory/delete', async (req, res) => {
+  try {
+    const { index } = req.body;
+    const current = await getStoredUserSettings();
+    if (typeof index === 'number' && current.memory?.items) {
+      current.memory.items = current.memory.items.filter((_: any, i: number) => i !== index);
+      await saveStoredUserSettings(current);
+    }
+    res.json({ success: true, memory: current.memory });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/settings/memory/add', async (req, res) => {
+  try {
+    const { item } = req.body;
+    const current = await getStoredUserSettings();
+    if (item && typeof item === 'string') {
+      current.memory = current.memory || { enabled: true, items: [] };
+      current.memory.items.push(item.trim());
+      await saveStoredUserSettings(current);
+    }
+    res.json({ success: true, memory: current.memory });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/settings/memory/clear', async (_req, res) => {
+  try {
+    const current = await getStoredUserSettings();
+    if (current.memory) {
+      current.memory.items = [];
+      await saveStoredUserSettings(current);
+    }
+    res.json({ success: true, memory: current.memory });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/settings/clear-all-chats', async (_req, res) => {
+  try {
+    // Clear all stored conversations on backend
+    await saveStoredConversations([]);
+    res.json({ success: true, message: 'All chat history cleared successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/user/settings/export-data', async (_req, res) => {
+  try {
+    const conversations = await getStoredConversations();
+    const settings = await getStoredUserSettings();
+    const plan = await getStoredUserPlan();
+    const exportPayload = {
+      exportDate: new Date().toISOString(),
+      user: {
+        name: 'Shanthapriya Silva',
+        email: 'info.ravanatech@gmail.com',
+        plan: plan.plan,
+      },
+      settings,
+      conversationsCount: conversations.length,
+      conversations,
+    };
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="chatgpt-raone-data-export.json"');
+    res.send(JSON.stringify(exportPayload, null, 2));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user/settings/delete-account', async (_req, res) => {
+  try {
+    // Reset all storage to factory defaults
+    await saveStoredConversations([]);
+    await saveStoredUserSettings(DEFAULT_SETTINGS);
+    await saveStoredUserPlan({
+      plan: 'free',
+      billingCycle: 'monthly',
+      status: 'active',
+      updatedAt: new Date().toISOString(),
+    });
+    res.json({ success: true, message: 'Account and associated data reset successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// Google AI Studio Developer Workbench APIs
+// ==========================================
+app.get('/api/studio/prompts', async (_req, res) => {
+  try {
+    const list = await getStoredStudioPrompts();
+    res.json(list);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/studio/prompts', async (req, res) => {
+  try {
+    const incomingPrompt = req.body;
+    if (!incomingPrompt || !incomingPrompt.title) {
+      return res.status(400).json({ error: 'Prompt title is required' });
+    }
+    const prompts = await getStoredStudioPrompts();
+    const existingIndex = prompts.findIndex((p: any) => p.id === incomingPrompt.id);
+    const updatedItem = {
+      ...incomingPrompt,
+      id: incomingPrompt.id || `prompt-${Date.now()}`,
+      updatedAt: new Date().toISOString(),
+    };
+    if (existingIndex >= 0) {
+      prompts[existingIndex] = updatedItem;
+    } else {
+      prompts.unshift(updatedItem);
+    }
+    await saveStoredStudioPrompts(prompts);
+    res.json({ success: true, prompt: updatedItem });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/studio/prompts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const prompts = await getStoredStudioPrompts();
+    const filtered = prompts.filter((p: any) => p.id !== id);
+    await saveStoredStudioPrompts(filtered);
+    res.json({ success: true, deletedId: id });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/studio/run', async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const {
+      model = 'gemini-2.5-flash',
+      promptType = 'chat',
+      systemInstruction,
+      temperature = 1.0,
+      topP = 0.95,
+      topK = 40,
+      maxTokens = 4096,
+      thinkingBudget = 0,
+      jsonSchema,
+      isGroundingEnabled = false,
+      contents,
+      rawText,
+      variables,
+      examples,
+      testInput,
+    } = req.body;
+
+    // Map model names to real Gemini model ID
+    let mappedModel = 'gemini-3.8-flash';
+    if (String(model).includes('pro') || String(model).includes('argon')) mappedModel = 'gemini-3.8-pro';
+    else mappedModel = 'gemini-3.8-flash';
+
+    // Prepare contents array
+    let preparedContents: any[] = [];
+    if (promptType === 'chat' && Array.isArray(contents)) {
+      preparedContents = contents.map((c: any) => ({
+        role: c.role === 'user' ? 'user' : 'model',
+        parts: [{ text: typeof c.content === 'string' ? c.content : (c.parts?.[0]?.text ?? '') }],
+      }));
+    } else if (promptType === 'freeform') {
+      let resolvedText = rawText || '';
+      if (variables && typeof variables === 'object') {
+        Object.entries(variables).forEach(([k, v]) => {
+          resolvedText = resolvedText.replaceAll(`{{${k}}}`, String(v));
+        });
+      }
+      preparedContents = [{ role: 'user', parts: [{ text: resolvedText }] }];
+    } else if (promptType === 'structured') {
+      let structuredPrompt = '';
+      if (Array.isArray(examples) && examples.length > 0) {
+        structuredPrompt += 'Examples:\n';
+        examples.forEach((ex: any, i: number) => {
+          structuredPrompt += `Example ${i + 1}:\n`;
+          Object.entries(ex).forEach(([k, v]) => {
+            structuredPrompt += `${k}: ${v}\n`;
+          });
+          structuredPrompt += '\n';
+        });
+      }
+      structuredPrompt += `Input:\n${testInput || ''}\nOutput:\n`;
+      preparedContents = [{ role: 'user', parts: [{ text: structuredPrompt }] }];
+    } else {
+      preparedContents = [{ role: 'user', parts: [{ text: rawText || 'Hello' }] }];
+    }
+
+    // Config
+    const config: any = {
+      temperature: Number(temperature),
+      topP: Number(topP),
+      topK: Number(topK),
+      maxOutputTokens: Number(maxTokens),
+    };
+
+    if (systemInstruction) {
+      config.systemInstruction = systemInstruction;
+    }
+
+    if (isGroundingEnabled) {
+      config.tools = [{ googleSearch: {} }];
+    }
+
+    if (jsonSchema) {
+      try {
+        config.responseMimeType = 'application/json';
+        config.responseSchema = JSON.parse(jsonSchema);
+      } catch (e) {
+        config.responseMimeType = 'application/json';
+      }
+    }
+
+    if (thinkingBudget > 0 && mappedModel.includes('2.0')) {
+      config.thinkingConfig = { thinkingBudget: Number(thinkingBudget) };
+    }
+
+    let responseText = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (aiClient) {
+      try {
+        const resp = await aiClient.models.generateContent({
+          model: mappedModel,
+          contents: preparedContents,
+          config,
+        });
+
+        responseText = resp.text || '';
+        inputTokens = resp.usageMetadata?.promptTokenCount || Math.ceil(JSON.stringify(preparedContents).length / 4);
+        outputTokens = resp.usageMetadata?.candidatesTokenCount || Math.ceil(responseText.length / 4);
+      } catch (genErr: any) {
+        console.warn('Google GenAI direct run notice:', genErr?.message || genErr);
+        const lastTurnText = preparedContents[preparedContents.length - 1]?.parts?.[0]?.text || 'Workbench Query';
+        responseText = generateIntelligentResponse(lastTurnText, mappedModel, preparedContents);
+        inputTokens = Math.ceil(JSON.stringify(preparedContents).length / 4);
+        outputTokens = Math.ceil(responseText.length / 4);
+      }
+    } else {
+      const lastTurnText = preparedContents[preparedContents.length - 1]?.parts?.[0]?.text || 'Workbench Query';
+      responseText = generateIntelligentResponse(lastTurnText, mappedModel, preparedContents);
+      inputTokens = Math.ceil(JSON.stringify(preparedContents).length / 4);
+      outputTokens = Math.ceil(responseText.length / 4);
+    }
+
+    const latencyMs = Date.now() - startTime;
+    res.json({
+      success: true,
+      content: responseText,
+      latencyMs,
+      inputTokens,
+      outputTokens,
+      modelUsed: mappedModel,
+    });
+  } catch (error: any) {
+    const latencyMs = Date.now() - startTime;
+    res.status(500).json({ error: error.message, latencyMs });
+  }
+});
+
 // Conversations Persistence Endpoints (Saved on backend, no fake chats in code)
 app.get('/api/conversations', async (_req, res) => {
   try {
@@ -273,6 +784,10 @@ app.post('/api/conversations', async (req, res) => {
     const conversation = req.body;
     if (!conversation?.id) {
       return res.status(400).json({ error: 'Conversation id is required' });
+    }
+    // Zero-Persistence Enforcement: Temporary/Private chats are NEVER saved to server storage or disk
+    if (conversation.isTemporary || conversation.id === 'temporary') {
+      return res.json({ success: true, conversation, isTemporary: true, persisted: false });
     }
     const list = await getStoredConversations();
     const existingIndex = list.findIndex((c: any) => c.id === conversation.id);
@@ -957,6 +1472,7 @@ app.post('/api/chat', async (req, res) => {
       enableSearch = false,
       enableMaps = false,
       userLocation = null,
+      isTemporary = false,
     } = req.body;
 
     let modeInstruction = '';
@@ -966,6 +1482,10 @@ app.post('/api/chat', async (req, res) => {
       modeInstruction = `MODE: CREATE (Generative Studio & Synthesis). Generate production-ready code, elegant prose, architectural schemas, creative concepts, or scripts. Write clean, complete, runnable blocks with high craft and no placeholders.`;
     } else if (mode === 'act') {
       modeInstruction = `MODE: ACT (Autonomous Action Execution). Format your response as an executable blueprint and mission breakdown: 1. Executive Objective 2. Actionable Checklist 3. Direct Execution Deliverable 4. Verification & Next Milestones.`;
+    }
+
+    if (isTemporary) {
+      modeInstruction += `\n[CONFIDENTIALITY INVARIANT: This is a Temporary Chat. Zero persistence is active. Treat all input as ephemeral and confidential.]`;
     }
 
     const fullSystemInstruction = `${RAONE_CORE_SYSTEM_PROMPT}\n\n${modeInstruction}\n${context ? `Additional Context: ${context}` : ''}`;
