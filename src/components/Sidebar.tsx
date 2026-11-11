@@ -102,9 +102,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className="w-[260px] bg-[#000000] text-[#ECECEC] flex flex-col h-full border-r border-[#1a1a1a] shrink-0 select-none z-40 transition-all duration-200">
-      {/* Top Header Row: ChatGPT title + Search + Collapse icon */}
+      {/* Top Header Row: Uploaded Logo + RaOne Studio + Search + Collapse icon */}
       <div className="h-14 px-4 flex items-center justify-between shrink-0">
-        <span className="text-[17px] font-semibold text-white tracking-tight">ChatGPT</span>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <img
+            src="/assets/aistudio/RaOne_Logo_c8b49006.png"
+            alt="RaOne Logo"
+            className="w-6 h-6 object-contain rounded-md shrink-0 drop-shadow-[0_0_8px_rgba(56,189,248,0.4)]"
+          />
+          <span className="text-[16px] font-semibold text-white tracking-tight truncate">
+            RaOne AI Studio
+          </span>
+        </div>
 
         <div className="flex items-center gap-1">
           <button
@@ -195,22 +204,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span>Plugins</span>
         </button>
 
-        {/* Google AI Studio Developer Workbench & Model Playground Button */}
+        {/* RaOne Code Studio Button */}
         <button
           onClick={onOpenAIStudio}
           className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="Google AI Studio — Model Playgrounds, Developer Platforms, LLM Workbenches & Prototyping"
+          title="RaOne Code Studio — App Builder, Templates, and Prototyping"
         >
-          <div className="flex items-center gap-3">
-            <div className="w-4 h-4 rounded-md bg-gradient-to-tr from-[#1A73E8] via-[#8AB4F8] to-[#EA4335] flex items-center justify-center p-0.5 shadow-sm group-hover:scale-105 transition-transform">
-              <Sparkles className="w-3 h-3 text-white" />
-            </div>
-            <span className="font-medium text-white group-hover:text-blue-300 transition-colors">
-              AI Studio
+          <div className="flex items-center gap-3 min-w-0">
+            <img
+              src="/assets/aistudio/Futuristic_R_Code_Monogram_Icon_9ade2cba.png"
+              alt="RaOne Code Logo"
+              className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.6)] group-hover:scale-110 transition-transform"
+            />
+            <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
+              RaOne Code Studio
             </span>
           </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30">
-            Workbench
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 shrink-0">
+            Studio
           </span>
         </button>
       </div>

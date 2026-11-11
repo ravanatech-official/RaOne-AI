@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Google Maps Explorer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body class="bg-[#0f1115] text-white flex flex-col h-screen overflow-hidden">
+  <header class="h-14 px-5 bg-[#181a20] border-b border-[#2d3139] flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">📍</div>
+      <h1 class="text-sm font-semibold tracking-tight">Google Maps Live Explorer</h1>
+    </div>
+    <div class="flex items-center gap-2">
+      <input id="searchBox" type="text" placeholder="Search city or coords..." class="bg-[#242831] border border-[#3b404d] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none w-56" />
+      <button onclick="searchPlace()" class="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs">Search</button>
+    </div>
+  </header>
+  <div id="map" class="flex-1 w-full h-full"></div>
+  <script>
+    const map = L.map('map').setView([6.9271, 79.8612], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    L.marker([6.9271, 79.8612]).addTo(map).bindPopup('Colombo, Sri Lanka').openPopup();
+    function searchPlace() {
+      const q = document.getElementById('searchBox').value.trim();
+      if (!q) return;
+      fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q))
+        .then(r => r.json())
+        .then(d => {
+          if (d && d[0]) {
+            map.setView([parseFloat(d[0].lat), parseFloat(d[0].lon)], 14);
+            L.marker([parseFloat(d[0].lat), parseFloat(d[0].lon)]).addTo(map).bindPopup(d[0].display_name).openPopup();
+          }
+        });
+    }
+  </script>
+</body>
+</html>
