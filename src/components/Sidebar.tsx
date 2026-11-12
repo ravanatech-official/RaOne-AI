@@ -13,6 +13,7 @@ import {
   Check,
   PanelLeft,
   Settings,
+  Video,
 } from 'lucide-react';
 import { Conversation } from '../types/index.ts';
 
@@ -38,6 +39,7 @@ interface SidebarProps {
   onOpenUpgrade?: () => void;
   onOpenAIStudio?: () => void;
   onOpenVisionStudio?: () => void;
+  onOpenMotionStudio?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -59,6 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenUpgrade,
   onOpenAIStudio,
   onOpenVisionStudio,
+  onOpenMotionStudio,
 }) => {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -245,6 +248,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 shrink-0">
             T2I LDM
+          </span>
+        </button>
+
+        {/* RaOne Motion Studio Button (Generative Video & Motion Synthesis) */}
+        <button
+          onClick={onOpenMotionStudio}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Cinema Studio — Generative Video & Motion Synthesis (Google Veo 2, OpenAI Sora, Runway Gen-3, Kling AI, Luma Dream Machine)"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-4 h-4 rounded bg-gradient-to-tr from-cyan-400 via-blue-500 to-indigo-600 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.7)] group-hover:scale-110 transition-transform">
+              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
+                <Video className="w-2.5 h-2.5 text-cyan-300" />
+              </div>
+            </div>
+            <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
+              RaOne Cinema Studio
+            </span>
+          </div>
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shrink-0">
+            T2V DiT
           </span>
         </button>
       </div>

@@ -150,3 +150,42 @@ export interface ImageGenerationOptions {
   promptMagic?: boolean;
   referenceImage?: string | null;
 }
+
+export interface GeneratedVideoItem {
+  id: string;
+  prompt: string;
+  negativePrompt?: string;
+  model: string;
+  cameraMotion: string;
+  motionStrength: number;
+  duration: number; // in seconds, e.g. 5, 10
+  fps: number; // 24, 30, 60
+  aspectRatio: string;
+  dimensions: string;
+  videoUrl: string;
+  posterUrl: string;
+  mode: 'text-to-video' | 'image-to-video';
+  referenceImage?: string | null;
+  seed: number;
+  createdAt: string;
+  isFavorite?: boolean;
+  upscaled?: boolean;
+  extended?: boolean;
+  interpolated?: boolean;
+}
+
+export interface VideoGenerationOptions {
+  prompt: string;
+  negativePrompt?: string;
+  model?: string;
+  cameraMotion?: string;
+  motionStrength?: number;
+  duration?: number;
+  fps?: number;
+  aspectRatio?: string;
+  dimensions?: string;
+  mode?: 'text-to-video' | 'image-to-video';
+  referenceImage?: string | null;
+  seed?: number;
+}
+

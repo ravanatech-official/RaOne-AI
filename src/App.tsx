@@ -17,6 +17,7 @@ import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal.tsx'
 import { UpgradeModal } from './components/UpgradeModal.tsx';
 import { GoogleAIStudioWorkbench } from './components/GoogleAIStudioWorkbench.tsx';
 import { LeonardoVisionStudio } from './components/LeonardoVisionStudio.tsx';
+import { LeonardoMotionStudio } from './components/LeonardoMotionStudio.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
@@ -59,6 +60,7 @@ export default function App() {
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState<boolean>(false);
   const [isGoogleAIStudioOpen, setIsGoogleAIStudioOpen] = useState<boolean>(false);
   const [isVisionStudioOpen, setIsVisionStudioOpen] = useState<boolean>(false);
+  const [isMotionStudioOpen, setIsMotionStudioOpen] = useState<boolean>(false);
   const [currentPlan, setCurrentPlan] = useState<'free' | 'plus' | 'ultimate'>('free');
   const [searchTrigger, setSearchTrigger] = useState<number>(0);
   const [inputFocusTrigger, setInputFocusTrigger] = useState<number>(0);
@@ -569,6 +571,7 @@ export default function App() {
         onOpenUpgrade={() => setIsUpgradeModalOpen(true)}
         onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
         onOpenVisionStudio={() => setIsVisionStudioOpen(true)}
+        onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
       />
 
       {/* Main Chat Workspace */}
@@ -799,6 +802,12 @@ export default function App() {
       <LeonardoVisionStudio
         isOpen={isVisionStudioOpen}
         onClose={() => setIsVisionStudioOpen(false)}
+      />
+
+      {/* RaOne Cinema Studio (Leonardo AI Motion & Video Diffusion Engine) */}
+      <LeonardoMotionStudio
+        isOpen={isMotionStudioOpen}
+        onClose={() => setIsMotionStudioOpen(false)}
       />
     </div>
   );
