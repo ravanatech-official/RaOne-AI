@@ -225,6 +225,8 @@ let OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 let ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 let DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 let XAI_API_KEY = process.env.XAI_API_KEY || '';
+let COMET_API_KEY = process.env.COMET_API_KEY || '';
+let COMET_API_BASE_URL = process.env.COMET_API_BASE_URL || 'https://api.cometapi.com/v1';
 
 function loadStoredApiKeys(): void {
   try {
@@ -245,6 +247,14 @@ function loadStoredApiKeys(): void {
       if (data.deepSeekApiKey) {
         DEEPSEEK_API_KEY = data.deepSeekApiKey;
         process.env.DEEPSEEK_API_KEY = data.deepSeekApiKey;
+      }
+      if (data.cometApiKey) {
+        COMET_API_KEY = data.cometApiKey;
+        process.env.COMET_API_KEY = data.cometApiKey;
+      }
+      if (data.cometApiBaseUrl) {
+        COMET_API_BASE_URL = data.cometApiBaseUrl;
+        process.env.COMET_API_BASE_URL = data.cometApiBaseUrl;
       }
     }
   } catch (err) {
@@ -277,6 +287,8 @@ function saveStoredApiKeys(): void {
       anthropicApiKey: ANTHROPIC_API_KEY,
       deepSeekApiKey: DEEPSEEK_API_KEY,
       xaiApiKey: XAI_API_KEY,
+      cometApiKey: COMET_API_KEY,
+      cometApiBaseUrl: COMET_API_BASE_URL,
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(API_KEYS_FILE, JSON.stringify(data, null, 2), 'utf-8');
@@ -397,6 +409,47 @@ async function callDeepSeek(modelName: string, messages: any[], systemPrompt: st
   return json.choices?.[0]?.message?.content || '';
 }
 
+// Helper: Call CometAPI (All-In-One OpenAI-compatible Gateway - cometapi.com)
+async function callCometAPI(
+  modelName: string,
+  messages: any[],
+  systemPrompt: string,
+  extraParams: Record<string, any> = {}
+): Promise<string> {
+  if (!COMET_API_KEY) throw new Error('COMET_API_KEY is not configured on server');
+  const baseUrl = (COMET_API_BASE_URL || 'https://api.cometapi.com/v1').replace(/\/+$/, '');
+
+  const formattedMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map((m: any) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content || (m.parts?.[0]?.text ?? ''),
+    })),
+  ];
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${COMET_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: formattedMessages,
+      temperature: extraParams.temperature ?? 0.7,
+      max_tokens: extraParams.max_tokens ?? 4096,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`CometAPI error (${response.status}): ${errText}`);
+  }
+
+  const json = await response.json();
+  return json.choices?.[0]?.message?.content || '';
+}
+
 // API Health Route
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -407,13 +460,14 @@ app.get('/api/health', (_req, res) => {
     voiceActivationPhrase: 'Hey RaOne',
     tagline: 'Think. Create. Act.',
     brandSignature: 'RaOne AI by RavanaTec',
-    hasApiKey: Boolean(apiKey),
+    hasApiKey: Boolean(apiKey || COMET_API_KEY),
     providers: {
       gemini: Boolean(apiKey),
       openai: Boolean(OPENAI_API_KEY),
       anthropic: Boolean(ANTHROPIC_API_KEY),
       deepseek: Boolean(DEEPSEEK_API_KEY),
       xai: Boolean(XAI_API_KEY),
+      cometapi: Boolean(COMET_API_KEY),
     },
   });
 });
@@ -427,7 +481,7 @@ app.get('/api/models', (_req, res) => {
         name: 'RaOne Flash',
         tag: 'High Velocity · Recommended',
         description: 'Fast, multimodal & intelligent (Powered by Gemini 2.5 Flash)',
-        active: Boolean(apiKey),
+        active: Boolean(apiKey || COMET_API_KEY),
         provider: 'Gemini',
       },
       {
@@ -435,39 +489,47 @@ app.get('/api/models', (_req, res) => {
         name: 'RaOne Argon',
         tag: 'Deep Reasoning & Logic',
         description: 'Deep cognitive reasoning & systems code (Powered by Gemini 2.5 Pro)',
-        active: Boolean(apiKey),
+        active: Boolean(apiKey || COMET_API_KEY),
         provider: 'Gemini',
+      },
+      {
+        id: 'comet-all-in-one',
+        name: 'CometAPI All-In-One',
+        tag: 'Unified Multi-Model Gateway',
+        description: 'Access 500+ models (GPT-4o, Claude 3.5, Gemini, DeepSeek R1) via cometapi.com',
+        active: Boolean(COMET_API_KEY),
+        provider: 'CometAPI',
       },
       {
         id: 'raone-deepseek-r1',
         name: 'RaOne DeepSeek R1',
         tag: 'Deep Reasoning Matrix',
-        description: 'Open reasoning & algorithmic proofs (DeepSeek R1 / Gemini CoT)',
-        active: Boolean(DEEPSEEK_API_KEY || apiKey),
-        provider: DEEPSEEK_API_KEY ? 'DeepSeek' : 'Gemini Hybrid',
+        description: 'Open reasoning & algorithmic proofs (DeepSeek R1 / CometAPI / Gemini CoT)',
+        active: Boolean(DEEPSEEK_API_KEY || COMET_API_KEY || apiKey),
+        provider: DEEPSEEK_API_KEY ? 'DeepSeek' : COMET_API_KEY ? 'CometAPI' : 'Gemini Hybrid',
       },
       {
         id: 'raone-gpt4o',
         name: 'RaOne GPT-4o',
         tag: 'Omni Intelligence',
-        description: 'Advanced vision & omni reasoning (OpenAI GPT-4o / Gemini Hybrid)',
-        active: Boolean(OPENAI_API_KEY || apiKey),
-        provider: OPENAI_API_KEY ? 'OpenAI' : 'Gemini Hybrid',
+        description: 'Advanced vision & omni reasoning (OpenAI GPT-4o / CometAPI / Gemini Hybrid)',
+        active: Boolean(OPENAI_API_KEY || COMET_API_KEY || apiKey),
+        provider: OPENAI_API_KEY ? 'OpenAI' : COMET_API_KEY ? 'CometAPI' : 'Gemini Hybrid',
       },
       {
         id: 'raone-claude',
         name: 'RaOne Claude 3.5',
         tag: 'Architecture & Prose',
-        description: 'State-of-the-art coding and prose (Claude 3.5 Sonnet / Gemini Hybrid)',
-        active: Boolean(ANTHROPIC_API_KEY || apiKey),
-        provider: ANTHROPIC_API_KEY ? 'Anthropic' : 'Gemini Hybrid',
+        description: 'State-of-the-art coding and prose (Claude 3.5 Sonnet / CometAPI / Gemini Hybrid)',
+        active: Boolean(ANTHROPIC_API_KEY || COMET_API_KEY || apiKey),
+        provider: ANTHROPIC_API_KEY ? 'Anthropic' : COMET_API_KEY ? 'CometAPI' : 'Gemini Hybrid',
       },
       {
         id: 'gemini-3.1-flash-lite',
         name: 'RaOne Lite',
         tag: 'Ultra Fast',
         description: 'Ultra-low latency instant streaming (Gemini 2.0 Flash Lite)',
-        active: Boolean(apiKey),
+        active: Boolean(apiKey || COMET_API_KEY),
         provider: 'Gemini',
       },
     ],
@@ -478,6 +540,7 @@ app.get('/api/models', (_req, res) => {
       anthropic: Boolean(ANTHROPIC_API_KEY),
       deepseek: Boolean(DEEPSEEK_API_KEY),
       xai: Boolean(XAI_API_KEY),
+      cometapi: Boolean(COMET_API_KEY),
     },
   });
 });
@@ -1862,36 +1925,110 @@ app.get('/api/keys', (_req, res) => {
     openAiConfigured: Boolean(OPENAI_API_KEY || process.env.OPENAI_API_KEY),
     anthropicConfigured: Boolean(ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY),
     deepSeekConfigured: Boolean(DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY),
+    cometApiConfigured: Boolean(COMET_API_KEY || process.env.COMET_API_KEY),
+    cometApiBaseUrl: COMET_API_BASE_URL || 'https://api.cometapi.com/v1',
   });
 });
 
 app.post('/api/keys', async (req, res) => {
   try {
-    const { geminiApiKey, openAiApiKey, anthropicApiKey, deepSeekApiKey } = req.body;
-    if (geminiApiKey) {
+    const { geminiApiKey, openAiApiKey, anthropicApiKey, deepSeekApiKey, cometApiKey, cometApiBaseUrl } = req.body;
+    if (geminiApiKey !== undefined) {
       process.env.GEMINI_API_KEY = geminiApiKey;
       apiKey = geminiApiKey;
-      aiClient = new GoogleGenAI({
-        apiKey: geminiApiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      });
+      aiClient = geminiApiKey
+        ? new GoogleGenAI({
+            apiKey: geminiApiKey,
+            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+          })
+        : null;
     }
-    if (openAiApiKey) {
+    if (openAiApiKey !== undefined) {
       process.env.OPENAI_API_KEY = openAiApiKey;
       OPENAI_API_KEY = openAiApiKey;
     }
-    if (anthropicApiKey) {
+    if (anthropicApiKey !== undefined) {
       process.env.ANTHROPIC_API_KEY = anthropicApiKey;
       ANTHROPIC_API_KEY = anthropicApiKey;
     }
-    if (deepSeekApiKey) {
+    if (deepSeekApiKey !== undefined) {
       process.env.DEEPSEEK_API_KEY = deepSeekApiKey;
       DEEPSEEK_API_KEY = deepSeekApiKey;
+    }
+    if (cometApiKey !== undefined) {
+      process.env.COMET_API_KEY = cometApiKey;
+      COMET_API_KEY = cometApiKey;
+    }
+    if (cometApiBaseUrl !== undefined) {
+      process.env.COMET_API_BASE_URL = cometApiBaseUrl;
+      COMET_API_BASE_URL = cometApiBaseUrl;
     }
     saveStoredApiKeys();
     res.json({ success: true, message: 'API keys updated and persisted successfully on server.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// CometAPI Test Endpoint
+app.post('/api/comet/test', async (req, res) => {
+  try {
+    const { cometApiKey, cometApiBaseUrl } = req.body;
+    const testKey = cometApiKey || COMET_API_KEY;
+    const testBaseUrl = (cometApiBaseUrl || COMET_API_BASE_URL || 'https://api.cometapi.com/v1').replace(/\/+$/, '');
+
+    if (!testKey) {
+      return res.status(400).json({ error: 'Please enter a CometAPI API Key to test.' });
+    }
+
+    const testStartTime = Date.now();
+    // Test with lightweight completion request
+    const response = await fetch(`${testBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${testKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Ping! Reply with "Pong: CometAPI Active".' }],
+        max_tokens: 30,
+      }),
+    });
+
+    const latencyMs = Date.now() - testStartTime;
+
+    if (!response.ok) {
+      // Fallback test via /models
+      const modelsResp = await fetch(`${testBaseUrl}/models`, {
+        headers: { Authorization: `Bearer ${testKey}` },
+      });
+      if (modelsResp.ok) {
+        return res.json({
+          success: true,
+          message: 'Connected to CometAPI successfully! (Verified via /models catalog)',
+          latencyMs,
+          baseUrl: testBaseUrl,
+        });
+      }
+      const errText = await response.text();
+      return res.status(response.status).json({
+        error: `CometAPI returned ${response.status}: ${errText.slice(0, 160)}`,
+        latencyMs,
+      });
+    }
+
+    const data = await response.json();
+    const reply = data.choices?.[0]?.message?.content || 'Pong: CometAPI Active';
+    return res.json({
+      success: true,
+      message: 'CometAPI connection verified! All-In-One Unified Gateway is active.',
+      reply,
+      latencyMs,
+      baseUrl: testBaseUrl,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to connect to CometAPI' });
   }
 });
 
@@ -1925,56 +2062,134 @@ app.post('/api/chat', async (req, res) => {
 
     const fullSystemInstruction = `${RAONE_CORE_SYSTEM_PROMPT}\n\n${modeInstruction}\n${context ? `Additional Context: ${context}` : ''}`;
 
-    // Provider 1: OpenAI (GPT-4o) if requested and configured
-    if (model === 'raone-gpt4o' && OPENAI_API_KEY) {
+    // Provider 0: CometAPI Dedicated Mode or CometAPI Fallback for External Models
+    if (model === 'comet-all-in-one' && COMET_API_KEY) {
       try {
-        const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
         return res.json({
           text,
           mode,
-          model: 'raone-gpt4o',
+          model: 'comet-all-in-one',
           groundingSources: [],
-          brandSignature: 'RaOne AI by RavanaTec',
+          brandSignature: 'RaOne AI by RavanaTec (via CometAPI Gateway)',
         });
-      } catch (openAiErr: any) {
-        console.warn('OpenAI proxy warning, falling back to RaOne Hybrid:', openAiErr.message);
+      } catch (cometErr: any) {
+        console.warn('CometAPI route notice:', cometErr.message);
       }
     }
 
-    // Provider 2: Anthropic (Claude 3.5 Sonnet) if requested and configured
-    if (model === 'raone-claude' && ANTHROPIC_API_KEY) {
-      try {
-        const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
-        return res.json({
-          text,
-          mode,
-          model: 'raone-claude',
-          groundingSources: [],
-          brandSignature: 'RaOne AI by RavanaTec',
-        });
-      } catch (claudeErr: any) {
-        console.warn('Anthropic proxy warning, falling back to RaOne Hybrid:', claudeErr.message);
+    // Provider 1: OpenAI (GPT-4o) if requested and configured (or via CometAPI)
+    if (model === 'raone-gpt4o') {
+      if (OPENAI_API_KEY) {
+        try {
+          const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          return res.json({
+            text,
+            mode,
+            model: 'raone-gpt4o',
+            groundingSources: [],
+            brandSignature: 'RaOne AI by RavanaTec',
+          });
+        } catch (openAiErr: any) {
+          console.warn('OpenAI proxy warning:', openAiErr.message);
+        }
+      } else if (COMET_API_KEY) {
+        try {
+          const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          return res.json({
+            text,
+            mode,
+            model: 'raone-gpt4o',
+            groundingSources: [],
+            brandSignature: 'RaOne AI by RavanaTec (via CometAPI)',
+          });
+        } catch (cometErr: any) {
+          console.warn('CometAPI GPT-4o proxy warning:', cometErr.message);
+        }
       }
     }
 
-    // Provider 3: DeepSeek (R1 Reasoner) if requested and configured
-    if (model === 'raone-deepseek-r1' && DEEPSEEK_API_KEY) {
+    // Provider 2: Anthropic (Claude 3.5 Sonnet) if requested and configured (or via CometAPI)
+    if (model === 'raone-claude') {
+      if (ANTHROPIC_API_KEY) {
+        try {
+          const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          return res.json({
+            text,
+            mode,
+            model: 'raone-claude',
+            groundingSources: [],
+            brandSignature: 'RaOne AI by RavanaTec',
+          });
+        } catch (claudeErr: any) {
+          console.warn('Anthropic proxy warning:', claudeErr.message);
+        }
+      } else if (COMET_API_KEY) {
+        try {
+          const text = await callCometAPI('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          return res.json({
+            text,
+            mode,
+            model: 'raone-claude',
+            groundingSources: [],
+            brandSignature: 'RaOne AI by RavanaTec (via CometAPI)',
+          });
+        } catch (cometErr: any) {
+          console.warn('CometAPI Claude proxy warning:', cometErr.message);
+        }
+      }
+    }
+
+    // Provider 3: DeepSeek (R1 Reasoner) if requested and configured (or via CometAPI)
+    if (model === 'raone-deepseek-r1') {
+      if (DEEPSEEK_API_KEY) {
+        try {
+          const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          return res.json({
+            text,
+            mode,
+            model: 'raone-deepseek-r1',
+            groundingSources: [],
+            brandSignature: 'RaOne AI by RavanaTec',
+          });
+        } catch (deepseekErr: any) {
+          console.warn('DeepSeek proxy warning:', deepseekErr.message);
+        }
+      } else if (COMET_API_KEY) {
+        try {
+          const text = await callCometAPI('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          return res.json({
+            text,
+            mode,
+            model: 'raone-deepseek-r1',
+            groundingSources: [],
+            brandSignature: 'RaOne AI by RavanaTec (via CometAPI)',
+          });
+        } catch (cometErr: any) {
+          console.warn('CometAPI DeepSeek proxy warning:', cometErr.message);
+        }
+      }
+    }
+
+    // CometAPI fallback for Gemini models if Gemini API key is missing
+    if (!aiClient && COMET_API_KEY) {
       try {
-        const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        const cometTargetModel = model.includes('argon') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+        const text = await callCometAPI(cometTargetModel, [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
         return res.json({
           text,
           mode,
-          model: 'raone-deepseek-r1',
+          model,
           groundingSources: [],
-          brandSignature: 'RaOne AI by RavanaTec',
+          brandSignature: 'RaOne AI by RavanaTec (via CometAPI)',
         });
-      } catch (deepseekErr: any) {
-        console.warn('DeepSeek proxy warning, falling back to RaOne Hybrid:', deepseekErr.message);
+      } catch (cometErr: any) {
+        console.warn('CometAPI fallback notice:', cometErr.message);
       }
     }
 
     // Validate Google Gemini model selection
-    const allowedModels = ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.1-flash-lite', 'raone-gpt4o', 'raone-claude', 'raone-deepseek-r1'];
+    const allowedModels = ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.1-flash-lite', 'raone-gpt4o', 'raone-claude', 'raone-deepseek-r1', 'comet-all-in-one'];
     let activeModel = 'gemini-3.8-flash';
     if (model === 'gemini-4-argon' || model === 'raone-argon' || model === 'raone-claude' || model === 'raone-deepseek-r1') {
       activeModel = 'gemini-4-argon';

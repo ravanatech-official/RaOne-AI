@@ -19,6 +19,10 @@ import {
   RotateCcw,
   ExternalLink,
   Plus,
+  Eye,
+  EyeOff,
+  Zap,
+  Globe,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -91,18 +95,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [anthropicKey, setAnthropicKey] = useState('');
   const [deepSeekKey, setDeepSeekKey] = useState('');
   const [xaiKey, setXaiKey] = useState('');
+  const [cometKey, setCometKey] = useState('');
+  const [cometBaseUrl, setCometBaseUrl] = useState('https://api.cometapi.com/v1');
+  const [showCometKey, setShowCometKey] = useState(false);
+  const [cometTesting, setCometTesting] = useState(false);
+  const [cometTestResult, setCometTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
+
   const [keysConfigured, setKeysConfigured] = useState<{
     geminiConfigured: boolean;
     openAiConfigured: boolean;
     anthropicConfigured: boolean;
     deepSeekConfigured: boolean;
     xaiConfigured?: boolean;
+    cometApiConfigured?: boolean;
+    cometApiBaseUrl?: string;
   }>({
     geminiConfigured: false,
     openAiConfigured: false,
     anthropicConfigured: false,
     deepSeekConfigured: false,
     xaiConfigured: false,
+    cometApiConfigured: false,
+    cometApiBaseUrl: 'https://api.cometapi.com/v1',
   });
 
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -143,12 +157,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       fetch('/api/keys')
         .then((res) => res.json())
-        .then((data) => setKeysConfigured(data))
+        .then((data) => {
+          setKeysConfigured(data);
+          if (data?.cometApiBaseUrl) {
+            setCometBaseUrl(data.cometApiBaseUrl);
+          }
+        })
         .catch(() => {});
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  // Test CometAPI connection
+  const handleTestCometApi = async () => {
+    setCometTesting(true);
+    setCometTestResult(null);
+    try {
+      const res = await fetch('/api/comet/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cometApiKey: cometKey || undefined,
+          cometApiBaseUrl: cometBaseUrl || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCometTestResult({ success: true, message: data.message || 'Connected to CometAPI successfully!' });
+      } else {
+        setCometTestResult({ success: false, message: data.error || 'Connection failed' });
+      }
+    } catch (err: any) {
+      setCometTestResult({ success: false, message: err.message || 'Network error' });
+    } finally {
+      setCometTesting(false);
+    }
+  };
 
   // Save Settings to Backend API
   const handleSave = async () => {
@@ -185,8 +230,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         body: JSON.stringify(payload),
       });
 
-      // Save API keys if any entered
-      if (geminiKey || openAiKey || anthropicKey || deepSeekKey || xaiKey) {
+      // Save API keys if any entered or updated
+      if (geminiKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || cometBaseUrl) {
         await fetch('/api/keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -196,6 +241,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             anthropicApiKey: anthropicKey || undefined,
             deepSeekApiKey: deepSeekKey || undefined,
             xaiApiKey: xaiKey || undefined,
+            cometApiKey: cometKey || undefined,
+            cometApiBaseUrl: cometBaseUrl || undefined,
           }),
         });
       }
@@ -814,6 +861,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   >
                     <option value="gemini-3.8-flash">RaOne Flash (High Velocity · Recommended)</option>
                     <option value="gemini-4-argon">RaOne Argon (Deep Cognitive Reasoning & Systems Logic)</option>
+                    <option value="comet-all-in-one">CometAPI All-In-One (Multi-Model Gateway: GPT-4o, Claude, DeepSeek, Gemini)</option>
                     <option value="raone-deepseek-r1">RaOne DeepSeek R1 (Open Deep Reasoning Matrix)</option>
                     <option value="raone-gpt4o">RaOne GPT-4o (Omni Intelligence)</option>
                     <option value="raone-claude">RaOne Claude 3.5 (State-of-the-Art Code & Architecture)</option>
@@ -821,9 +869,134 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </select>
                 </div>
 
+                {/* CometAPI All-In-One Gateway Card */}
+                <div className="p-4 rounded-2xl bg-gradient-to-b from-[#131b26] to-[#0c1017] border border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.12)] space-y-3.5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none" />
+                  
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                        <Zap className="w-4 h-4 text-cyan-300" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white tracking-wide">CometAPI</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold uppercase">
+                            All-In-One Gateway
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-[#94a3b8]">
+                          Unified AI API for 500+ models (GPT-4o, Claude, DeepSeek, Gemini, Midjourney)
+                        </div>
+                      </div>
+                    </div>
+
+                    <span
+                      className={`text-[10px] px-2.5 py-1 rounded-full font-semibold border ${
+                        keysConfigured.cometApiConfigured
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-[0_0_10px_rgba(16,185,129,0.2)]'
+                          : 'bg-[#242424] text-[#8e8e8e] border-[#383838]'
+                      }`}
+                    >
+                      {keysConfigured.cometApiConfigured ? 'Active / Connected' : 'Not Set'}
+                    </span>
+                  </div>
+
+                  {/* CometAPI Key Input */}
+                  <div>
+                    <label className="flex items-center justify-between text-xs font-medium text-[#cbd5e1] mb-1">
+                      <span>CometAPI Key</span>
+                      <a
+                        href="https://cometapi.com"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 transition-colors"
+                      >
+                        <span>Get key from cometapi.com</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showCometKey ? 'text' : 'password'}
+                        value={cometKey}
+                        onChange={(e) => setCometKey(e.target.value)}
+                        placeholder="sk-..."
+                        className="w-full bg-[#16202c] border border-cyan-500/30 rounded-xl px-3 py-2 pr-10 text-xs text-white focus:outline-none focus:border-cyan-400 font-mono placeholder-[#475569]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCometKey(!showCometKey)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#94a3b8] hover:text-white p-1"
+                        title={showCometKey ? 'Hide key' : 'Show key'}
+                      >
+                        {showCometKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* CometAPI Base URL Input */}
+                  <div>
+                    <label className="block text-xs font-medium text-[#cbd5e1] mb-1">
+                      API Base URL (Default: https://api.cometapi.com/v1)
+                    </label>
+                    <input
+                      type="text"
+                      value={cometBaseUrl}
+                      onChange={(e) => setCometBaseUrl(e.target.value)}
+                      placeholder="https://api.cometapi.com/v1"
+                      className="w-full bg-[#16202c] border border-[#2d3d50] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400 font-mono placeholder-[#475569]"
+                    />
+                  </div>
+
+                  {/* Test Connection & Feedback */}
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTestCometApi}
+                      disabled={cometTesting || (!cometKey && !keysConfigured.cometApiConfigured)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {cometTesting ? (
+                        <>
+                          <RotateCcw className="w-3 h-3 animate-spin" />
+                          <span>Testing Gateway...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-3 h-3" />
+                          <span>Test CometAPI Connection</span>
+                        </>
+                      )}
+                    </button>
+
+                    <div className="text-[10px] text-[#94a3b8]">
+                      Click <strong className="text-white">Save & Apply</strong> below to persist.
+                    </div>
+                  </div>
+
+                  {/* Test Result Notice */}
+                  {cometTestResult && (
+                    <div
+                      className={`p-2.5 rounded-xl text-xs flex items-center gap-2 animate-in fade-in ${
+                        cometTestResult.success
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                          : 'bg-red-500/15 border border-red-500/30 text-red-300'
+                      }`}
+                    >
+                      {cometTestResult.success ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                      )}
+                      <span>{cometTestResult.message}</span>
+                    </div>
+                  )}
+                </div>
+
                 {/* API Keys Configuration */}
                 <div className="space-y-3.5">
-                  <div className="text-sm font-semibold text-white">External Model API Keys</div>
+                  <div className="text-sm font-semibold text-white">Direct / Standalone API Keys (Optional Fallbacks)</div>
 
                   <div>
                     <div className="flex items-center justify-between mb-1">

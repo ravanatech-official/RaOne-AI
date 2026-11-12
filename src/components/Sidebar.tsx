@@ -172,7 +172,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title={`New chat (${modKey}+K)`}
         >
           <div className="flex items-center gap-2.5">
-            <SquarePen className="w-4 h-4 text-white" />
+            <img
+              src="/assets/aistudio/New_Chat_1de020da.png"
+              alt="New Chat"
+              className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(56,189,248,0.6)] group-hover:scale-110 transition-transform"
+            />
             <span>New chat</span>
           </div>
           <span className="text-[10px] text-[#737373] font-mono px-1.5 py-0.5 rounded bg-[#141414] border border-[#2d2d2d] group-hover:text-[#b4b4b4]">
@@ -183,22 +187,89 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Main Navigation Items list */}
       <div className="px-3 py-1 space-y-0.5">
+
+
+        {/* RaOne Code Studio Button */}
         <button
-          onClick={() => onOpenStudioHub && onOpenStudioHub('image')}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors"
+          onClick={onOpenAIStudio}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Code Studio — App Builder, Templates, and Prototyping"
         >
-          <ImageIcon className="w-4 h-4 text-[#8e8e8e]" />
-          <span>Images</span>
+          <img
+            src="/assets/aistudio/RaOne_Code_Studio_4ceb2ebb.png"
+            alt="RaOne Code Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.6)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
+            RaOne Code Studio
+          </span>
         </button>
 
+        {/* RaOne Vision Studio Button (Leonardo AI T2I Engine) */}
         <button
-          onClick={onNewChat}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors"
+          onClick={onOpenVisionStudio}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Vision Studio — Leonardo AI Engine (Midjourney v6.1, Flux 1.1 Pro, Imagen 3, DALL-E 3)"
         >
-          <Clock className="w-4 h-4 text-[#8e8e8e]" />
-          <span>Scheduled</span>
+          <img
+            src="/assets/aistudio/RaOne_Vision_Studio_03e7859b.png"
+            alt="RaOne Vision Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(56,189,248,0.6)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-purple-300 transition-colors truncate">
+            RaOne Vision Studio
+          </span>
         </button>
 
+        {/* RaOne Motion Studio Button (Generative Video & Motion Synthesis) */}
+        <button
+          onClick={onOpenMotionStudio}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Cinema Studio — Generative Video & Motion Synthesis (Google Veo 2, OpenAI Sora, Runway Gen-3, Kling AI, Luma Dream Machine)"
+        >
+          <img
+            src="/assets/aistudio/RaOne_Cinema_Studio_561b5a2a.png"
+            alt="RaOne Cinema Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.6)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
+            RaOne Cinema Studio
+          </span>
+        </button>
+
+        {/* RaOne Suno Audio Button (AI Music, Vocals & Beats Synthesis) */}
+        <button
+          onClick={onOpenAudioStudio}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Suno Audio — AI Music, Vocals & Beats Synthesis (Suno v4 Alpha, Udio 130, Google Lyria, ElevenLabs)"
+        >
+          <img
+            src="/assets/aistudio/RaOne_Music_Studio_25c5e404.png"
+            alt="RaOne Suno Audio Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(245,158,11,0.6)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-amber-300 transition-colors truncate">
+            RaOne Suno Audio
+          </span>
+        </button>
+
+        {/* RaOne DocuStudio Button (Intelligent Document Processing, NotebookLM, Gamma App & Copilot) */}
+        <button
+          onClick={onOpenDocumentStudio}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne DocuStudio — Intelligent Document Processing, NotebookLM, Gamma App & Copilot (PDFs, Slides, Spreadsheets, Graph-RAG)"
+        >
+          <img
+            src="/assets/aistudio/RaOne_Document_Studio_a4a1c2ae.png"
+            alt="RaOne DocuStudio Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(16,185,129,0.6)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-emerald-300 transition-colors truncate">
+            RaOne DocuStudio
+          </span>
+        </button>
+
+        {/* Library Button */}
         <button
           onClick={() => onOpenStudioHub && onOpenStudioHub('transcribe')}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors"
@@ -207,117 +278,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span>Library</span>
         </button>
 
+        {/* Plugins Button (moved under Library) */}
         <button
           onClick={onOpenSettings}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors"
         >
           <Boxes className="w-4 h-4 text-[#8e8e8e]" />
           <span>Plugins</span>
-        </button>
-
-        {/* RaOne Code Studio Button */}
-        <button
-          onClick={onOpenAIStudio}
-          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne Code Studio — App Builder, Templates, and Prototyping"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <img
-              src="/assets/aistudio/Futuristic_R_Code_Monogram_Icon_9ade2cba.png"
-              alt="RaOne Code Logo"
-              className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.6)] group-hover:scale-110 transition-transform"
-            />
-            <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
-              RaOne Code Studio
-            </span>
-          </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 shrink-0">
-            Studio
-          </span>
-        </button>
-
-        {/* RaOne Vision Studio Button (Leonardo AI T2I Engine) */}
-        <button
-          onClick={onOpenVisionStudio}
-          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne Vision Studio — Leonardo AI Engine (Midjourney v6.1, Flux 1.1 Pro, Imagen 3, DALL-E 3)"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-4 h-4 rounded bg-gradient-to-tr from-cyan-500 via-purple-500 to-amber-500 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(168,85,247,0.7)] group-hover:scale-110 transition-transform">
-              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
-                <Sparkles className="w-2.5 h-2.5 text-amber-300" />
-              </div>
-            </div>
-            <span className="font-medium text-white group-hover:text-purple-300 transition-colors truncate">
-              RaOne Vision Studio
-            </span>
-          </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 shrink-0">
-            T2I LDM
-          </span>
-        </button>
-
-        {/* RaOne Motion Studio Button (Generative Video & Motion Synthesis) */}
-        <button
-          onClick={onOpenMotionStudio}
-          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne Cinema Studio — Generative Video & Motion Synthesis (Google Veo 2, OpenAI Sora, Runway Gen-3, Kling AI, Luma Dream Machine)"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-4 h-4 rounded bg-gradient-to-tr from-cyan-400 via-blue-500 to-indigo-600 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.7)] group-hover:scale-110 transition-transform">
-              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
-                <Video className="w-2.5 h-2.5 text-cyan-300" />
-              </div>
-            </div>
-            <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
-              RaOne Cinema Studio
-            </span>
-          </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shrink-0">
-            T2V DiT
-          </span>
-        </button>
-
-        {/* RaOne Suno Audio Button (AI Music, Vocals & Beats Synthesis) */}
-        <button
-          onClick={onOpenAudioStudio}
-          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne Suno Audio — AI Music, Vocals & Beats Synthesis (Suno v4 Alpha, Udio 130, Google Lyria, ElevenLabs)"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-4 h-4 rounded bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-600 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(245,158,11,0.7)] group-hover:scale-110 transition-transform">
-              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
-                <Music className="w-2.5 h-2.5 text-amber-300" />
-              </div>
-            </div>
-            <span className="font-medium text-white group-hover:text-amber-300 transition-colors truncate">
-              RaOne Suno Audio
-            </span>
-          </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
-            TTA v4
-          </span>
-        </button>
-
-        {/* RaOne DocuStudio Button (Intelligent Document Processing, NotebookLM, Gamma App & Copilot) */}
-        <button
-          onClick={onOpenDocumentStudio}
-          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne DocuStudio — Intelligent Document Processing, NotebookLM, Gamma App & Copilot (PDFs, Slides, Spreadsheets, Graph-RAG)"
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-4 h-4 rounded bg-gradient-to-tr from-emerald-400 via-teal-500 to-cyan-600 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(16,185,129,0.7)] group-hover:scale-110 transition-transform">
-              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
-                <FileText className="w-2.5 h-2.5 text-emerald-300" />
-              </div>
-            </div>
-            <span className="font-medium text-white group-hover:text-emerald-300 transition-colors truncate">
-              RaOne DocuStudio
-            </span>
-          </div>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">
-            IDP RAG
-          </span>
         </button>
       </div>
 
