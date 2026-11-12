@@ -19,6 +19,32 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3000;
 
+// CORS middleware so Firebase Hosting (raoneai.web.app) and external frontends can reach the backend
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  if (configuredOrigins.length > 0 && origin && configuredOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else if (configuredOrigins.length === 0) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    if (origin) res.setHeader('Vary', 'Origin');
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -4277,6 +4303,14 @@ ${(slides && slides.length > 0 ? slides : [
 
 // Setup Vite in development or static serve in production
 async function startServer() {
+  // Ensure unknown /api routes always return JSON instead of falling back to index.html
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+      brand: 'RaOne AI by RavanaTec',
+    });
+  });
+
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
@@ -4288,9 +4322,20 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
+    const indexHtmlPath = path.resolve(distPath, 'index.html');
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+    }
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
+      if (fs.existsSync(indexHtmlPath)) {
+        return res.sendFile(indexHtmlPath);
+      }
+      return res.json({
+        status: 'online',
+        service: 'RaOne AI Backend API',
+        brand: 'RaOne AI by RavanaTec',
+        healthEndpoint: '/api/health',
+      });
     });
   }
 

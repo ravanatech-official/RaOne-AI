@@ -341,7 +341,17 @@ export default function App() {
             }),
           });
 
+          const contentType = response.headers.get('content-type') || '';
+          if (!contentType.includes('application/json')) {
+            throw new Error(
+              `Backend API returned non-JSON response (${response.status}). Make sure the RaOne backend server is running and reachable.`
+            );
+          }
+
           const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.error || `Backend request failed (${response.status}).`);
+          }
           const replyText = data.text || 'RaOne AI completed private synthesis.';
 
           const modelMessage: ChatMessage = {
@@ -361,6 +371,15 @@ export default function App() {
           }
         } catch (err: any) {
           console.error('Temporary chat error:', err);
+          const errorMessage: ChatMessage = {
+            id: `m-err-${Date.now()}`,
+            role: 'model',
+            content: `⚠️ **Backend Connection Error:** ${err?.message || 'Unable to reach RaOne AI server.'}`,
+            model: selectedModel,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            isTemporary: true,
+          };
+          setTemporaryMessages((prev) => [...prev, errorMessage]);
         } finally {
           setIsLoading(false);
         }
@@ -422,7 +441,17 @@ export default function App() {
           }),
         });
 
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          throw new Error(
+            `Backend API returned non-JSON response (${response.status}). Make sure the RaOne backend server (server.ts) is deployed and connected.`
+          );
+        }
+
         const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error || `Backend request failed (${response.status}).`);
+        }
         const replyText = data.text || 'RaOne AI completed synthesis.';
 
         const modelMessage: ChatMessage = {
@@ -463,6 +492,20 @@ export default function App() {
         }
       } catch (err: any) {
         console.error('Chat error:', err);
+        const errorMessage: ChatMessage = {
+          id: `m-err-${Date.now()}`,
+          role: 'model',
+          content: `⚠️ **Backend Connection Error:** ${err?.message || 'Unable to reach RaOne AI server.'}`,
+          model: selectedModel,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === currentConvId
+              ? { ...c, messages: [...c.messages, errorMessage], updatedAt: 'Just now' }
+              : c
+          )
+        );
       } finally {
         setIsLoading(false);
       }
