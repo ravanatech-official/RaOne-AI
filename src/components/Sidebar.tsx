@@ -37,6 +37,7 @@ interface SidebarProps {
   currentPlan?: 'free' | 'plus' | 'ultimate';
   onOpenUpgrade?: () => void;
   onOpenAIStudio?: () => void;
+  onOpenVisionStudio?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -57,6 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentPlan = 'free',
   onOpenUpgrade,
   onOpenAIStudio,
+  onOpenVisionStudio,
 }) => {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -222,6 +224,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 shrink-0">
             Studio
+          </span>
+        </button>
+
+        {/* RaOne Vision Studio Button (Leonardo AI T2I Engine) */}
+        <button
+          onClick={onOpenVisionStudio}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Vision Studio — Leonardo AI Engine (Midjourney v6.1, Flux 1.1 Pro, Imagen 3, DALL-E 3)"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-4 h-4 rounded bg-gradient-to-tr from-cyan-500 via-purple-500 to-amber-500 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(168,85,247,0.7)] group-hover:scale-110 transition-transform">
+              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
+                <Sparkles className="w-2.5 h-2.5 text-amber-300" />
+              </div>
+            </div>
+            <span className="font-medium text-white group-hover:text-purple-300 transition-colors truncate">
+              RaOne Vision Studio
+            </span>
+          </div>
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 shrink-0">
+            T2I LDM
           </span>
         </button>
       </div>

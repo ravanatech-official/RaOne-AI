@@ -79,3 +79,74 @@ export interface ExecutionTask {
   status: 'todo' | 'executing' | 'done';
   outputPreview?: string;
 }
+
+export interface StudioAppFileMap {
+  'index.html': string;
+  'app.js'?: string;
+  'styles.css'?: string;
+  'architecture.md'?: string;
+  'schema.json'?: string;
+  [filename: string]: string | undefined;
+}
+
+export interface AgentStep {
+  step: number;
+  phase: string;
+  title: string;
+  status: 'complete' | 'in_progress' | 'pending';
+  details: string;
+  timestamp: string;
+}
+
+export interface StudioApp {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  icon?: string;
+  tag?: string;
+  author?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  code: string;
+  files?: StudioAppFileMap;
+  agentSteps?: AgentStep[];
+  version?: number;
+}
+
+export interface GeneratedImageItem {
+  id: string;
+  prompt: string;
+  negativePrompt?: string;
+  model: string;
+  style: string;
+  aspectRatio: string;
+  dimensions: string;
+  cfgScale: number;
+  steps: number;
+  seed: number;
+  imageUrl: string;
+  createdAt: string;
+  isFavorite?: boolean;
+  alchemy?: boolean;
+  photoReal?: boolean;
+  promptMagic?: boolean;
+  upscaled?: boolean;
+}
+
+export interface ImageGenerationOptions {
+  prompt: string;
+  negativePrompt?: string;
+  model?: string;
+  style?: string;
+  aspectRatio?: string;
+  dimensions?: string;
+  cfgScale?: number;
+  steps?: number;
+  seed?: number;
+  numImages?: number;
+  alchemy?: boolean;
+  photoReal?: boolean;
+  promptMagic?: boolean;
+  referenceImage?: string | null;
+}
