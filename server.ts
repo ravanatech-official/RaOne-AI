@@ -8,8 +8,8 @@ import {
   synthesizeRealApplication,
   synthesizeFullProject,
   refineSynthesizedProject,
-  SynthesizedProject,
-} from './server_app_synthesizer.js';
+  type SynthesizedProject,
+} from './server_app_synthesizer.ts';
 
 dotenv.config();
 

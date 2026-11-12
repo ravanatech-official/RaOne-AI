@@ -1,4 +1,4 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -7,97 +7,69 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  Auth,
   User,
 } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, Firestore } from 'firebase/firestore';
 
-// Official RaOne Firebase Project Configuration (raoneai)
 export const firebaseConfig = {
-  apiKey: "AIzaSyAptFzhW_aiLWlxm_mDsbhJr_RptHHyd7k",
-  authDomain: "raoneai.firebaseapp.com",
-  projectId: "raoneai",
-  storageBucket: "raoneai.firebasestorage.app",
-  messagingSenderId: "348832701843",
-  appId: "1:348832701843:web:7b35f496852f30cf96dc66",
-  measurementId: "G-04CTJ02EJ7",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || '',
 };
 
-// Project Architecture & Services Overview (as configured by RavanaTec)
-export const RAONE_PROJECT_OVERVIEW = {
-  projectName: "RaOne",
-  projectId: "raoneai",
-  projectNumber: "348832701843",
-  billingPlan: "Blaze Plan (Pay-as-you-go)",
-  adminEmail: "firebase00.ravanatech@gmail.com",
-  appId: "1:348832701843:web:7b35f496852f30cf96dc66",
-  services: {
-    auth: {
-      status: "Active",
-      emailSignIn: true,
-      googleSignIn: true,
-      authorizedDomains: [
-        "localhost",
-        "raoneai.firebaseapp.com",
-        "raoneai.web.app"
-      ],
-      mfa: false,
-    },
-    firestore: {
-      status: "Active",
-      instance: "(default) FIRESTORE_NATIVE",
-      location: "nam5 (US Multi-region)",
-      rulesStatus: "Locked (Production Ready)",
-    },
-    realtimeDb: {
-      status: "Active",
-      instance: "raoneai-default-rtdb",
-      location: "us-central1",
-      url: "https://raoneai-default-rtdb.firebaseio.com",
-    },
-    aiLogic: {
-      geminiDeveloperApi: true,
-      vertexAiGeminiApi: true,
-      monitoring: "Metrics, Logging, and Tracing Active",
-    },
-    analytics: {
-      status: "Active",
-      propertyId: "563366712",
-      measurementId: "G-04CTJ02EJ7",
-    },
-  },
-};
+export const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
 
-// Initialize Firebase App
-export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// Initialize Firebase App only when configured
+export const app: FirebaseApp | null = isFirebaseConfigured
+  ? (!getApps().length ? initializeApp(firebaseConfig) : getApp())
+  : null;
 
 // Firebase Auth & Firestore
-export const auth = getAuth(app);
-export const db = getFirestore(app);
+export const auth: Auth | null = app ? getAuth(app) : null;
+export const db: Firestore | null = app ? getFirestore(app) : null;
 export const googleProvider = new GoogleAuthProvider();
 
 // Safe Analytics Export (Disabled on dev/preview URLs to prevent 403 Installations API referer restriction)
 export const analytics: any = null;
 
+function requireAuth(): Auth {
+  if (!auth) {
+    throw new Error('Firebase authentication is not configured. Set VITE_FIREBASE_API_KEY and VITE_FIREBASE_PROJECT_ID in your environment.');
+  }
+  return auth;
+}
+
 // Auth helper functions
 export async function loginWithGoogle(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
+  const result = await signInWithPopup(requireAuth(), googleProvider);
   return result.user;
 }
 
 export async function loginWithEmail(email: string, pass: string): Promise<User> {
-  const result = await signInWithEmailAndPassword(auth, email, pass);
+  const result = await signInWithEmailAndPassword(requireAuth(), email, pass);
   return result.user;
 }
 
 export async function signupWithEmail(email: string, pass: string): Promise<User> {
-  const result = await createUserWithEmailAndPassword(auth, email, pass);
+  const result = await createUserWithEmailAndPassword(requireAuth(), email, pass);
   return result.user;
 }
 
 export async function logoutUser(): Promise<void> {
-  await signOut(auth);
+  if (auth) {
+    await signOut(auth);
+  }
 }
 
 export function subscribeToAuth(callback: (user: User | null) => void) {
+  if (!auth) {
+    callback(null);
+    return () => {};
+  }
   return onAuthStateChanged(auth, callback);
 }
