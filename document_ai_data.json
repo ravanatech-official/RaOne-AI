@@ -1,0 +1,177 @@
+[
+  {
+    "id": "doc_sovereign_ai_strategy_01",
+    "title": "Sri Lanka Sovereign AI & Autonomous Tech Roadmap 2030",
+    "docType": "report",
+    "prompt": "Comprehensive strategic national whitepaper on building sovereign GPU infrastructure, localized LLMs (Sinhala & Tamil), and automated software engineering clusters in Sri Lanka by 2030.",
+    "summary": "This executive whitepaper outlines the transition of Sri Lanka into South Asia's foremost sovereign AI hub by deploying renewable-powered green data centers, localized multimodal foundation models, and autonomous software development factories.",
+    "content": "# Executive Whitepaper: Sovereign AI & Autonomous Technology 2030\n\n## 1. Strategic Vision & National Mandate\nIn the era of hyper-scale artificial intelligence, technological sovereignty is the defining metric of economic independence. The **RaOne Sovereign Initiative by RavanaTec** lays out the 5-year masterplan to establish domestic AI compute clusters, train culturally aligned foundation models, and automate high-value software exports.\n\n### Core Pillars:\n- **Clean Energy Compute Clusters**: Deploying liquid-cooled GPU megawatt facilities adjacent to Mahaweli hydroelectric and Northern wind corridors.\n- **Linguistic Sovereignty**: Pre-training bilingual foundation models (Sinhala/Tamil/English) with cultural preservation and zero Western bias.\n- **Autonomous Software Factories**: Replacing manual outsourcing with Senior SWE Agent swarms capable of shipping enterprise applications at zero marginal cost.\n\n---\n\n## 2. Infrastructure Architecture & Capital Allocation\n\n| Phase | Timeline | Target Compute | Key Deliverable | Budget (USD) |\n| :--- | :--- | :--- | :--- | :--- |\n| **Phase 1** | 2026-2027 | 256× H200 / B200 | Sovereign Sinhala/Tamil Core LLM | $12.5M |\n| **Phase 2** | 2027-2028 | 1,024× Blackwell Clusters | Autonomous Agent Cloud Platform | $38.0M |\n| **Phase 3** | 2028-2030 | 4,096× Custom ASIC Cores | National AI Supercomputing Grid | $120.0M |\n\n---\n\n## 3. High-Fidelity Retrieval-Augmented Generation (RAG) Architecture\nTo prevent corporate and governmental hallucination, the sovereign pipeline implements **Graph-RAG** combining dense semantic embeddings with neo4j knowledge graphs:\n\n```mermaid\ngraph TD\n    A[Unstructured Government Gazettes & Code] --> B[Nougat Vision Layout Parser]\n    B --> C[Hybrid Dense-Sparse Vector Store]\n    C --> D[Graph Entity Relational Index]\n    D --> E[Gemini 3.8 Flash RAG Synthesizer]\n    E --> F[Verified Citations & Grounded Output]\n```\n\n---\n\n## 4. Policy Recommendations & Talent Re-skilling\n1. **Tax Incentives for Sovereign Data Centers**: Zero-tariff importation on enterprise tensor compute hardware.\n2. **National Prompt & Agent Engineering Curriculum**: Upskilling 50,000 engineering graduates into AI orchestrators.\n3. **Public Sector Automation**: Automating 70% of bureaucratic document processing using Intelligent Document Processing (IDP).",
+    "slides": [
+      {
+        "id": "slide_1",
+        "slideNumber": 1,
+        "title": "Sri Lanka Sovereign AI 2030",
+        "subtitle": "National Technological Independence & Autonomous Software Exports",
+        "bulletPoints": [
+          "Mandate: Domestic compute sovereignty over foreign cloud reliance",
+          "Clean Energy: Renewable hydroelectric & wind-powered AI superclusters",
+          "Target: 50,000 Autonomous SWE Agent engineers deployed globally"
+        ],
+        "callout": "Sovereignty is not an option; it is national defense in the algorithmic era.",
+        "themeColor": "emerald"
+      },
+      {
+        "id": "slide_2",
+        "slideNumber": 2,
+        "title": "Infrastructure & Compute Roadmap",
+        "subtitle": "3-Phase Scalable Supercomputing Architecture",
+        "bulletPoints": [
+          "Phase 1: 256 H200 accelerators for Sinhala/Tamil multimodal pretraining",
+          "Phase 2: 1,024 Blackwell GPU clusters powering live enterprise agent swarms",
+          "Phase 3: National Supercomputing Grid connected directly to submarine cables"
+        ],
+        "callout": "Estimated ROI: $4.2 Billion in autonomous digital service exports by 2030.",
+        "themeColor": "cyan"
+      },
+      {
+        "id": "slide_3",
+        "slideNumber": 3,
+        "title": "Enterprise Graph-RAG Pipeline",
+        "subtitle": "Zero Hallucination National Document Processing",
+        "bulletPoints": [
+          "Vision Transformer OCR parsing 100+ years of legal archives",
+          "Dense vector + Knowledge Graph hybrid retrieval architecture",
+          "Sub-100ms verified citation lookup for banking & government"
+        ],
+        "callout": "100% verified traceability back to primary constitutional sources.",
+        "themeColor": "purple"
+      }
+    ],
+    "citations": [
+      {
+        "id": "cit_1",
+        "sourceTitle": "National Digital Economy Blueprint 2030",
+        "snippet": "Section 4.2: Mandates 40% reduction in foreign SaaS licensing through domestic sovereign solutions.",
+        "pageOrSection": "Page 14"
+      },
+      {
+        "id": "cit_2",
+        "sourceTitle": "Ceylon Electricity Board Clean Energy Report",
+        "snippet": "Northern wind corridor provides 1.2 GW surplus renewable capacity suitable for continuous datacenter operations.",
+        "pageOrSection": "Appendix B"
+      }
+    ],
+    "audioOverviewUrl": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    "audioOverviewTranscript": "Host 1: Welcome back to Deep Dive! Today we are looking at the 'Sri Lanka Sovereign AI 2030' roadmap. And honestly, the emphasis on renewable-powered compute clusters is brilliant.\nHost 2: Exactly. Instead of paying billions in cloud egress to foreign monopolies, they're building green megawatt facilities. And look at their Graph-RAG pipeline—it guarantees zero hallucinations for legal documents.\nHost 1: A masterclass in strategic national foresight.",
+    "model": "Gemini 3.8 Flash Document AI",
+    "tags": ["National Strategy", "Sovereign AI", "Compute Roadmap", "Policy", "Whitepaper"],
+    "pageCount": 18,
+    "wordCount": 3840,
+    "createdAt": "2026-11-12T02:45:00.000Z",
+    "isFavorite": true
+  },
+  {
+    "id": "doc_gamma_pitch_deck_02",
+    "title": "RaOne Core Engine: Series A Investor Pitch Deck",
+    "docType": "presentation",
+    "prompt": "High-impact Gamma style pitch deck for RaOne Autonomous Multi-Modal AI Studio raising $15M Series A.",
+    "summary": "10-slide high-conversion pitch deck showcasing RaOne's full-stack multimodal architecture (Code Studio, Vision LDM, Motion DiT, Suno Audio, and Document RAG) outperforming single-modality incumbents.",
+    "content": "# RaOne Core Engine — Series A Pitch Deck\n\n## Slide 1: The Problem\nDevelopers and enterprises are fatigued by juggling 10 disconnected AI point-solutions (ChatGPT, Midjourney, Runway, Suno, Cursor). Point solutions create fragmented data silos, broken API handoffs, and astronomical per-seat licensing fees.\n\n## Slide 2: The Sovereign Solution — RaOne Studio\nRaOne unifies the entire generative frontier into one integrated sovereign workstation:\n1. **RaOne Code Studio**: Senior SWE autonomous code generation.\n2. **RaOne Vision Studio**: Silicon Valley-grade T2I diffusion (Flux / Midjourney).\n3. **RaOne Cinema Studio**: 60fps Spatio-temporal video synthesis (Veo 2 / Sora).\n4. **RaOne Suno Audio**: Full studio acoustic & vocal generation with stems.\n5. **RaOne DocuStudio**: Enterprise IDP, Presentation generation & Graph-RAG.\n\n## Slide 3: Market Size & Traction\n- **TAM**: $1.3 Trillion Generative AI & Enterprise Automation Market by 2032.\n- **Traction**: 240,000 Monthly Active Developers, $2.4M ARR growing 38% MoM.",
+    "slides": [
+      {
+        "id": "deck_1",
+        "slideNumber": 1,
+        "title": "RaOne Multi-Modal Engine",
+        "subtitle": "The Unified Sovereign Operating System for Artificial Intelligence",
+        "bulletPoints": [
+          "Problem: Point solution fragmentation (Text, Image, Video, Audio, Code)",
+          "Solution: One sovereign multimodal workstation with shared context",
+          "Traction: $2.4M ARR, 38% Month-over-Month organic developer growth"
+        ],
+        "callout": "Series A Round: $15M for compute infrastructure and global developer expansion.",
+        "themeColor": "amber"
+      },
+      {
+        "id": "deck_2",
+        "slideNumber": 2,
+        "title": "The Unified Multi-Modal Stack",
+        "subtitle": "5 Proprietary Creative & Engineering Engines in 1 Platform",
+        "bulletPoints": [
+          "Code Studio: Multi-file autonomous software engineer agent",
+          "Vision & Cinema: Flux Pro 1.1 + Google Veo 2 Video Diffusion",
+          "Suno Audio & DocuStudio: 48kHz audio generation + Enterprise Graph-RAG"
+        ],
+        "callout": "Zero API lock-in. 100% on-premise or sovereign cloud deployable.",
+        "themeColor": "purple"
+      },
+      {
+        "id": "deck_3",
+        "slideNumber": 3,
+        "title": "Business Model & Unit Economics",
+        "subtitle": "High Margin B2B Enterprise + Prosumer SaaS",
+        "bulletPoints": [
+          "Prosumer: $29/mo developer tier with 1,000 monthly multi-modal credits",
+          "Enterprise: $250k - $1M annual sovereign licenses with zero data egress",
+          "Gross Margins: 82% blended margin via custom speculative decoding"
+        ],
+        "callout": "Projected $25M ARR by End of 2027.",
+        "themeColor": "emerald"
+      }
+    ],
+    "citations": [
+      {
+        "id": "cit_pitch_1",
+        "sourceTitle": "Gartner Generative AI Enterprise Market Forecast 2026",
+        "snippet": "80% of enterprises will consolidate from fragmented point-tools to unified multimodal platforms by 2028.",
+        "pageOrSection": "Executive Summary"
+      }
+    ],
+    "audioOverviewUrl": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+    "audioOverviewTranscript": "Host 1: Today we are reviewing the RaOne Series A deck. What stood out to you right away?\nHost 2: The consolidation thesis. Nobody wants 5 different subscriptions for code, image, video, audio, and documents. RaOne putting all five under one roof with a single token pool is pure genius.\nHost 1: And 82% gross margins with custom speculative inference—investors are going to fight over this round.",
+    "model": "Gamma AI / Gemini 3.8 Flash",
+    "tags": ["Pitch Deck", "Investor Presentation", "Series A", "Gamma Style", "Business"],
+    "pageCount": 10,
+    "wordCount": 1420,
+    "createdAt": "2026-11-12T02:20:00.000Z",
+    "isFavorite": true
+  },
+  {
+    "id": "doc_financial_model_03",
+    "title": "Q4 2026 Sovereign GPU Compute & Financial Model",
+    "docType": "spreadsheet",
+    "prompt": "Detailed financial spreadsheet model breaking down GPU cluster procurement, power consumption, token pricing, and cash flow projections.",
+    "summary": "Full mathematical financial spreadsheet calculating ROI, token COGS, electricity per token, and net margins across 512× H200 accelerators.",
+    "content": "# Q4 2026 Sovereign GPU Financial & Unit Economics Model\n\n## 1. Capex & Compute Cluster Amortization\n\n| Hardware Component | Quantity | Unit Cost | Total Capex | Amortization (36 Mo) |\n| :--- | :--- | :--- | :--- | :--- |\n| NVIDIA H200 141GB SXM5 | 512 | $32,000 | $16,384,000 | $455,111 / mo |\n| Quantum-2 InfiniBand Switches | 32 | $24,000 | $768,000 | $21,333 / mo |\n| Liquid Cooling PDU Units | 8 | $85,000 | $680,000 | $18,888 / mo |\n| High-Throughput NVMe Storage (4PB) | 1 | $920,000 | $920,000 | $25,555 / mo |\n| **Total Hardware Investment** | - | - | **$18,752,000** | **$520,887 / mo** |\n\n---\n\n## 2. Power Consumption & Operating Costs (Opex)\n- **Power Draw per Node**: 10.2 kW per 8-GPU chassis\n- **Total Cluster Draw**: 652.8 kW continuous\n- **Electricity Cost (Mahaweli Hydro Tariff)**: $0.068 per kWh\n- **Monthly Power Cost**: $31,960\n- **Facility & Engineering Opex**: $45,000 / mo\n- **Total Monthly Opex**: **$597,847**\n\n---\n\n## 3. Revenue Yield & Token Economics\n- **Monthly Token Generation Capacity**: 120 Billion Multimodal Tokens\n- **Blended Revenue per 1M Tokens**: $18.50\n- **Gross Monthly Revenue**: **$2,220,000**\n- **Monthly Net Cash Flow**: **+$1,622,153** (73% Net Margin)\n- **Capex Payback Period**: **11.5 Months**",
+    "slides": [
+      {
+        "id": "fin_slide_1",
+        "slideNumber": 1,
+        "title": "Unit Economics Summary",
+        "subtitle": "512× H200 Liquid-Cooled Cluster Financial Metrics",
+        "bulletPoints": [
+          "Total Capex: $18.75 Million fully deployed",
+          "Monthly Blended Revenue: $2.22 Million (120B tokens/mo)",
+          "Payback Period: 11.5 Months with 73% net cash margin"
+        ],
+        "callout": "Hydroelectric power tariff of $0.068/kWh gives a 3.4× cost advantage over European data centers.",
+        "themeColor": "emerald"
+      }
+    ],
+    "citations": [
+      {
+        "id": "cit_fin_1",
+        "sourceTitle": "Industrial Energy Tariff Gazette No. 2381",
+        "snippet": "Designated green industrial compute clusters qualify for subsidized off-peak hydroelectric tariff rates.",
+        "pageOrSection": "Section 3.1"
+      }
+    ],
+    "audioOverviewUrl": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
+    "audioOverviewTranscript": "Host 1: The numbers in this GPU financial model are staggering.\nHost 2: That 11.5 month payback period is what caught my eye. Because their power cost is under 7 cents per kilowatt-hour, their gross margin is 73%. Foreign clouds charging 3 dollars an hour can't compete with this unit cost.\nHost 1: Pure mathematical efficiency.",
+    "model": "Microsoft Copilot / Gemini 3.8 Flash",
+    "tags": ["Financial Model", "Spreadsheet", "GPU Capex", "Unit Economics", "Token Cost"],
+    "pageCount": 6,
+    "wordCount": 1150,
+    "createdAt": "2026-11-12T01:50:00.000Z",
+    "isFavorite": false
+  }
+]

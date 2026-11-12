@@ -1,5 +1,27 @@
 [
   {
+    "id": "mbrush_1794487428565_r2q9",
+    "prompt": "[Motion Brush: 2 Vectors] Ocean waves crashing against neon cliffs",
+    "model": "Google Veo 2 (Frontier)",
+    "cameraMotion": "Directional Motion Brush Vector",
+    "motionStrength": 8,
+    "duration": 5,
+    "fps": 60,
+    "aspectRatio": "16:9",
+    "dimensions": "1920x1080",
+    "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+    "posterUrl": "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?auto=format&fit=crop&w=1200&q=80",
+    "mode": "image-to-video",
+    "referenceImage": null,
+    "seed": 47778568,
+    "createdAt": "2026-11-12T12:43:48.565Z",
+    "isFavorite": true,
+    "upscaled": true,
+    "interpolated": true,
+    "hasMotionBrush": true,
+    "motionBrushesCount": 2
+  },
+  {
     "id": "vid_1794480004514_18ave",
     "prompt": "A sovereign cybernetic dragon soaring over glowing Sigiriya in 2099",
     "negativePrompt": "blurry, morphing, jitter, low framerate, artifacts, glitch",

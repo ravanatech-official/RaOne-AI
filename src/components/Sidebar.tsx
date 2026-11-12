@@ -14,6 +14,8 @@ import {
   PanelLeft,
   Settings,
   Video,
+  Music,
+  FileText,
 } from 'lucide-react';
 import { Conversation } from '../types/index.ts';
 
@@ -40,6 +42,8 @@ interface SidebarProps {
   onOpenAIStudio?: () => void;
   onOpenVisionStudio?: () => void;
   onOpenMotionStudio?: () => void;
+  onOpenAudioStudio?: () => void;
+  onOpenDocumentStudio?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -62,6 +66,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenAIStudio,
   onOpenVisionStudio,
   onOpenMotionStudio,
+  onOpenAudioStudio,
+  onOpenDocumentStudio,
 }) => {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -269,6 +275,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shrink-0">
             T2V DiT
+          </span>
+        </button>
+
+        {/* RaOne Suno Audio Button (AI Music, Vocals & Beats Synthesis) */}
+        <button
+          onClick={onOpenAudioStudio}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne Suno Audio — AI Music, Vocals & Beats Synthesis (Suno v4 Alpha, Udio 130, Google Lyria, ElevenLabs)"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-4 h-4 rounded bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-600 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(245,158,11,0.7)] group-hover:scale-110 transition-transform">
+              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
+                <Music className="w-2.5 h-2.5 text-amber-300" />
+              </div>
+            </div>
+            <span className="font-medium text-white group-hover:text-amber-300 transition-colors truncate">
+              RaOne Suno Audio
+            </span>
+          </div>
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+            TTA v4
+          </span>
+        </button>
+
+        {/* RaOne DocuStudio Button (Intelligent Document Processing, NotebookLM, Gamma App & Copilot) */}
+        <button
+          onClick={onOpenDocumentStudio}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="RaOne DocuStudio — Intelligent Document Processing, NotebookLM, Gamma App & Copilot (PDFs, Slides, Spreadsheets, Graph-RAG)"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-4 h-4 rounded bg-gradient-to-tr from-emerald-400 via-teal-500 to-cyan-600 flex items-center justify-center p-[1px] shrink-0 drop-shadow-[0_0_6px_rgba(16,185,129,0.7)] group-hover:scale-110 transition-transform">
+              <div className="w-full h-full bg-[#0d111a] rounded flex items-center justify-center">
+                <FileText className="w-2.5 h-2.5 text-emerald-300" />
+              </div>
+            </div>
+            <span className="font-medium text-white group-hover:text-emerald-300 transition-colors truncate">
+              RaOne DocuStudio
+            </span>
+          </div>
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">
+            IDP RAG
           </span>
         </button>
       </div>

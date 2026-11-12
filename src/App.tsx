@@ -18,6 +18,8 @@ import { UpgradeModal } from './components/UpgradeModal.tsx';
 import { GoogleAIStudioWorkbench } from './components/GoogleAIStudioWorkbench.tsx';
 import { LeonardoVisionStudio } from './components/LeonardoVisionStudio.tsx';
 import { LeonardoMotionStudio } from './components/LeonardoMotionStudio.tsx';
+import { SunoAudioStudio } from './components/SunoAudioStudio.tsx';
+import { DocumentAIStudio } from './components/DocumentAIStudio.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
@@ -61,6 +63,8 @@ export default function App() {
   const [isGoogleAIStudioOpen, setIsGoogleAIStudioOpen] = useState<boolean>(false);
   const [isVisionStudioOpen, setIsVisionStudioOpen] = useState<boolean>(false);
   const [isMotionStudioOpen, setIsMotionStudioOpen] = useState<boolean>(false);
+  const [isAudioStudioOpen, setIsAudioStudioOpen] = useState<boolean>(false);
+  const [isDocumentStudioOpen, setIsDocumentStudioOpen] = useState<boolean>(false);
   const [currentPlan, setCurrentPlan] = useState<'free' | 'plus' | 'ultimate'>('free');
   const [searchTrigger, setSearchTrigger] = useState<number>(0);
   const [inputFocusTrigger, setInputFocusTrigger] = useState<number>(0);
@@ -572,6 +576,8 @@ export default function App() {
         onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
         onOpenVisionStudio={() => setIsVisionStudioOpen(true)}
         onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
+        onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
+        onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
       />
 
       {/* Main Chat Workspace */}
@@ -808,6 +814,18 @@ export default function App() {
       <LeonardoMotionStudio
         isOpen={isMotionStudioOpen}
         onClose={() => setIsMotionStudioOpen(false)}
+      />
+
+      {/* RaOne Suno Audio Studio (AI Music & Vocals Synthesis) */}
+      <SunoAudioStudio
+        isOpen={isAudioStudioOpen}
+        onClose={() => setIsAudioStudioOpen(false)}
+      />
+
+      {/* RaOne DocuStudio (NotebookLM + Gamma App + Microsoft Copilot) */}
+      <DocumentAIStudio
+        isOpen={isDocumentStudioOpen}
+        onClose={() => setIsDocumentStudioOpen(false)}
       />
     </div>
   );

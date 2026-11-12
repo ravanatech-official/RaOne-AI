@@ -189,3 +189,87 @@ export interface VideoGenerationOptions {
   seed?: number;
 }
 
+export interface GeneratedAudioItem {
+  id: string;
+  title: string;
+  prompt: string;
+  lyrics?: string;
+  styleTags: string[];
+  model: string;
+  isInstrumental: boolean;
+  duration: number; // in seconds, e.g. 120, 240
+  bpm?: number;
+  keySignature?: string;
+  audioUrl: string;
+  coverUrl: string;
+  vocalStemUrl?: string;
+  instrumentalStemUrl?: string;
+  stemsSeparated?: boolean;
+  createdAt: string;
+  isFavorite?: boolean;
+  extended?: boolean;
+  playCount?: number;
+}
+
+export interface AudioGenerationOptions {
+  prompt: string;
+  lyrics?: string;
+  title?: string;
+  styleTags?: string[];
+  model?: string;
+  isInstrumental?: boolean;
+  customMode?: boolean;
+  duration?: number;
+  bpm?: number;
+  keySignature?: string;
+}
+
+export interface DocumentSlide {
+  id: string;
+  slideNumber: number;
+  title: string;
+  subtitle?: string;
+  bulletPoints: string[];
+  callout?: string;
+  themeColor?: string;
+}
+
+export interface DocumentCitation {
+  id: string;
+  sourceTitle: string;
+  snippet: string;
+  pageOrSection?: string;
+}
+
+export interface DocumentItem {
+  id: string;
+  title: string;
+  docType: 'report' | 'presentation' | 'spreadsheet' | 'notebook' | 'summary';
+  prompt: string;
+  content: string; // Markdown / HTML formatted
+  summary?: string;
+  slides?: DocumentSlide[];
+  citations?: DocumentCitation[];
+  audioOverviewUrl?: string; // NotebookLM deep dive podcast URL
+  audioOverviewTranscript?: string;
+  model: string;
+  tags: string[];
+  pageCount?: number;
+  wordCount?: number;
+  createdAt: string;
+  isFavorite?: boolean;
+  sourceFile?: string;
+}
+
+export interface DocumentGenerationOptions {
+  prompt: string;
+  docType: 'report' | 'presentation' | 'spreadsheet' | 'notebook' | 'summary';
+  tone?: 'executive' | 'academic' | 'technical' | 'creative';
+  model?: string;
+  sourceText?: string;
+  includeSlides?: boolean;
+  includeAudioOverview?: boolean;
+}
+
+
+
