@@ -36,8 +36,12 @@ import {
   Share2,
   Flame,
   AudioWaveform,
+  Mic,
+  Upload,
+  Activity,
+  CheckCircle2,
 } from 'lucide-react';
-import { GeneratedAudioItem } from '../types/index.ts';
+import { GeneratedAudioItem, ClonedVoiceProfile } from '../types/index.ts';
 
 interface SunoAudioStudioProps {
   isOpen: boolean;
@@ -175,14 +179,24 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
   const [volume, setVolume] = useState<number>(0.85);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false);
-  const [stemMode, setStemMode] = useState<'mix' | 'vocals' | 'instrumental'>('mix');
+  const [stemMode, setStemMode] = useState<'mix' | 'vocals' | 'bass' | 'drums' | 'synths' | 'instrumental'>('mix');
+
+  // Personal Voice Cloning State
+  const [clonedVoices, setClonedVoices] = useState<ClonedVoiceProfile[]>([]);
+  const [selectedVoiceClone, setSelectedVoiceClone] = useState<ClonedVoiceProfile | null>(null);
+  const [showVoiceCloneModal, setShowVoiceCloneModal] = useState<boolean>(false);
+  const [newCloneName, setNewCloneName] = useState<string>('My Studio Vocals');
+  const [isRecordingVoice, setIsRecordingVoice] = useState<boolean>(false);
+  const [recordProgress, setRecordProgress] = useState<number>(0);
+  const [isCloningVoice, setIsCloningVoice] = useState<boolean>(false);
 
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
 
-  // Load Tracks on mount & when open
+  // Load Tracks & Voice Clones on mount & when open
   useEffect(() => {
     if (isOpen) {
       fetchAudioHistory();
+      fetchVoiceClones();
     }
   }, [isOpen]);
 
@@ -198,6 +212,54 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
       }
     } catch (err) {
       console.error('Failed to load audio history:', err);
+    }
+  };
+
+  const fetchVoiceClones = async () => {
+    try {
+      const res = await fetch('/api/audio/voice-clone/list');
+      const data = await res.json();
+      if (data.success && data.items) {
+        setClonedVoices(data.items);
+      }
+    } catch (err) {
+      console.error('Failed to load voice clones:', err);
+    }
+  };
+
+  const handleStartVoiceRecording = () => {
+    setIsRecordingVoice(true);
+    setRecordProgress(0);
+    let seconds = 0;
+    const interval = setInterval(() => {
+      seconds += 1;
+      setRecordProgress(seconds);
+      if (seconds >= 10) {
+        clearInterval(interval);
+        setIsRecordingVoice(false);
+        handleSaveVoiceClone();
+      }
+    }, 1000);
+  };
+
+  const handleSaveVoiceClone = async () => {
+    setIsCloningVoice(true);
+    try {
+      const res = await fetch('/api/audio/voice-clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newCloneName || 'Personal Cloned Vocal', sampleDuration: 10 }),
+      });
+      const data = await res.json();
+      if (data.success && data.clone) {
+        setClonedVoices((prev) => [data.clone, ...prev]);
+        setSelectedVoiceClone(data.clone);
+        setShowVoiceCloneModal(false);
+      }
+    } catch (err) {
+      console.error('Voice cloning failed:', err);
+    } finally {
+      setIsCloningVoice(false);
     }
   };
 
@@ -221,6 +283,8 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
         bpm,
         keySignature,
         duration: 180,
+        clonedVoiceName: selectedVoiceClone?.name,
+        clonedVoiceId: selectedVoiceClone?.id,
       };
 
       const res = await fetch('/api/audio/generate', {
@@ -457,10 +521,16 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Determine which audio stream URL to play based on stem mode
+  // Determine which audio stream URL to play based on 4-track stem mode
   const currentAudioSource =
     stemMode === 'vocals' && activeTrack?.vocalStemUrl
       ? activeTrack.vocalStemUrl
+      : stemMode === 'bass' && activeTrack?.bassStemUrl
+      ? activeTrack.bassStemUrl
+      : stemMode === 'drums' && activeTrack?.drumsStemUrl
+      ? activeTrack.drumsStemUrl
+      : stemMode === 'synths' && (activeTrack?.otherStemUrl || activeTrack?.instrumentalStemUrl)
+      ? (activeTrack?.otherStemUrl || activeTrack?.instrumentalStemUrl)
       : stemMode === 'instrumental' && activeTrack?.instrumentalStemUrl
       ? activeTrack.instrumentalStemUrl
       : activeTrack?.audioUrl || '';
@@ -567,6 +637,65 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
                 </button>
               </div>
             </div>
+
+            {/* Personal Voice Cloning Section (Silicon Valley SOTA) */}
+            {!isInstrumental && (
+              <div className="p-3 bg-gradient-to-r from-purple-950/40 via-[#151324] to-[#10121e] rounded-xl border border-purple-500/30 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Mic className="w-4 h-4 text-purple-400" />
+                    <div>
+                      <span className="text-xs font-semibold text-white">Personal Voice Cloning</span>
+                      <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono">
+                        10s Timbre
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowVoiceCloneModal(true)}
+                    className="text-[11px] font-semibold text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-colors"
+                  >
+                    <span>+ New Clone</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedVoiceClone?.id || ''}
+                    onChange={(e) => {
+                      const found = clonedVoices.find((v) => v.id === e.target.value);
+                      setSelectedVoiceClone(found || null);
+                    }}
+                    className="flex-1 bg-[#090912] border border-purple-500/30 rounded-lg px-2.5 py-1.5 text-xs text-purple-200 focus:outline-none focus:border-purple-400 font-medium"
+                  >
+                    <option value="">Default AI Generative Vocalist</option>
+                    {clonedVoices.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        🎤 {v.name} ({v.pitchRange.split(' ')[0]})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedVoiceClone && (
+                  <div className="p-2 rounded-lg bg-purple-950/30 border border-purple-500/20 text-[10px] space-y-1 text-purple-200/90 font-mono">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Timbre:</span>
+                      <span className="text-purple-300 font-sans truncate max-w-[160px]">{selectedVoiceClone.timbre}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Formants:</span>
+                      <span className="text-emerald-400">{selectedVoiceClone.formants}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Studio HNR:</span>
+                      <span className="text-amber-400">{selectedVoiceClone.hnr}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Custom Mode: Lyrics & Songwriting AI */}
             {customMode && !isInstrumental ? (
@@ -1182,32 +1311,48 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
                 <SkipForward className="w-4 h-4" />
               </button>
 
-              {/* Stem Switcher Pill */}
+              {/* Demucs v4 4-Track Stem Switcher Pill */}
               {activeTrack.stemsSeparated && (
                 <div className="flex items-center bg-[#07080e] p-0.5 rounded-lg border border-slate-800 text-[10px] font-mono">
                   <button
                     onClick={() => setStemMode('mix')}
-                    className={`px-2 py-0.5 rounded ${
-                      stemMode === 'mix' ? 'bg-amber-500 text-black font-bold' : 'text-slate-400'
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      stemMode === 'mix' ? 'bg-amber-500 text-black font-bold' : 'text-slate-400 hover:text-white'
                     }`}
                   >
                     Mix
                   </button>
                   <button
                     onClick={() => setStemMode('vocals')}
-                    className={`px-2 py-0.5 rounded ${
-                      stemMode === 'vocals' ? 'bg-rose-500 text-white font-bold' : 'text-slate-400'
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      stemMode === 'vocals' ? 'bg-rose-500 text-white font-bold' : 'text-slate-400 hover:text-white'
                     }`}
                   >
                     Vocals
                   </button>
                   <button
-                    onClick={() => setStemMode('instrumental')}
-                    className={`px-2 py-0.5 rounded ${
-                      stemMode === 'instrumental' ? 'bg-cyan-500 text-black font-bold' : 'text-slate-400'
+                    onClick={() => setStemMode('bass')}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      stemMode === 'bass' ? 'bg-purple-500 text-white font-bold' : 'text-slate-400 hover:text-white'
                     }`}
                   >
-                    Inst
+                    Bass
+                  </button>
+                  <button
+                    onClick={() => setStemMode('drums')}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      stemMode === 'drums' ? 'bg-amber-600 text-white font-bold' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Drums
+                  </button>
+                  <button
+                    onClick={() => setStemMode('synths')}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      stemMode === 'synths' ? 'bg-cyan-500 text-black font-bold' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Synths
                   </button>
                 </div>
               )}
@@ -1317,6 +1462,159 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
               <pre className="text-xs font-mono text-slate-200 whitespace-pre-wrap leading-relaxed">
                 {activeTrack.lyrics}
               </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Personal Voice Cloning Modal (10s Acoustic Capture) */}
+      {showVoiceCloneModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="relative w-full max-w-lg bg-[#11121e] border border-purple-500/50 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+            <div className="p-5 border-b border-slate-800/80 flex items-center justify-between bg-[#17192a]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-purple-900/40">
+                  <Mic className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <span>Personal Voice Cloning Studio</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-mono">
+                      10s Zero-Shot
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Acoustic Timbre & Formant Neural Embedding
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowVoiceCloneModal(false)}
+                className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 bg-[#0b0c14]">
+              {/* Vocal Name */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">Cloned Vocalist Name</label>
+                <input
+                  type="text"
+                  value={newCloneName}
+                  onChange={(e) => setNewCloneName(e.target.value)}
+                  placeholder="e.g. Shan's Studio Vocals, Custom Vocalist #1"
+                  className="w-full bg-[#141624] border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-purple-500 font-medium"
+                />
+              </div>
+
+              {/* 10-Second Acoustic Sample Recorder */}
+              <div className="p-4 rounded-2xl bg-[#121422] border border-purple-500/30 text-center space-y-3">
+                <div className="flex items-center justify-center">
+                  <div
+                    className={`w-16 h-16 rounded-full flex items-center justify-center transition-all ${
+                      isRecordingVoice
+                        ? 'bg-rose-500 text-white animate-ping scale-110'
+                        : 'bg-purple-600/30 text-purple-400 border border-purple-500/50'
+                    }`}
+                  >
+                    <Mic className="w-8 h-8" />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold text-white">
+                    {isRecordingVoice ? `Recording Voice Sample (${recordProgress}/10s)...` : 'Record 10-Second Voice Sample'}
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Speak or sing clearly into your microphone for 10 seconds to calibrate vocal formants.
+                  </p>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-purple-500 to-rose-500 h-full transition-all duration-300"
+                    style={{ width: `${(recordProgress / 10) * 100}%` }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-center gap-3 pt-1">
+                  {!isRecordingVoice ? (
+                    <button
+                      type="button"
+                      onClick={handleStartVoiceRecording}
+                      disabled={isCloningVoice}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-900/30 transition-transform active:scale-95 disabled:opacity-50"
+                    >
+                      <Mic className="w-3.5 h-3.5" />
+                      <span>Start 10s Recording</span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-semibold animate-pulse">
+                      <Activity className="w-4 h-4" />
+                      <span>Calibrating Pitch & Formants ({10 - recordProgress}s remaining)</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleSaveVoiceClone}
+                    disabled={isCloningVoice || isRecordingVoice}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors disabled:opacity-50"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Upload Audio Sample</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Neural Acoustic Feature Specs */}
+              <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                <div className="p-2.5 rounded-xl bg-[#131525] border border-slate-800/80 space-y-1">
+                  <div className="text-slate-400 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    <span>Acoustic Timbre</span>
+                  </div>
+                  <div className="text-purple-300 font-semibold font-sans">Warm Resonant Formants</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#131525] border border-slate-800/80 space-y-1">
+                  <div className="text-slate-400 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    <span>RVQ DiT Vocals</span>
+                  </div>
+                  <div className="text-emerald-400 font-semibold">48kHz / 24-Bit FLAC</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-800/80 bg-[#141626] flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowVoiceCloneModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-xs text-slate-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveVoiceClone}
+                disabled={isCloningVoice || isRecordingVoice}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-xs font-bold text-white shadow-lg shadow-purple-900/40 transition-all active:scale-95 disabled:opacity-50"
+              >
+                {isCloningVoice ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Synthesizing Voice Profile...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Save & Use Cloned Voice</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

@@ -204,11 +204,34 @@ export interface GeneratedAudioItem {
   coverUrl: string;
   vocalStemUrl?: string;
   instrumentalStemUrl?: string;
+  bassStemUrl?: string;
+  drumsStemUrl?: string;
+  otherStemUrl?: string;
   stemsSeparated?: boolean;
+  clonedVoiceName?: string;
+  clonedVoiceTimbre?: string;
+  neuralCodec?: {
+    compressionRatio: string;
+    rvqCodebooks: number;
+    sampleRate: string;
+    twoStage: string;
+  };
   createdAt: string;
   isFavorite?: boolean;
   extended?: boolean;
   playCount?: number;
+}
+
+export interface ClonedVoiceProfile {
+  id: string;
+  name: string;
+  sampleDuration: number;
+  pitchRange: string;
+  formants: string;
+  timbre: string;
+  hnr: string;
+  createdAt: string;
+  audioSampleUrl?: string;
 }
 
 export interface AudioGenerationOptions {
@@ -222,6 +245,8 @@ export interface AudioGenerationOptions {
   duration?: number;
   bpm?: number;
   keySignature?: string;
+  clonedVoiceId?: string;
+  clonedVoiceName?: string;
 }
 
 export interface DocumentSlide {
@@ -239,6 +264,13 @@ export interface DocumentCitation {
   sourceTitle: string;
   snippet: string;
   pageOrSection?: string;
+}
+
+export interface GraphEntityNode {
+  id: string;
+  name: string;
+  type: 'concept' | 'metric' | 'organization' | 'milestone' | 'regulation';
+  connections: string[];
 }
 
 export interface DocumentItem {
@@ -259,6 +291,14 @@ export interface DocumentItem {
   createdAt: string;
   isFavorite?: boolean;
   sourceFile?: string;
+  ocrEngine?: string;
+  ragArchitecture?: string;
+  graphEntities?: GraphEntityNode[];
+  officeExportUrls?: {
+    docx?: string;
+    pptx?: string;
+    xlsx?: string;
+  };
 }
 
 export interface DocumentGenerationOptions {

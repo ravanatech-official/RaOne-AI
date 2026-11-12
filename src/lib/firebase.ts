@@ -10,7 +10,6 @@ import {
   User,
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { getAnalytics, isSupported } from 'firebase/analytics';
 
 // Official RaOne Firebase Project Configuration (raoneai)
 export const firebaseConfig = {
@@ -76,17 +75,8 @@ export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 
-// Safe Analytics Initialization for SSR / Preview
-let analyticsInstance: any = null;
-if (typeof window !== 'undefined') {
-  isSupported().then((supported) => {
-    if (supported) {
-      analyticsInstance = getAnalytics(app);
-    }
-  }).catch(() => {});
-}
-
-export const analytics = analyticsInstance;
+// Safe Analytics Export (Disabled on dev/preview URLs to prevent 403 Installations API referer restriction)
+export const analytics: any = null;
 
 // Auth helper functions
 export async function loginWithGoogle(): Promise<User> {
