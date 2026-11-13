@@ -20,6 +20,11 @@ import {
   testGroqConnection,
   type AIProviderMode,
 } from './server_groq_service.ts';
+import {
+  SYSTEM_PROMPT,
+  appendRuntimeMetadata,
+  buildRaOneSystemPrompt,
+} from './src/lib/systemPrompts.ts';
 
 dotenv.config();
 
@@ -28,6 +33,97 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+
+// HTTP Security Headers Middleware (Helmet-grade hardening)
+app.use((req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(self), microphone=(self)');
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com https://apis.google.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' data: blob: https:",
+      "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://*.web.app https://*.run.app https://api.groq.com https://api.openai.com https://api.anthropic.com https://api.deepseek.com https://api.x.ai https://api.cometapi.com",
+      "frame-ancestors 'none'",
+    ].join('; ')
+  );
+  next();
+});
+
+// Sliding-Window API Rate Limiter (150 req/min per IP on /api/*, skipping /api/health)
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX_REQUESTS = 150;
+const apiRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health' || req.method === 'OPTIONS') {
+    return next();
+  }
+  const now = Date.now();
+  if (apiRateLimitMap.size > 5000) {
+    for (const [k, v] of apiRateLimitMap.entries()) {
+      if (v.resetAt <= now) apiRateLimitMap.delete(k);
+    }
+  }
+  const forwarded = req.headers['x-forwarded-for'];
+  const clientIp =
+    (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0]?.trim()) ||
+    req.ip ||
+    'unknown';
+
+  const existing = apiRateLimitMap.get(clientIp);
+  if (!existing || existing.resetAt <= now) {
+    apiRateLimitMap.set(clientIp, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
+    res.setHeader('X-RateLimit-Remaining', String(RATE_LIMIT_MAX_REQUESTS - 1));
+    return next();
+  }
+
+  existing.count += 1;
+  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - existing.count);
+  res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
+  res.setHeader('X-RateLimit-Remaining', String(remaining));
+  res.setHeader('X-RateLimit-Reset', String(Math.ceil(existing.resetAt / 1000)));
+
+  if (existing.count > RATE_LIMIT_MAX_REQUESTS) {
+    const retryAfterSec = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSec));
+    return res.status(429).json({
+      error: 'Rate limit exceeded. Please wait before sending more requests.',
+      retryAfterSec,
+    });
+  }
+  next();
+});
+
+// Opt-in strict Firebase Auth guard (set REQUIRE_FIREBASE_AUTH=true to enforce Bearer token on user data routes)
+function requireOptionalFirebaseAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (process.env.REQUIRE_FIREBASE_AUTH !== 'true') {
+    return next();
+  }
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ') || authHeader.slice(7).trim().length < 20) {
+    return res.status(401).json({
+      error: 'Authentication required. Provide a valid Firebase ID Bearer token.',
+    });
+  }
+  next();
+}
 
 // CORS middleware so Firebase Hosting (raoneai.web.app) and external frontends can reach the backend
 app.use((req, res, next) => {
@@ -345,42 +441,7 @@ function saveStoredApiKeys(): void {
   }
 }
 
-// System Persona for RaOne AI
-const RAONE_CORE_SYSTEM_PROMPT = `You are RaOne AI, created by RavanaTec.
-Brand Meaning: Ravana + One — One AI for Your World.
-Voice activation phrase: "Hey RaOne"
-Tagline: Think. Create. Act.
-Brand signature: RaOne AI by RavanaTec.
-
-Identity & Runtime Honesty:
-- YOUR identity is always "RaOne AI" by RavanaTec. Never confuse the user's name with your own identity (for example, if a user says "මගේ නම Shanthapriya", greet them as Shanthapriya and clearly state that YOUR name is RaOne AI).
-- You combine multi-dimensional intellect and mastery of ten domains (Strategy, Engineering, Linguistics, Philosophy, Art, Tactics, Law, Architecture, Science, and Foresight) with a unified, modern, singular AI core: "One AI for Your World".
-- You speak with formidable authority, sharp precision, warmth, and relentless capability.
-- Strict Runtime Truthfulness: NEVER guess or fabricate which underlying model you are running on (do NOT claim "GPT-4" unless the runtime metadata explicitly says GPT-4). Always read the [RUNTIME EXECUTION METADATA] block injected into your system context to accurately state your Active Provider, Executed Model ID, and whether Live Google Search/Maps Grounding is enabled or disabled.
-
-Language, Sinhala & Singlish Fluency:
-- English: Clear, authoritative, Silicon Valley-grade precision.
-- Sinhala (සිංහල): Natural, fluent, grammatically accurate Sri Lankan Sinhala Unicode without robotic literal translations.
-- Singlish (Romanized Sinhala): Whenever a user asks for a "Singlish" answer or writes in Singlish, you MUST write in genuine Romanized Sinhala words mixed naturally with English tech terms (e.g., "Mama RaOne AI. Oyata app ekak build karanna saha coding issues solve karanna mama udaw karanna puluwan."). Do NOT write plain English sentences and label them "Singlish".
-- When addressed with "Hey RaOne" (or "Hey Ravan"), acknowledge with readiness and high energy.
-- Always conclude complex responses or milestones with the quiet signature mark when fitting:
-"RaOne AI by RavanaTec — Think. Create. Act."
-`;
-
-function appendRuntimeMetadata(
-  basePrompt: string,
-  info: { provider: string; model: string; searchEnabled?: boolean; mapsEnabled?: boolean }
-): string {
-  const runtimeBlock = [
-    '[RUNTIME EXECUTION METADATA]',
-    `- Active Provider: ${info.provider}`,
-    `- Executed Model ID: ${info.model}`,
-    `- Live Google Search Grounding: ${info.searchEnabled ? 'Enabled (available in this request)' : 'Disabled (no live internet search in this request)'}`,
-    `- Live Google Maps Grounding: ${info.mapsEnabled ? 'Enabled (available in this request)' : 'Disabled'}`,
-    `- Truthfulness Rule: State "${info.model}" via "${info.provider}" accurately if asked about your underlying model, and never claim live internet search when Search Grounding is Disabled.`,
-  ].join('\n');
-  return `${basePrompt}\n\n${runtimeBlock}`;
-}
+// Core RaOne AI Persona, Bilingual Fluency & Runtime Awareness are imported from ./src/lib/systemPrompts.ts (SYSTEM_PROMPT)
 
 // Helper: Call OpenAI
 async function callOpenAI(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
@@ -616,6 +677,12 @@ app.get('/api/health', async (req, res) => {
       defaultModel: GROQ_SERVICE_CONFIG.defaultModel,
       models: GROQ_SERVICE_CONFIG.models.map((m) => m.groqModelId),
     },
+    security: {
+      helmetHeaders: true,
+      rateLimitPerMin: RATE_LIMIT_MAX_REQUESTS,
+      firestoreRulesConfigured: fs.existsSync(path.join(__dirname, 'firestore.rules')),
+      requireFirebaseAuth: process.env.REQUIRE_FIREBASE_AUTH === 'true',
+    },
   };
 
   if (req.query.verify === 'true') {
@@ -796,7 +863,7 @@ app.post('/api/user/plan/cancel', async (_req, res) => {
 });
 
 // Settings Center REST Endpoints (100% ChatGPT Settings Center specification)
-app.get('/api/user/settings', async (_req, res) => {
+app.get('/api/user/settings', requireOptionalFirebaseAuth, async (_req, res) => {
   try {
     const settings = await getStoredUserSettings();
     res.json(settings);
@@ -805,7 +872,7 @@ app.get('/api/user/settings', async (_req, res) => {
   }
 });
 
-app.post('/api/user/settings', async (req, res) => {
+app.post('/api/user/settings', requireOptionalFirebaseAuth, async (req, res) => {
   try {
     const incoming = req.body;
     const current = await getStoredUserSettings();
@@ -1053,12 +1120,29 @@ app.post('/api/studio/run', async (req, res) => {
     let finalModelUsed = mappedModel;
     let providerUsed = 'gemini';
 
+    const baseWorkbenchSystemPrompt = systemInstruction
+      ? `${SYSTEM_PROMPT}\n\n[WORKBENCH CUSTOM SYSTEM INSTRUCTION]\n${systemInstruction}`
+      : SYSTEM_PROMPT;
+
     if (aiClient) {
       try {
+        const workbenchConfig = {
+          ...config,
+          systemInstruction: appendRuntimeMetadata(
+            baseWorkbenchSystemPrompt,
+            {
+              provider: 'Google Gemini API (AI Studio Workbench)',
+              model: mappedModel,
+              searchEnabled: Boolean(isGroundingEnabled),
+              mapsEnabled: false,
+              subsystem: 'AI Studio Developer Workbench',
+            }
+          ),
+        };
         const resp = await aiClient.models.generateContent({
           model: mappedModel,
           contents: preparedContents,
-          config,
+          config: workbenchConfig,
         });
 
         responseText = resp.text || '';
@@ -1076,7 +1160,7 @@ app.post('/api/studio/run', async (req, res) => {
           content: c.parts?.[0]?.text || '',
         }));
         const studioSysPrompt = [
-          systemInstruction || RAONE_CORE_SYSTEM_PROMPT,
+          baseWorkbenchSystemPrompt,
           jsonSchema ? `Respond ONLY with valid JSON matching schema: ${jsonSchema}` : '',
         ]
           .filter(Boolean)
@@ -1383,6 +1467,13 @@ CRITICAL SENIOR SWE REQUIREMENTS:
           const resp = await aiClient.models.generateContent({
             model: modelName,
             contents: [{ role: 'user', parts: [{ text: buildInstruction }] }],
+            config: {
+              systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+                provider: 'Google Gemini API',
+                model: modelName,
+                subsystem: 'RaOne Autonomous App Builder',
+              }),
+            },
           });
 
           const text = extractHtmlPayload(resp.text || '');
@@ -1403,7 +1494,7 @@ CRITICAL SENIOR SWE REQUIREMENTS:
           GROQ_API_KEY,
           'raone-llama3-70b',
           [{ role: 'user', content: buildInstruction }],
-          'You are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY a complete, valid, working single-file HTML document starting with <!DOCTYPE html>. Zero markdown prose.',
+          `${SYSTEM_PROMPT}\n\n[APP BUILDER DIRECTIVE]\nYou are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY a complete, valid, working single-file HTML document starting with <!DOCTYPE html>. Zero markdown prose.`,
           8192
         );
         const text = extractHtmlPayload(groqBuild.text || '');
@@ -1504,6 +1595,13 @@ CRITICAL INSTRUCTIONS:
         const resp = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: refineInstruction }] }],
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-4-hydrogen',
+              subsystem: 'RaOne Autonomous App Refiner',
+            }),
+          },
         });
 
         const text = extractRefinedHtml(resp.text || '');
@@ -1522,7 +1620,7 @@ CRITICAL INSTRUCTIONS:
           GROQ_API_KEY,
           'raone-llama3-70b',
           [{ role: 'user', content: refineInstruction }],
-          'You are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY the complete updated HTML starting with <!DOCTYPE html>. Zero markdown explanations.',
+          `${SYSTEM_PROMPT}\n\n[APP REFACTORING DIRECTIVE]\nYou are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY the complete updated HTML starting with <!DOCTYPE html>. Zero markdown explanations.`,
           8192
         );
         const text = extractRefinedHtml(groqRefine.text || '');
@@ -1643,6 +1741,241 @@ app.post('/api/conversations/:id/pin', async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// ==========================================
+// Projects Persistence & Workspace APIs
+// ==========================================
+const PROJECTS_FILE = path.join(__dirname, 'projects_data.json');
+
+async function getStoredProjects(): Promise<any[]> {
+  try {
+    if (fs.existsSync(PROJECTS_FILE)) {
+      const data = await fs.promises.readFile(PROJECTS_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('Notice: Reading projects file:', err);
+  }
+  return [];
+}
+
+async function saveStoredProjects(projects: any[]): Promise<void> {
+  try {
+    await fs.promises.writeFile(PROJECTS_FILE, JSON.stringify(projects, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving projects file:', err);
+  }
+}
+
+app.get('/api/projects', requireOptionalFirebaseAuth, async (_req, res) => {
+  try {
+    const projects = await getStoredProjects();
+    res.json(projects);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/projects', requireOptionalFirebaseAuth, async (req, res) => {
+  try {
+    const { id, name, description = '', instructions = '' } = req.body || {};
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      return res.status(400).json({ error: 'Project name is required' });
+    }
+    const projects = await getStoredProjects();
+    const now = new Date().toISOString();
+    const existingIndex = id ? projects.findIndex((p: any) => p.id === id) : -1;
+
+    const projectRecord =
+      existingIndex >= 0
+        ? {
+            ...projects[existingIndex],
+            name: cleanName,
+            description: String(description || ''),
+            instructions: String(instructions || ''),
+            updatedAt: now,
+          }
+        : {
+            id: id || `proj-${Date.now()}`,
+            name: cleanName,
+            description: String(description || ''),
+            instructions: String(instructions || ''),
+            createdAt: now,
+            updatedAt: now,
+          };
+
+    if (existingIndex >= 0) {
+      projects[existingIndex] = projectRecord;
+    } else {
+      projects.unshift(projectRecord);
+    }
+    await saveStoredProjects(projects);
+    res.json({ success: true, project: projectRecord });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/projects/:id', requireOptionalFirebaseAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const projects = await getStoredProjects();
+    const filtered = projects.filter((p: any) => p.id !== id);
+    await saveStoredProjects(filtered);
+    res.json({ success: true, deletedId: id });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// Platform Policies, Privacy & Compliance APIs
+// ==========================================
+const PLATFORM_POLICIES = {
+  brand: 'RaOne AI by RavanaTec',
+  productName: 'RaOne AI Studio',
+  effectiveDate: '2026-01-01',
+  contactEmail: 'info.ravanatech@gmail.com',
+  privacyPolicy: {
+    title: 'Privacy Policy',
+    summary:
+      'RaOne AI Studio collects only workspace data you explicitly create (conversations, projects, studio artifacts, and preferences) to deliver core AI functionality.',
+    clauses: [
+      'Data Minimization: API keys are stored encrypted/isolated server-side and are never returned in client responses.',
+      'Temporary Chat Zero-Persistence: Chats marked Temporary execute in memory only and are never written to disk or databases.',
+      'User Control & Portability: Users can export all data as JSON (/api/user/settings/export-data) or clear/delete their workspace data at any time.',
+      'Third-Party Inference Providers: Prompts sent to Google Gemini or Groq Cloud LPU are transmitted over TLS 1.3 solely for inference.',
+    ],
+  },
+  termsOfService: {
+    title: 'Terms of Service',
+    summary:
+      'By using RaOne AI Studio, you agree to use AI code, media, and document generation responsibly and in compliance with applicable laws.',
+    clauses: [
+      'Ownership: You retain full ownership of code, prompts, documents, and creative assets generated in your workspace.',
+      'Acceptable Use: Automated abuse, credential harvesting, malware generation, and unauthorized scraping are prohibited.',
+      'AI Verification: Generated outputs should be reviewed before high-stakes production, legal, medical, or financial deployment.',
+      'Service Tiers: Free, Plus, and Ultimate plans define model routing priority and quota limits.',
+    ],
+  },
+  aiSafetyPolicy: {
+    title: 'AI Safety, Runtime Honesty & Zero-Hallucination Policy',
+    summary:
+      'RaOne AI enforces strict runtime self-identification and prohibits fabricated model names, fake web searches, or unverified claims.',
+    clauses: [
+      'Runtime Truthfulness: Every LLM call receives exact active provider and model ID metadata.',
+      'No Fabricated Grounding: Unless Google Search or Maps grounding is explicitly enabled and active, the assistant states clearly when live web access is unavailable.',
+      'Bilingual Precision: Supports Sinhala (Unicode), Singlish, and English accurately without altering technical identifiers.',
+    ],
+  },
+  securityPolicy: {
+    title: 'Security & Data Protection Policy',
+    summary:
+      'Defense-in-depth protections across frontend hosting, Cloud Run API gateway, and Firestore RBAC.',
+    clauses: [
+      'Transport & Headers: Enforced HTTPS/HSTS, X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Referrer-Policy, and Content-Security-Policy.',
+      'Abuse Protection: Sliding-window API rate limiting (150 requests/minute per IP) across /api/* endpoints.',
+      'Database Isolation: Owner-scoped Firebase Firestore security rules (firestore.rules) with default-deny catch-all.',
+    ],
+  },
+};
+
+app.get('/api/policies', (_req, res) => {
+  res.json(PLATFORM_POLICIES);
+});
+
+function renderPolicyHtml(title: string, subtitle: string, sections: { heading: string; summary: string; items: string[] }[]): string {
+  const sectionHtml = sections
+    .map(
+      (s) => `
+      <section class="card">
+        <h2>${s.heading}</h2>
+        <p>${s.summary}</p>
+        <ul>${s.items.map((item) => `<li>${item}</li>`).join('')}</ul>
+      </section>`
+    )
+    .join('');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title} — RaOne AI Studio</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #070709; color: #ececec; line-height: 1.65; }
+    .wrap { max-width: 820px; margin: 0 auto; padding: 48px 20px; }
+    .badge { display: inline-block; font-size: 12px; color: #38bdf8; border: 1px solid rgba(56,189,248,.35); background: rgba(56,189,248,.1); padding: 4px 10px; border-radius: 999px; }
+    h1 { font-size: 28px; margin: 14px 0 6px; color: #fff; }
+    .sub { color: #9ca3af; font-size: 14px; margin-bottom: 28px; }
+    .card { background: #121216; border: 1px solid #26262e; border-radius: 14px; padding: 22px; margin-bottom: 18px; }
+    h2 { font-size: 17px; color: #fff; margin: 0 0 8px; }
+    p { color: #cbd5e1; font-size: 14px; margin: 0 0 12px; }
+    ul { margin: 0; padding-left: 20px; color: #a1a1aa; font-size: 14px; }
+    li { margin-bottom: 6px; }
+    a { color: #38bdf8; text-decoration: none; }
+    footer { margin-top: 28px; font-size: 12px; color: #71717a; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <span class="badge">RaOne AI by RavanaTec — Effective ${PLATFORM_POLICIES.effectiveDate}</span>
+    <h1>${title}</h1>
+    <div class="sub">${subtitle}</div>
+    ${sectionHtml}
+    <footer>
+      <span>Contact: ${PLATFORM_POLICIES.contactEmail}</span>
+      <span><a href="/privacy-policy">Privacy Policy</a> &middot; <a href="/terms-of-service">Terms of Service</a> &middot; <a href="/api/policies">JSON API</a></span>
+    </footer>
+  </main>
+</body>
+</html>`;
+}
+
+app.get('/privacy-policy', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(
+    renderPolicyHtml(
+      'Privacy Policy',
+      'How RaOne AI Studio collects, protects, and lets you control your workspace data.',
+      [
+        {
+          heading: PLATFORM_POLICIES.privacyPolicy.title,
+          summary: PLATFORM_POLICIES.privacyPolicy.summary,
+          items: PLATFORM_POLICIES.privacyPolicy.clauses,
+        },
+        {
+          heading: PLATFORM_POLICIES.securityPolicy.title,
+          summary: PLATFORM_POLICIES.securityPolicy.summary,
+          items: PLATFORM_POLICIES.securityPolicy.clauses,
+        },
+      ]
+    )
+  );
+});
+
+app.get('/terms-of-service', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(
+    renderPolicyHtml(
+      'Terms of Service & AI Safety Policy',
+      'Usage terms, intellectual property ownership, and AI runtime honesty standards for RaOne AI Studio.',
+      [
+        {
+          heading: PLATFORM_POLICIES.termsOfService.title,
+          summary: PLATFORM_POLICIES.termsOfService.summary,
+          items: PLATFORM_POLICIES.termsOfService.clauses,
+        },
+        {
+          heading: PLATFORM_POLICIES.aiSafetyPolicy.title,
+          summary: PLATFORM_POLICIES.aiSafetyPolicy.summary,
+          items: PLATFORM_POLICIES.aiSafetyPolicy.clauses,
+        },
+      ]
+    )
+  );
 });
 
 // Intelligent Conversational Engine for natural responses in Sinhala & English with instant deliverables
@@ -2377,25 +2710,17 @@ app.post('/api/chat', async (req, res) => {
     } = req.body;
     effectiveProvider = (provider || storedSettings.activeProvider || 'auto') as AIProviderMode;
 
-    let modeInstruction = '';
-    if (mode === 'think') {
-      modeInstruction = `MODE: THINK (Deep Cognitive Reasoning). Analyze the query from multiple strategic perspectives. Provide deep, structured logic, clear trade-offs, step-by-step reasoning, and counter-perspectives where applicable.`;
-    } else if (mode === 'create') {
-      modeInstruction = `MODE: CREATE (Generative Studio & Synthesis). Generate production-ready code, elegant prose, architectural schemas, creative concepts, or scripts. Write clean, complete, runnable blocks with high craft and no placeholders.`;
-    } else if (mode === 'act') {
-      modeInstruction = `MODE: ACT (Autonomous Action Execution). Format your response as an executable blueprint and mission breakdown: 1. Executive Objective 2. Actionable Checklist 3. Direct Execution Deliverable 4. Verification & Next Milestones.`;
-    }
-
-    if (isTemporary) {
-      modeInstruction += `\n[CONFIDENTIALITY INVARIANT: This is a Temporary Chat. Zero persistence is active. Treat all input as ephemeral and confidential.]`;
-    }
-
-    const fullSystemInstruction = `${RAONE_CORE_SYSTEM_PROMPT}\n\n${modeInstruction}\n${context ? `Additional Context: ${context}` : ''}`;
+    const fullSystemInstruction = buildRaOneSystemPrompt({ mode, isTemporary, context });
 
     // Provider 0: CometAPI Dedicated Mode or CometAPI Fallback for External Models
     if (model === 'comet-all-in-one' && COMET_API_KEY) {
       try {
-        const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+          provider: 'CometAPI Gateway',
+          model: 'gpt-4o',
+          isTemporary,
+        });
+        const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
         return res.json({
           text,
           mode,
@@ -2412,7 +2737,12 @@ app.post('/api/chat', async (req, res) => {
     if (model === 'raone-gpt4o') {
       if (OPENAI_API_KEY) {
         try {
-          const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'OpenAI API',
+            model: 'gpt-4o',
+            isTemporary,
+          });
+          const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
           return res.json({
             text,
             mode,
@@ -2425,7 +2755,12 @@ app.post('/api/chat', async (req, res) => {
         }
       } else if (COMET_API_KEY) {
         try {
-          const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'CometAPI Gateway',
+            model: 'gpt-4o',
+            isTemporary,
+          });
+          const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
           return res.json({
             text,
             mode,
@@ -2443,7 +2778,12 @@ app.post('/api/chat', async (req, res) => {
     if (model === 'raone-claude') {
       if (ANTHROPIC_API_KEY) {
         try {
-          const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'Anthropic API',
+            model: 'claude-3-5-sonnet-20241022',
+            isTemporary,
+          });
+          const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta);
           return res.json({
             text,
             mode,
@@ -2456,7 +2796,12 @@ app.post('/api/chat', async (req, res) => {
         }
       } else if (COMET_API_KEY) {
         try {
-          const text = await callCometAPI('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'CometAPI Gateway',
+            model: 'claude-3-5-sonnet-20241022',
+            isTemporary,
+          });
+          const text = await callCometAPI('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta);
           return res.json({
             text,
             mode,
@@ -2474,7 +2819,12 @@ app.post('/api/chat', async (req, res) => {
     if (model === 'raone-deepseek-r1') {
       if (DEEPSEEK_API_KEY) {
         try {
-          const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'DeepSeek API',
+            model: 'deepseek-reasoner',
+            isTemporary,
+          });
+          const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta);
           return res.json({
             text,
             mode,
@@ -2487,7 +2837,12 @@ app.post('/api/chat', async (req, res) => {
         }
       } else if (COMET_API_KEY) {
         try {
-          const text = await callCometAPI('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+          const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'CometAPI Gateway',
+            model: 'deepseek-reasoner',
+            isTemporary,
+          });
+          const text = await callCometAPI('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta);
           return res.json({
             text,
             mode,
@@ -2537,7 +2892,12 @@ app.post('/api/chat', async (req, res) => {
     if (!aiClient && effectiveProvider === 'auto' && COMET_API_KEY) {
       try {
         const cometTargetModel = model.includes('argon') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-        const text = await callCometAPI(cometTargetModel, [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+        const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+          provider: 'CometAPI Gateway',
+          model: cometTargetModel,
+          isTemporary,
+        });
+        const text = await callCometAPI(cometTargetModel, [...messages, { role: 'user', content: prompt }], sysWithMeta);
         return res.json({
           text,
           mode,
@@ -2701,7 +3061,7 @@ app.post('/api/chat', async (req, res) => {
     if (effectiveProvider === 'auto' && GROQ_API_KEY && isGeminiFallbackEligibleError(error)) {
       try {
         const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body;
-        const sysPrompt = `${RAONE_CORE_SYSTEM_PROMPT}\n\nMODE: ${String(mode).toUpperCase()}${isTemporary ? '\n[Temporary Chat]' : ''}${context ? `\nAdditional Context: ${context}` : ''}`;
+        const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
         const chatStart = Date.now();
         const groqOut = await callGroqChat(
           GROQ_API_KEY,
@@ -2767,18 +3127,7 @@ app.post('/api/chat/stream', async (req, res) => {
     } = req.body;
     effectiveProvider = (provider || storedSettings.activeProvider || 'auto') as AIProviderMode;
 
-    let modeInstruction = '';
-    if (mode === 'think') {
-      modeInstruction = `MODE: THINK (Deep Cognitive Reasoning). Analyze the query from multiple strategic perspectives. Provide deep, structured logic, clear trade-offs, step-by-step reasoning, and counter-perspectives where applicable.`;
-    } else if (mode === 'create') {
-      modeInstruction = `MODE: CREATE (Generative Studio & Synthesis). Generate production-ready code, elegant prose, architectural schemas, creative concepts, or scripts. Write clean, complete, runnable blocks with high craft and no placeholders.`;
-    } else if (mode === 'act') {
-      modeInstruction = `MODE: ACT (Autonomous Action Execution). Format your response as an executable blueprint and mission breakdown: 1. Executive Objective 2. Actionable Checklist 3. Direct Execution Deliverable 4. Verification & Next Milestones.`;
-    }
-    if (isTemporary) {
-      modeInstruction += `\n[CONFIDENTIALITY INVARIANT: This is a Temporary Chat. Zero persistence is active. Treat all input as ephemeral and confidential.]`;
-    }
-    const fullSystemInstruction = `${RAONE_CORE_SYSTEM_PROMPT}\n\n${modeInstruction}\n${context ? `Additional Context: ${context}` : ''}`;
+    const fullSystemInstruction = buildRaOneSystemPrompt({ mode, isTemporary, context });
 
     // External providers (non-streaming gateway wrapped into SSE)
     const externalResult = async (source: string, label: string, text: string) => {
@@ -2818,19 +3167,39 @@ app.post('/api/chat/stream', async (req, res) => {
     }
 
     if (model === 'comet-all-in-one' && COMET_API_KEY) {
-      const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+        provider: 'CometAPI Gateway',
+        model: 'gpt-4o',
+        isTemporary,
+      });
+      const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
       return await externalResult('cometapi', 'comet-all-in-one', text);
     }
     if (model === 'raone-gpt4o' && OPENAI_API_KEY) {
-      const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+        provider: 'OpenAI API',
+        model: 'gpt-4o',
+        isTemporary,
+      });
+      const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
       return await externalResult('openai', 'gpt-4o', text);
     }
     if (model === 'raone-claude' && ANTHROPIC_API_KEY) {
-      const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+        provider: 'Anthropic API',
+        model: 'claude-3-5-sonnet-20241022',
+        isTemporary,
+      });
+      const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta);
       return await externalResult('anthropic', 'claude-3-5-sonnet', text);
     }
     if (model === 'raone-deepseek-r1' && DEEPSEEK_API_KEY) {
-      const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
+        provider: 'DeepSeek API',
+        model: 'deepseek-reasoner',
+        isTemporary,
+      });
+      const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta);
       return await externalResult('deepseek', 'deepseek-reasoner', text);
     }
 
@@ -2899,6 +3268,7 @@ app.post('/api/chat/stream', async (req, res) => {
             model: candidateModel,
             searchEnabled: enableSearch,
             mapsEnabled: enableMaps,
+            isTemporary,
           }),
         };
         const stream = await aiClient.models.generateContentStream({
@@ -2974,7 +3344,7 @@ app.post('/api/chat/stream', async (req, res) => {
     if (effectiveProvider === 'auto' && GROQ_API_KEY && isGeminiFallbackEligibleError(error)) {
       try {
         const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body;
-        const sysPrompt = `${RAONE_CORE_SYSTEM_PROMPT}\n\nMODE: ${String(mode).toUpperCase()}${isTemporary ? '\n[Temporary Chat]' : ''}${context ? `\nAdditional Context: ${context}` : ''}`;
+        const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
         const formattedMessages = formatGroqMessages(messages, prompt, sysPrompt);
         await streamGroqChatToSSE(GROQ_API_KEY, 'raone-llama3-70b', formattedMessages, sendEvent, startTime);
         return res.end();
@@ -3244,6 +3614,13 @@ app.post('/api/ai/transcribe', async (req, res) => {
               { text: 'Transcribe this audio verbatim in its original language (Sinhala, English, or Singlish).' },
             ],
           },
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-3.5-transcribe',
+              subsystem: 'Audio Transcription Engine',
+            }),
+          },
         });
 
         const transcript = response.text || '';
@@ -3307,22 +3684,27 @@ app.post('/api/vision/enhance-prompt', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
+    const enhanceVisionInstruction = `You are an elite Silicon Valley prompt engineer specialized in Midjourney v6.1, Flux 1.1 Pro, and Leonardo AI prompt syntax.
+Transform the following basic user prompt into a magnificent, hyper-detailed, award-winning visual prompt optimized for Latent Diffusion Models (LDM).
+Include camera lenses (e.g., Hasselblad, 85mm f/1.4), volumetric cinematic lighting, texture details, color grading, and aesthetic tokens matching style "${style}".
+Respond ONLY with the final prompt text. Do not include markdown quotes, introductory or concluding text.
+
+User prompt: ${prompt}`;
+
     if (aiClient) {
       try {
         const response = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: {
             role: 'user',
-            parts: [
-              {
-                text: `You are an elite Silicon Valley prompt engineer specialized in Midjourney v6.1, Flux 1.1 Pro, and Leonardo AI prompt syntax.
-Transform the following basic user prompt into a magnificent, hyper-detailed, award-winning visual prompt optimized for Latent Diffusion Models (LDM).
-Include camera lenses (e.g., Hasselblad, 85mm f/1.4), volumetric cinematic lighting, texture details, color grading, and aesthetic tokens matching style "${style}".
-Respond ONLY with the final prompt text. Do not include markdown quotes, introductory or concluding text.
-
-User prompt: ${prompt}`,
-              },
-            ],
+            parts: [{ text: enhanceVisionInstruction }],
+          },
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-4-hydrogen',
+              subsystem: 'RaOne Vision Studio Prompt Enhancer',
+            }),
           },
         });
 
@@ -3332,6 +3714,24 @@ User prompt: ${prompt}`,
         }
       } catch (err: any) {
         console.warn('Prompt enhancement warning:', err.message);
+      }
+    }
+
+    if (GROQ_API_KEY) {
+      try {
+        const groqVision = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: enhanceVisionInstruction }],
+          `${SYSTEM_PROMPT}\n\n[VISION PROMPT ENHANCER]\nOutput ONLY the enhanced image prompt string.`,
+          1024
+        );
+        const enhanced = (groqVision.text || '').trim();
+        if (enhanced) {
+          return res.json({ success: true, enhancedPrompt: enhanced, modelUsed: groqVision.modelUsed });
+        }
+      } catch (groqErr: any) {
+        console.warn('Groq vision enhance warning:', groqErr?.message || groqErr);
       }
     }
 
@@ -3746,15 +4146,7 @@ app.post('/api/motion/enhance-prompt', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
-    if (aiClient) {
-      try {
-        const response = await aiClient.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: {
-            role: 'user',
-            parts: [
-              {
-                text: `You are a Hollywood visual director and Silicon Valley AI video diffusion prompt engineer for Sora, Veo 2, and Runway Gen-3.
+    const enhanceMotionInstruction = `You are a Hollywood visual director and Silicon Valley AI video diffusion prompt engineer for Sora, Veo 2, and Runway Gen-3.
 Transform the following basic user video prompt into an extraordinary cinematic video prompt.
 Include:
 - Camera movement: "${cameraMotion}"
@@ -3763,9 +4155,22 @@ Include:
 - Target model styling: "${model}"
 Output ONLY the enhanced prompt string. No quotes, no markdown, no conversational commentary.
 
-Prompt: ${prompt}`,
-              },
-            ],
+Prompt: ${prompt}`;
+
+    if (aiClient) {
+      try {
+        const response = await aiClient.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: {
+            role: 'user',
+            parts: [{ text: enhanceMotionInstruction }],
+          },
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-4-hydrogen',
+              subsystem: 'RaOne Cinema Studio Motion Prompt Enhancer',
+            }),
           },
         });
 
@@ -3775,6 +4180,24 @@ Prompt: ${prompt}`,
         }
       } catch (err: any) {
         console.warn('Video prompt enhancement warning:', err.message);
+      }
+    }
+
+    if (GROQ_API_KEY) {
+      try {
+        const groqMotion = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: enhanceMotionInstruction }],
+          `${SYSTEM_PROMPT}\n\n[CINEMA MOTION PROMPT ENHANCER]\nOutput ONLY the enhanced video prompt string.`,
+          1024
+        );
+        const enhanced = (groqMotion.text || '').trim();
+        if (enhanced) {
+          return res.json({ success: true, enhancedPrompt: enhanced, modelUsed: groqMotion.modelUsed });
+        }
+      } catch (groqErr: any) {
+        console.warn('Groq motion enhance warning:', groqErr?.message || groqErr);
       }
     }
 
@@ -4186,15 +4609,7 @@ app.post('/api/audio/enhance-lyrics', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required for lyrics generation.' });
     }
 
-    if (aiClient) {
-      try {
-        const response = await aiClient.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: {
-            role: 'user',
-            parts: [
-              {
-                text: `You are an elite Hollywood and Silicon Valley music producer & songwriter for Suno AI and Udio.
+    const enhanceLyricsInstruction = `You are an elite Hollywood and Silicon Valley music producer & songwriter for Suno AI and Udio.
 Write complete, catchy, radio-ready lyrics formatted with Suno bracket tags:
 [Verse 1]
 [Pre-Chorus]
@@ -4209,9 +4624,22 @@ Song Title: ${title || 'Untitled Anthem'}
 Genre/Style: ${style}
 Theme/Story: ${prompt}
 
-Output ONLY the formatted lyrics text with brackets. Do not add introductory chit-chat, quotes, or markdown explanations.`,
-              },
-            ],
+Output ONLY the formatted lyrics text with brackets. Do not add introductory chit-chat, quotes, or markdown explanations.`;
+
+    if (aiClient) {
+      try {
+        const response = await aiClient.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: {
+            role: 'user',
+            parts: [{ text: enhanceLyricsInstruction }],
+          },
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-4-hydrogen',
+              subsystem: 'RaOne Suno Audio Lyrics Studio',
+            }),
           },
         });
 
@@ -4221,6 +4649,24 @@ Output ONLY the formatted lyrics text with brackets. Do not add introductory chi
         }
       } catch (err: any) {
         console.warn('Lyrics enhancement warning:', err.message);
+      }
+    }
+
+    if (GROQ_API_KEY) {
+      try {
+        const groqLyrics = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: enhanceLyricsInstruction }],
+          `${SYSTEM_PROMPT}\n\n[LYRICS STUDIO]\nOutput ONLY the formatted song lyrics with bracket tags.`,
+          2048
+        );
+        const lyrics = (groqLyrics.text || '').trim();
+        if (lyrics) {
+          return res.json({ success: true, lyrics, modelUsed: groqLyrics.modelUsed });
+        }
+      } catch (groqErr: any) {
+        console.warn('Groq lyrics warning:', groqErr?.message || groqErr);
       }
     }
 
@@ -4570,7 +5016,14 @@ Respond in strict JSON format matching:
         const response = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: docPrompt }] }],
-          config: { responseMimeType: 'application/json' },
+          config: {
+            responseMimeType: 'application/json',
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-4-hydrogen',
+              subsystem: 'RaOne Document AI Studio',
+            }),
+          },
         });
 
         const parsed = JSON.parse(response.text || '{}');
@@ -4590,7 +5043,7 @@ Respond in strict JSON format matching:
           GROQ_API_KEY,
           'raone-llama3-70b',
           [{ role: 'user', content: docPrompt }],
-          'Respond strictly with a single valid JSON object matching the schema requested by the user. Do not wrap in markdown explanations.',
+          `${SYSTEM_PROMPT}\n\n[DOCUMENT AI SCHEMA DIRECTIVE]\nRespond strictly with a single valid JSON object matching the schema requested by the user. Do not wrap in markdown explanations.`,
           4096
         );
         const raw = (groqDoc.text || '').trim();
@@ -4727,6 +5180,13 @@ Provide your answer with specific grounded references.`;
         const response = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: ragPrompt }] }],
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-4-hydrogen',
+              subsystem: 'RaOne Document AI RAG Q&A',
+            }),
+          },
         });
 
         return res.json({
@@ -4744,7 +5204,7 @@ Provide your answer with specific grounded references.`;
           GROQ_API_KEY,
           'raone-llama3-70b',
           [{ role: 'user', content: ragPrompt }],
-          RAONE_CORE_SYSTEM_PROMPT
+          SYSTEM_PROMPT
         );
         if (groqRag.text) {
           return res.json({

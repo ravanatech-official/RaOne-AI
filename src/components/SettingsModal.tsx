@@ -23,6 +23,7 @@ import {
   EyeOff,
   Zap,
   Globe,
+  FileText,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -92,6 +93,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Security State
   const [mfaEnabled, setMfaEnabled] = useState<boolean>(false);
+  const [policiesData, setPoliciesData] = useState<any>(null);
+  const [expandedPolicy, setExpandedPolicy] = useState<string | null>('privacyPolicy');
+
+  useEffect(() => {
+    if (isOpen && activeTab === 'security' && !policiesData) {
+      fetch('/api/policies')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.privacyPolicy) setPoliciesData(data);
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, activeTab, policiesData]);
 
   // API Keys & Provider state
   const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'groq'>(activeProvider);
@@ -883,7 +897,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 {/* Log out of all devices */}
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
                   <div>
                     <div className="text-sm font-semibold text-white">Log out of all devices</div>
                     <div className="text-[11px] text-[#8e8e8e]">
@@ -899,6 +913,75 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   >
                     Log out all
                   </button>
+                </div>
+
+                {/* Platform Policies & Compliance */}
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-sky-400" />
+                      <span className="text-sm font-semibold text-white">Platform Policies & Compliance</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px]">
+                      <a
+                        href="/privacy-policy"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300"
+                      >
+                        <span>Privacy Policy</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <a
+                        href="/terms-of-service"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300"
+                      >
+                        <span>Terms of Service</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  </div>
+
+                  {policiesData ? (
+                    <div className="space-y-2">
+                      {(['privacyPolicy', 'termsOfService', 'aiSafetyPolicy', 'securityPolicy'] as const).map((key) => {
+                        const sec = policiesData[key];
+                        if (!sec) return null;
+                        const isExpanded = expandedPolicy === key;
+                        return (
+                          <div
+                            key={key}
+                            className="rounded-xl bg-[#1a1a1a] border border-[#2a2a2a] overflow-hidden"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setExpandedPolicy(isExpanded ? null : key)}
+                              className="w-full px-3.5 py-2.5 flex items-center justify-between text-left hover:bg-[#222222] transition-colors"
+                            >
+                              <span className="text-xs font-semibold text-white">{sec.title}</span>
+                              <span className="text-[10px] text-[#8e8e8e]">
+                                {isExpanded ? 'Hide' : 'View'}
+                              </span>
+                            </button>
+                            {isExpanded && (
+                              <div className="px-3.5 pb-3 pt-1 border-t border-[#252525] space-y-2">
+                                <p className="text-[11px] text-[#cbd5e1] leading-relaxed">{sec.summary}</p>
+                                <ul className="list-disc pl-4 space-y-1 text-[11px] text-[#9ca3af]">
+                                  {(sec.clauses || []).map((c: string, idx: number) => (
+                                    <li key={idx}>{c}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-[#8e8e8e]">Loading platform policies...</div>
+                  )}
                 </div>
               </div>
             )}

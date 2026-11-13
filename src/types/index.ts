@@ -70,6 +70,15 @@ export interface Conversation {
   isTemporary?: boolean;
 }
 
+export interface ProjectItem {
+  id: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface IntellectFacet {
   id: string;
   name: string;

@@ -5,6 +5,8 @@
  * live model discovery via GET /models so model_not_found (404) errors are avoided.
  */
 
+import { SYSTEM_PROMPT, buildRuntimeMetadataBlock } from './src/lib/systemPrompts.ts';
+
 export type AIProviderMode = 'auto' | 'gemini' | 'groq';
 
 export interface GroqModelDefinition {
@@ -223,25 +225,27 @@ export function isGeminiFallbackEligibleError(err: any): boolean {
 
 function withGroqRuntimeSystemMessage(messages: any[], modelId: string, inject = true): any[] {
   if (!inject) return messages;
-  const runtimeBlock = [
-    '[RUNTIME EXECUTION METADATA]',
-    '- Active Provider: Groq Cloud LPU API',
-    `- Executed Model ID: ${modelId}`,
-    '- Live Google Search Grounding: Disabled (no live internet search in this request)',
-    '- Live Google Maps Grounding: Disabled',
-    `- Truthfulness Rule: If asked which underlying AI model or provider is generating this reply, state "${modelId} via Groq Cloud" accurately. Do NOT guess or claim to be GPT-4 or Gemini.`,
-  ].join('\n');
+  const runtimeBlock = buildRuntimeMetadataBlock({
+    provider: 'Groq Cloud LPU API',
+    model: modelId,
+    searchEnabled: false,
+    mapsEnabled: false,
+  });
 
   let patchedSystem = false;
   const next = messages.map((m) => {
     if (!patchedSystem && m?.role === 'system') {
       patchedSystem = true;
-      return { ...m, content: `${m.content}\n\n${runtimeBlock}` };
+      const baseContent = String(m.content || '').trim();
+      const withPersona = baseContent.includes('RaOne AI')
+        ? baseContent
+        : `${SYSTEM_PROMPT.trim()}\n\n${baseContent}`;
+      return { ...m, content: `${withPersona}\n\n${runtimeBlock}` };
     }
     return m;
   });
   if (!patchedSystem) {
-    next.unshift({ role: 'system', content: runtimeBlock });
+    next.unshift({ role: 'system', content: `${SYSTEM_PROMPT.trim()}\n\n${runtimeBlock}` });
   }
   return next;
 }

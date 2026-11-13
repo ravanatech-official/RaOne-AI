@@ -16,8 +16,11 @@ import {
   Video,
   Music,
   FileText,
+  FolderKanban,
+  Plus,
+  X,
 } from 'lucide-react';
-import { Conversation } from '../types/index.ts';
+import { Conversation, ProjectItem } from '../types/index.ts';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -44,6 +47,11 @@ interface SidebarProps {
   onOpenMotionStudio?: () => void;
   onOpenAudioStudio?: () => void;
   onOpenDocumentStudio?: () => void;
+  projects?: ProjectItem[];
+  activeProjectId?: string | null;
+  onSelectProject?: (id: string | null) => void;
+  onCreateProject?: (name: string) => void;
+  onDeleteProject?: (id: string) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -68,11 +76,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenMotionStudio,
   onOpenAudioStudio,
   onOpenDocumentStudio,
+  projects = [],
+  activeProjectId = null,
+  onSelectProject,
+  onCreateProject,
+  onDeleteProject,
 }) => {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
   const searchInputRef = React.useRef<HTMLInputElement>(null);
 
   // Focus search input when triggered by keyboard shortcut (Ctrl+/)
@@ -292,8 +307,95 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-4 chat-scroll-area">
         {/* Projects Section */}
         <div>
-          <div className="text-xs font-semibold text-[#8e8e8e] px-3 pb-1">Projects</div>
-          <div className="text-xs text-[#737373] px-3 py-1">No projects</div>
+          <div className="flex items-center justify-between px-3 pb-1">
+            <span className="text-xs font-semibold text-[#8e8e8e]">Projects</span>
+            {onCreateProject && (
+              <button
+                onClick={() => {
+                  setIsCreatingProject((prev) => !prev);
+                  setNewProjectName('');
+                }}
+                className="p-0.5 rounded hover:bg-[#1a1a1a] text-[#8e8e8e] hover:text-white transition-colors"
+                title="Create new project"
+              >
+                {isCreatingProject ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+              </button>
+            )}
+          </div>
+
+          {isCreatingProject && (
+            <div className="px-2 pb-1.5 flex items-center gap-1">
+              <input
+                type="text"
+                placeholder="Project name..."
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newProjectName.trim() && onCreateProject) {
+                    onCreateProject(newProjectName.trim());
+                    setNewProjectName('');
+                    setIsCreatingProject(false);
+                  } else if (e.key === 'Escape') {
+                    setIsCreatingProject(false);
+                  }
+                }}
+                className="bg-[#1a1a1a] text-white text-xs px-2 py-1 rounded border border-[#3a3a3a] w-full focus:outline-none focus:border-sky-500/60"
+                autoFocus
+              />
+              <button
+                onClick={() => {
+                  if (newProjectName.trim() && onCreateProject) {
+                    onCreateProject(newProjectName.trim());
+                    setNewProjectName('');
+                    setIsCreatingProject(false);
+                  }
+                }}
+                className="p-1 text-emerald-400 hover:text-emerald-300"
+                title="Save project"
+              >
+                <Check className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {projects.length === 0 && !isCreatingProject ? (
+            <div className="text-xs text-[#737373] px-3 py-1">No projects</div>
+          ) : (
+            <div className="space-y-0.5">
+              {projects.map((proj) => {
+                const isProjActive = proj.id === activeProjectId;
+                return (
+                  <div
+                    key={proj.id}
+                    onClick={() => onSelectProject && onSelectProject(isProjActive ? null : proj.id)}
+                    className={`group flex items-center justify-between px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
+                      isProjActive
+                        ? 'bg-[#1a1a1a] text-sky-300 border border-sky-500/30 font-medium'
+                        : 'text-[#b4b4b4] hover:bg-[#141414] hover:text-white'
+                    }`}
+                    title={isProjActive ? 'Active project context (click to clear)' : `Activate project: ${proj.name}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FolderKanban className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                      <span className="truncate">{proj.name}</span>
+                    </div>
+                    {onDeleteProject && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteProject(proj.id);
+                        }}
+                        className="hidden group-hover:flex p-1 text-[#8e8e8e] hover:text-red-400 rounded hover:bg-[#262626]"
+                        title="Delete project"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Recents Section */}

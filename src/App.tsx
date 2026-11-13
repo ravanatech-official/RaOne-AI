@@ -21,7 +21,7 @@ import { LeonardoMotionStudio } from './components/LeonardoMotionStudio.tsx';
 import { SunoAudioStudio } from './components/SunoAudioStudio.tsx';
 import { DocumentAIStudio } from './components/DocumentAIStudio.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
-import { Conversation, ChatMessage } from './types/index.ts';
+import { Conversation, ChatMessage, ProjectItem } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
 import { ImageIcon, Code, Brain, Lightbulb } from 'lucide-react';
 
@@ -71,6 +71,8 @@ export default function App() {
   const [inputFocusTrigger, setInputFocusTrigger] = useState<number>(0);
   const [isTemporaryChat, setIsTemporaryChat] = useState<boolean>(false);
   const [temporaryMessages, setTemporaryMessages] = useState<ChatMessage[]>([]);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
 
   const handleToggleTemporaryChat = useCallback(() => {
     setIsTemporaryChat((prev) => {
@@ -171,6 +173,15 @@ export default function App() {
         }
       })
       .catch((err) => console.warn('Settings hydration note:', err));
+
+    fetch('/api/projects')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setProjects(data);
+        }
+      })
+      .catch((err) => console.warn('Projects hydration note:', err));
   }, []);
 
   // Load persisted conversations from backend API on initial mount
@@ -450,10 +461,16 @@ export default function App() {
           const history = temporaryMessages.slice(-6);
           let insertedPlaceholder = false;
 
+          const activeProject = projects.find((p) => p.id === activeProjectId) || null;
+          const projectContextText = activeProject
+            ? `Active Workspace Project: ${activeProject.name}${activeProject.description ? `\nDescription: ${activeProject.description}` : ''}${activeProject.instructions ? `\nInstructions: ${activeProject.instructions}` : ''}`
+            : '';
+
           const { text: replyText, meta } = await streamChatRequest(
             {
               prompt: text,
               mode: 'chat',
+              context: projectContextText,
               model: selectedModel,
               provider: activeProvider,
               enableSearch: options?.enableSearch,
@@ -531,12 +548,18 @@ export default function App() {
         return;
       }
 
+      const activeProject = projects.find((p) => p.id === activeProjectId) || null;
+      const projectContextText = activeProject
+        ? `Active Workspace Project: ${activeProject.name}${activeProject.description ? `\nDescription: ${activeProject.description}` : ''}${activeProject.instructions ? `\nInstructions: ${activeProject.instructions}` : ''}`
+        : '';
+
       if (isNewConv) {
         currentConvId = `conv-${Date.now()}`;
         const newConversation: Conversation = {
           id: currentConvId,
           title: autoTitle,
-          section: 'recents',
+          section: activeProject ? 'projects' : 'recents',
+          projectName: activeProject?.name,
           createdAt: 'Today',
           updatedAt: 'Just now',
           modelId: selectedModel,
@@ -577,6 +600,7 @@ export default function App() {
           {
             prompt: text,
             mode: 'chat',
+            context: projectContextText,
             model: selectedModel,
             provider: activeProvider,
             enableSearch: options?.enableSearch,
@@ -687,15 +711,43 @@ export default function App() {
     [
       activeConversation.messages,
       activeId,
+      activeProjectId,
       activeProvider,
       conversations,
       isLoading,
       isTemporaryChat,
       isVoiceModalOpen,
+      projects,
       selectedModel,
       temporaryMessages,
       voice,
     ]
+  );
+
+  const handleCreateProject = useCallback(async (name: string) => {
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (data?.project) {
+        setProjects((prev) => [data.project, ...prev]);
+        setActiveProjectId(data.project.id);
+      }
+    } catch (err) {
+      console.warn('Could not create project:', err);
+    }
+  }, []);
+
+  const handleDeleteProject = useCallback(
+    async (id: string) => {
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+      if (activeProjectId === id) setActiveProjectId(null);
+      fetch(`/api/projects/${id}`, { method: 'DELETE' }).catch(() => {});
+    },
+    [activeProjectId]
   );
 
   // New Chat action (Exact ChatGPT behavior)
@@ -796,6 +848,11 @@ export default function App() {
         onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
         onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
         onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
+        projects={projects}
+        activeProjectId={activeProjectId}
+        onSelectProject={setActiveProjectId}
+        onCreateProject={handleCreateProject}
+        onDeleteProject={handleDeleteProject}
       />
 
       {/* Main Chat Workspace */}
