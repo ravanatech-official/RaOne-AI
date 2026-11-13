@@ -247,6 +247,7 @@ const API_KEYS_FILE = path.join(__dirname, 'api_keys_storage.json');
 
 let apiKey = process.env.GEMINI_API_KEY || '';
 let aiClient: GoogleGenAI | null = null;
+let GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 let ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 let DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
@@ -262,6 +263,10 @@ function loadStoredApiKeys(): void {
         apiKey = data.geminiApiKey;
         process.env.GEMINI_API_KEY = data.geminiApiKey;
       }
+      if (data.groqApiKey) {
+        GROQ_API_KEY = data.groqApiKey;
+        process.env.GROQ_API_KEY = data.groqApiKey;
+      }
       if (data.openAiApiKey) {
         OPENAI_API_KEY = data.openAiApiKey;
         process.env.OPENAI_API_KEY = data.openAiApiKey;
@@ -273,6 +278,10 @@ function loadStoredApiKeys(): void {
       if (data.deepSeekApiKey) {
         DEEPSEEK_API_KEY = data.deepSeekApiKey;
         process.env.DEEPSEEK_API_KEY = data.deepSeekApiKey;
+      }
+      if (data.xaiApiKey) {
+        XAI_API_KEY = data.xaiApiKey;
+        process.env.XAI_API_KEY = data.xaiApiKey;
       }
       if (data.cometApiKey) {
         COMET_API_KEY = data.cometApiKey;
@@ -309,6 +318,7 @@ function saveStoredApiKeys(): void {
   try {
     const data = {
       geminiApiKey: apiKey,
+      groqApiKey: GROQ_API_KEY,
       openAiApiKey: OPENAI_API_KEY,
       anthropicApiKey: ANTHROPIC_API_KEY,
       deepSeekApiKey: DEEPSEEK_API_KEY,
@@ -476,6 +486,188 @@ async function callCometAPI(
   return json.choices?.[0]?.message?.content || '';
 }
 
+// Helper: Call Groq (Meta Llama 3.3 70B / Llama 4 OpenAI-compatible LPU API)
+function getGroqModelCandidates(requestedModel: string): string[] {
+  const m = String(requestedModel || '').toLowerCase();
+  if (m.includes('llama4') || m.includes('llama-4')) {
+    return ['meta-llama/llama-4-scout-17b-16e-instruct', 'llama-3.3-70b-versatile'];
+  }
+  return ['llama-3.3-70b-versatile', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+}
+
+function formatOpenAICompatibleMessages(messages: any[], prompt: string, systemPrompt: string) {
+  const mapped = (Array.isArray(messages) ? messages : [])
+    .filter((m: any) => m && (m.content || m.parts?.[0]?.text))
+    .map((m: any) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content || (m.parts?.[0]?.text ?? ''),
+    }));
+  if (prompt) {
+    mapped.push({ role: 'user', content: prompt });
+  }
+  if (mapped.length === 0) {
+    mapped.push({ role: 'user', content: 'Hello RaOne!' });
+  }
+  return [{ role: 'system', content: systemPrompt }, ...mapped];
+}
+
+async function callGroq(
+  requestedModel: string,
+  messages: any[],
+  systemPrompt: string,
+  maxTokens = 4096
+): Promise<{ text: string; modelUsed: string; responseId: string | null; usage: any }> {
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY is not configured on server');
+  const candidates = getGroqModelCandidates(requestedModel);
+  const formattedMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map((m: any) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content || (m.parts?.[0]?.text ?? ''),
+    })),
+  ];
+
+  let lastErr: Error | null = null;
+  for (const modelId of candidates) {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: formattedMessages,
+        temperature: 0.7,
+        max_tokens: maxTokens,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      lastErr = new Error(`Groq API error (${response.status}): ${errText}`);
+      if (response.status === 404 || errText.toLowerCase().includes('model_not_found')) {
+        console.warn(`Groq model ${modelId} unavailable, trying next candidate...`);
+        continue;
+      }
+      throw lastErr;
+    }
+
+    const json = await response.json();
+    const text = json.choices?.[0]?.message?.content || '';
+    const usage = json.usage
+      ? {
+          promptTokens: json.usage.prompt_tokens ?? 0,
+          candidateTokens: json.usage.completion_tokens ?? 0,
+          totalTokens: json.usage.total_tokens ?? 0,
+        }
+      : null;
+    return {
+      text,
+      modelUsed: json.model || modelId,
+      responseId: json.id || null,
+      usage,
+    };
+  }
+  throw lastErr || new Error('All Groq model candidates failed.');
+}
+
+async function streamGroqToSSE(
+  requestedModel: string,
+  formattedMessages: any[],
+  sendEvent: (payload: Record<string, any>) => void,
+  startTime: number
+): Promise<void> {
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY is not configured on server');
+  const candidates = getGroqModelCandidates(requestedModel);
+  let lastErr: Error | null = null;
+
+  for (const modelId of candidates) {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: formattedMessages,
+        temperature: 0.7,
+        max_tokens: 4096,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const errText = await response.text();
+      lastErr = new Error(`Groq API error (${response.status}): ${errText}`);
+      if (response.status === 404 || errText.toLowerCase().includes('model_not_found')) {
+        console.warn(`Groq stream model ${modelId} unavailable, trying next candidate...`);
+        continue;
+      }
+      throw lastErr;
+    }
+
+    sendEvent({ type: 'start', source: 'groq', model: modelId });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let resolvedModel = modelId;
+    let responseId: string | null = null;
+    let usage: any = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(payload);
+          if (evt.id) responseId = evt.id;
+          if (evt.model) resolvedModel = evt.model;
+          const deltaText = evt.choices?.[0]?.delta?.content;
+          if (typeof deltaText === 'string' && deltaText.length > 0) {
+            sendEvent({ type: 'chunk', text: deltaText });
+          }
+          const xUsage = evt.x_groq?.usage || evt.usage;
+          if (xUsage) {
+            usage = {
+              promptTokens: xUsage.prompt_tokens ?? 0,
+              candidateTokens: xUsage.completion_tokens ?? 0,
+              totalTokens: xUsage.total_tokens ?? 0,
+            };
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    sendEvent({
+      type: 'done',
+      source: 'groq',
+      verifiedModel: resolvedModel,
+      modelVersion: resolvedModel,
+      responseId,
+      usage,
+      latencyMs: Date.now() - startTime,
+      groundingSources: [],
+      mapsSources: [],
+    });
+    return;
+  }
+
+  throw lastErr || new Error('All Groq streaming candidates failed.');
+}
+
 // Gemini model candidate resolver (supports AI Studio Gemini 4 aliases & public Gemini 2.5 GA models)
 function getGeminiModelCandidates(requestedModel: string): string[] {
   const m = String(requestedModel || '').toLowerCase();
@@ -529,7 +721,7 @@ async function generateWithGeminiFallback(
   throw lastErr || new Error('All Gemini model candidates failed.');
 }
 
-// API Health Route (supports ?verify=true to perform a live Gemini API brain ping)
+// API Health Route (supports ?verify=true to perform live Gemini & Groq API brain pings)
 app.get('/api/health', async (req, res) => {
   const basePayload: any = {
     status: 'online',
@@ -539,9 +731,10 @@ app.get('/api/health', async (req, res) => {
     voiceActivationPhrase: 'Hey RaOne',
     tagline: 'Think. Create. Act.',
     brandSignature: 'RaOne AI by RavanaTec',
-    hasApiKey: Boolean(apiKey || COMET_API_KEY),
+    hasApiKey: Boolean(apiKey || GROQ_API_KEY || COMET_API_KEY),
     providers: {
       gemini: Boolean(apiKey),
+      groq: Boolean(GROQ_API_KEY),
       openai: Boolean(OPENAI_API_KEY),
       anthropic: Boolean(ANTHROPIC_API_KEY),
       deepseek: Boolean(DEEPSEEK_API_KEY),
@@ -551,23 +744,48 @@ app.get('/api/health', async (req, res) => {
   };
 
   if (req.query.verify === 'true') {
-    const pingStart = Date.now();
-    try {
-      const { response, modelUsed } = await generateWithGeminiFallback(
-        'Reply with exactly: OK',
-        { maxOutputTokens: 16 },
-        'gemini-4-hydrogen'
-      );
-      basePayload.geminiLive = true;
-      basePayload.verifiedModel = modelUsed;
-      basePayload.modelVersion = (response as any).modelVersion || modelUsed;
-      basePayload.responseId = (response as any).responseId || null;
-      basePayload.latencyMs = Date.now() - pingStart;
-      basePayload.sampleText = response.text?.trim() || 'OK';
-    } catch (err: any) {
+    if (apiKey) {
+      const pingStart = Date.now();
+      try {
+        const { response, modelUsed } = await generateWithGeminiFallback(
+          'Reply with exactly: OK',
+          { maxOutputTokens: 16 },
+          'gemini-4-hydrogen'
+        );
+        basePayload.geminiLive = true;
+        basePayload.verifiedModel = modelUsed;
+        basePayload.modelVersion = (response as any).modelVersion || modelUsed;
+        basePayload.responseId = (response as any).responseId || null;
+        basePayload.latencyMs = Date.now() - pingStart;
+        basePayload.sampleText = response.text?.trim() || 'OK';
+      } catch (err: any) {
+        basePayload.geminiLive = false;
+        basePayload.latencyMs = Date.now() - pingStart;
+        basePayload.geminiError = err?.message || 'Gemini verification failed';
+      }
+    } else {
       basePayload.geminiLive = false;
-      basePayload.latencyMs = Date.now() - pingStart;
-      basePayload.geminiError = err?.message || 'Gemini verification failed';
+    }
+
+    if (GROQ_API_KEY) {
+      const groqPingStart = Date.now();
+      try {
+        const groqRes = await callGroq(
+          'raone-llama3-70b',
+          [{ role: 'user', content: 'Reply with exactly: OK' }],
+          'Reply with OK only.',
+          16
+        );
+        basePayload.groqLive = true;
+        basePayload.groqModel = groqRes.modelUsed;
+        basePayload.groqResponseId = groqRes.responseId;
+        basePayload.groqLatencyMs = Date.now() - groqPingStart;
+        basePayload.groqSampleText = groqRes.text?.trim() || 'OK';
+      } catch (err: any) {
+        basePayload.groqLive = false;
+        basePayload.groqLatencyMs = Date.now() - groqPingStart;
+        basePayload.groqError = err?.message || 'Groq verification failed';
+      }
     }
   }
 
@@ -583,8 +801,24 @@ app.get('/api/models', (_req, res) => {
         name: 'RaOne Flash',
         tag: 'High Velocity · Recommended',
         description: 'Fast, multimodal & intelligent (Powered by Gemini 2.5 Flash)',
-        active: Boolean(apiKey || COMET_API_KEY),
+        active: Boolean(apiKey || GROQ_API_KEY || COMET_API_KEY),
         provider: 'Gemini',
+      },
+      {
+        id: 'raone-llama3-70b',
+        name: 'RaOne Llama 3.3 70B',
+        tag: 'Groq Free · Ultra Fast',
+        description: 'Meta Llama 3.3 70B Versatile running on Groq LPU (Free Tier + Ultra-Low Latency)',
+        active: Boolean(GROQ_API_KEY),
+        provider: 'Groq (Meta Llama)',
+      },
+      {
+        id: 'raone-llama4',
+        name: 'RaOne Llama 4 Scout',
+        tag: 'Meta Llama 4 · Groq',
+        description: 'Meta Llama 4 Scout 17B MoE running on Groq LPU',
+        active: Boolean(GROQ_API_KEY),
+        provider: 'Groq (Meta Llama)',
       },
       {
         id: 'gemini-4-argon',
@@ -638,6 +872,7 @@ app.get('/api/models', (_req, res) => {
     encryption: 'Server-side Environment Proxy (Zero-Client-Exposure)',
     providers: {
       gemini: Boolean(apiKey),
+      groq: Boolean(GROQ_API_KEY),
       openai: Boolean(OPENAI_API_KEY),
       anthropic: Boolean(ANTHROPIC_API_KEY),
       deepseek: Boolean(DEEPSEEK_API_KEY),
@@ -2024,9 +2259,11 @@ RaOne AI by RavanaTec — Think. Create. Act.`;
 app.get('/api/keys', (_req, res) => {
   res.json({
     geminiConfigured: Boolean(apiKey || process.env.GEMINI_API_KEY),
+    groqConfigured: Boolean(GROQ_API_KEY || process.env.GROQ_API_KEY),
     openAiConfigured: Boolean(OPENAI_API_KEY || process.env.OPENAI_API_KEY),
     anthropicConfigured: Boolean(ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY),
     deepSeekConfigured: Boolean(DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY),
+    xaiConfigured: Boolean(XAI_API_KEY || process.env.XAI_API_KEY),
     cometApiConfigured: Boolean(COMET_API_KEY || process.env.COMET_API_KEY),
     cometApiBaseUrl: COMET_API_BASE_URL || 'https://api.cometapi.com/v1',
   });
@@ -2034,7 +2271,16 @@ app.get('/api/keys', (_req, res) => {
 
 app.post('/api/keys', async (req, res) => {
   try {
-    const { geminiApiKey, openAiApiKey, anthropicApiKey, deepSeekApiKey, cometApiKey, cometApiBaseUrl } = req.body;
+    const {
+      geminiApiKey,
+      groqApiKey,
+      openAiApiKey,
+      anthropicApiKey,
+      deepSeekApiKey,
+      xaiApiKey,
+      cometApiKey,
+      cometApiBaseUrl,
+    } = req.body;
     if (geminiApiKey !== undefined) {
       process.env.GEMINI_API_KEY = geminiApiKey;
       apiKey = geminiApiKey;
@@ -2044,6 +2290,10 @@ app.post('/api/keys', async (req, res) => {
             httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
           })
         : null;
+    }
+    if (groqApiKey !== undefined) {
+      process.env.GROQ_API_KEY = groqApiKey;
+      GROQ_API_KEY = groqApiKey;
     }
     if (openAiApiKey !== undefined) {
       process.env.OPENAI_API_KEY = openAiApiKey;
@@ -2056,6 +2306,10 @@ app.post('/api/keys', async (req, res) => {
     if (deepSeekApiKey !== undefined) {
       process.env.DEEPSEEK_API_KEY = deepSeekApiKey;
       DEEPSEEK_API_KEY = deepSeekApiKey;
+    }
+    if (xaiApiKey !== undefined) {
+      process.env.XAI_API_KEY = xaiApiKey;
+      XAI_API_KEY = xaiApiKey;
     }
     if (cometApiKey !== undefined) {
       process.env.COMET_API_KEY = cometApiKey;
@@ -2273,6 +2527,37 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
+    // Provider 4: Groq (Meta Llama 3.3 70B / Llama 4 Scout)
+    if (model === 'raone-llama4' || model === 'raone-llama3-70b') {
+      if (!GROQ_API_KEY) {
+        return res.status(503).json({
+          error: 'GROQ_API_KEY is not configured on the backend server. Add your gsk_... key in Cloud Run or Settings.',
+          source: 'error',
+          brand: 'RaOne AI by RavanaTec',
+        });
+      }
+      const chatStart = Date.now();
+      const groqOut = await callGroq(
+        model,
+        [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
+        fullSystemInstruction
+      );
+      return res.json({
+        text: groqOut.text,
+        mode,
+        model: groqOut.modelUsed,
+        source: 'groq',
+        verifiedModel: groqOut.modelUsed,
+        modelVersion: groqOut.modelUsed,
+        responseId: groqOut.responseId,
+        usage: groqOut.usage,
+        latencyMs: Date.now() - chatStart,
+        groundingSources: [],
+        mapsSources: [],
+        brandSignature: 'RaOne AI by RavanaTec',
+      });
+    }
+
     // CometAPI fallback for Gemini models if Gemini API key is missing
     if (!aiClient && COMET_API_KEY) {
       try {
@@ -2290,9 +2575,33 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
+    // Automatic Groq fallback when GEMINI_API_KEY is not set and GROQ_API_KEY is configured
+    if (!aiClient && GROQ_API_KEY) {
+      const chatStart = Date.now();
+      const groqOut = await callGroq(
+        'raone-llama3-70b',
+        [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
+        fullSystemInstruction
+      );
+      return res.json({
+        text: groqOut.text,
+        mode,
+        model: groqOut.modelUsed,
+        source: 'groq',
+        verifiedModel: groqOut.modelUsed,
+        modelVersion: groqOut.modelUsed,
+        responseId: groqOut.responseId,
+        usage: groqOut.usage,
+        latencyMs: Date.now() - chatStart,
+        groundingSources: [],
+        mapsSources: [],
+        brandSignature: 'RaOne AI by RavanaTec',
+      });
+    }
+
     if (!aiClient) {
       return res.status(503).json({
-        error: 'GEMINI_API_KEY is not configured on the backend server. Set a valid Gemini API key in Cloud Run / environment settings.',
+        error: 'GEMINI_API_KEY (or GROQ_API_KEY) is not configured on the backend server. Set a valid API key in Cloud Run / environment settings.',
         source: 'error',
         brand: 'RaOne AI by RavanaTec',
       });
@@ -2410,6 +2719,44 @@ app.post('/api/chat', async (req, res) => {
     });
   } catch (error: any) {
     console.error('RaOne Chat Error:', error);
+    const errMsg = String(error?.message || '');
+    const errStatus = error?.status || error?.code;
+    const isBillingOrKeyErr =
+      errStatus === 402 ||
+      errStatus === 401 ||
+      errStatus === 403 ||
+      errStatus === 429 ||
+      /prepayment|depleted|resource_exhausted|api_key_invalid|quota/i.test(errMsg);
+
+    if (GROQ_API_KEY && isBillingOrKeyErr) {
+      try {
+        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body;
+        const sysPrompt = `${RAONE_CORE_SYSTEM_PROMPT}\n\nMODE: ${String(mode).toUpperCase()}${isTemporary ? '\n[Temporary Chat]' : ''}${context ? `\nAdditional Context: ${context}` : ''}`;
+        const chatStart = Date.now();
+        const groqOut = await callGroq(
+          'raone-llama3-70b',
+          [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
+          sysPrompt
+        );
+        return res.json({
+          text: groqOut.text,
+          mode,
+          model: groqOut.modelUsed,
+          source: 'groq',
+          verifiedModel: groqOut.modelUsed,
+          modelVersion: groqOut.modelUsed,
+          responseId: groqOut.responseId,
+          usage: groqOut.usage,
+          latencyMs: Date.now() - chatStart,
+          groundingSources: [],
+          mapsSources: [],
+          brandSignature: 'RaOne AI by RavanaTec',
+        });
+      } catch (groqFallbackErr: any) {
+        console.error('Groq failover error:', groqFallbackErr);
+      }
+    }
+
     const status = typeof error?.status === 'number' && error.status >= 400 && error.status < 600 ? error.status : 502;
     return res.status(status).json({
       error: error?.message || 'Gemini API request failed.',
@@ -2476,6 +2823,19 @@ app.post('/api/chat/stream', async (req, res) => {
       res.end();
     };
 
+    if (model === 'raone-llama4' || model === 'raone-llama3-70b') {
+      if (!GROQ_API_KEY) {
+        sendEvent({
+          type: 'error',
+          error: 'GROQ_API_KEY is not configured on the backend server. Add your gsk_... key in Cloud Run or Settings.',
+        });
+        return res.end();
+      }
+      const formattedMessages = formatOpenAICompatibleMessages(messages, prompt, fullSystemInstruction);
+      await streamGroqToSSE(model, formattedMessages, sendEvent, startTime);
+      return res.end();
+    }
+
     if (model === 'comet-all-in-one' && COMET_API_KEY) {
       const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
       return await externalResult('cometapi', 'comet-all-in-one', text);
@@ -2493,10 +2853,16 @@ app.post('/api/chat/stream', async (req, res) => {
       return await externalResult('deepseek', 'deepseek-reasoner', text);
     }
 
+    if (!aiClient && GROQ_API_KEY) {
+      const formattedMessages = formatOpenAICompatibleMessages(messages, prompt, fullSystemInstruction);
+      await streamGroqToSSE('raone-llama3-70b', formattedMessages, sendEvent, startTime);
+      return res.end();
+    }
+
     if (!aiClient) {
       sendEvent({
         type: 'error',
-        error: 'GEMINI_API_KEY is not configured on the backend server. Set a valid Gemini API key.',
+        error: 'GEMINI_API_KEY (or GROQ_API_KEY) is not configured on the backend server. Set a valid API key.',
       });
       return res.end();
     }
@@ -2612,6 +2978,27 @@ app.post('/api/chat/stream', async (req, res) => {
     return res.end();
   } catch (error: any) {
     console.error('RaOne Stream Chat Error:', error);
+    const errMsg = String(error?.message || '');
+    const errStatus = error?.status || error?.code;
+    const isBillingOrKeyErr =
+      errStatus === 402 ||
+      errStatus === 401 ||
+      errStatus === 403 ||
+      errStatus === 429 ||
+      /prepayment|depleted|resource_exhausted|api_key_invalid|quota/i.test(errMsg);
+
+    if (GROQ_API_KEY && isBillingOrKeyErr) {
+      try {
+        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body;
+        const sysPrompt = `${RAONE_CORE_SYSTEM_PROMPT}\n\nMODE: ${String(mode).toUpperCase()}${isTemporary ? '\n[Temporary Chat]' : ''}${context ? `\nAdditional Context: ${context}` : ''}`;
+        const formattedMessages = formatOpenAICompatibleMessages(messages, prompt, sysPrompt);
+        await streamGroqToSSE('raone-llama3-70b', formattedMessages, sendEvent, startTime);
+        return res.end();
+      } catch (groqFallbackErr: any) {
+        console.error('Groq stream failover error:', groqFallbackErr);
+      }
+    }
+
     sendEvent({
       type: 'error',
       error: error?.message || 'Gemini streaming request failed.',

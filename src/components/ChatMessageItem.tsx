@@ -68,7 +68,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
             <span>Worked for {message.thinkingTime || '1.0s'}</span>
             {message.verifiedSource && (
               <span className="text-[11px] text-emerald-400/90 font-mono">
-                · {message.verifiedSource === 'gemini' ? 'Gemini Verified' : message.verifiedSource}
+                · {message.verifiedSource === 'gemini' ? 'Gemini Verified' : message.verifiedSource === 'groq' ? 'Groq Verified' : message.verifiedSource}
                 {message.model ? ` (${message.model})` : ''}
               </span>
             )}

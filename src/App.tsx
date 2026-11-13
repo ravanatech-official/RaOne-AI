@@ -409,7 +409,7 @@ export default function App() {
 
       const buildThoughtProcess = (meta: any) => {
         const lines = [
-          `Verified Brain: ${meta?.source === 'gemini' ? 'Google Gemini API (Live)' : meta?.source || 'Verified Provider'}`,
+          `Verified Brain: ${meta?.source === 'gemini' ? 'Google Gemini API (Live)' : meta?.source === 'groq' ? 'Groq Cloud LPU (Meta Llama Live)' : meta?.source || 'Verified Provider'}`,
           `Model Executed: ${meta?.verifiedModel || meta?.model || selectedModel}`,
         ];
         if (meta?.modelVersion) lines.push(`Model Version: ${meta.modelVersion}`);

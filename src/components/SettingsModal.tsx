@@ -91,6 +91,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // API Keys state
   const [geminiKey, setGeminiKey] = useState('');
+  const [groqKey, setGroqKey] = useState('');
   const [openAiKey, setOpenAiKey] = useState('');
   const [anthropicKey, setAnthropicKey] = useState('');
   const [deepSeekKey, setDeepSeekKey] = useState('');
@@ -103,6 +104,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const [keysConfigured, setKeysConfigured] = useState<{
     geminiConfigured: boolean;
+    groqConfigured?: boolean;
     openAiConfigured: boolean;
     anthropicConfigured: boolean;
     deepSeekConfigured: boolean;
@@ -111,6 +113,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     cometApiBaseUrl?: string;
   }>({
     geminiConfigured: false,
+    groqConfigured: false,
     openAiConfigured: false,
     anthropicConfigured: false,
     deepSeekConfigured: false,
@@ -231,12 +234,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       });
 
       // Save API keys if any entered or updated
-      if (geminiKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || cometBaseUrl) {
+      if (geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || cometBaseUrl) {
         await fetch('/api/keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             geminiApiKey: geminiKey || undefined,
+            groqApiKey: groqKey || undefined,
             openAiApiKey: openAiKey || undefined,
             anthropicApiKey: anthropicKey || undefined,
             deepSeekApiKey: deepSeekKey || undefined,
@@ -860,6 +864,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2.5 text-xs text-white focus:outline-none"
                   >
                     <option value="gemini-3.8-flash">RaOne Flash (High Velocity · Recommended)</option>
+                    <option value="raone-llama3-70b">RaOne Llama 3.3 70B (Groq Free · Ultra Fast)</option>
+                    <option value="raone-llama4">RaOne Llama 4 Scout (Groq Meta Llama 4)</option>
                     <option value="gemini-4-argon">RaOne Argon (Deep Cognitive Reasoning & Systems Logic)</option>
                     <option value="comet-all-in-one">CometAPI All-In-One (Multi-Model Gateway: GPT-4o, Claude, DeepSeek, Gemini)</option>
                     <option value="raone-deepseek-r1">RaOne DeepSeek R1 (Open Deep Reasoning Matrix)</option>
@@ -1016,6 +1022,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       value={geminiKey}
                       onChange={(e) => setGeminiKey(e.target.value)}
                       placeholder="AIzaSy..."
+                      className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-[#b4b4b4]">Groq API Key (Free · Meta Llama 3.3 / 4)</span>
+                      <span
+                        className={`text-[9px] px-2 py-0.5 rounded-full ${
+                          keysConfigured.groqConfigured
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-[#2a2a2a] text-[#737373]'
+                        }`}
+                      >
+                        {keysConfigured.groqConfigured ? 'Active' : 'Not Set'}
+                      </span>
+                    </div>
+                    <input
+                      type="password"
+                      value={groqKey}
+                      onChange={(e) => setGroqKey(e.target.value)}
+                      placeholder="gsk_..."
                       className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
                     />
                   </div>
