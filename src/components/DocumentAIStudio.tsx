@@ -1,17 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { resolveApiUrl } from '../utils/api';
 import {
-  X,
-  Sparkles,
-  Zap,
   Play,
   Pause,
   Download,
   Copy,
   Trash2,
   Heart,
-  RefreshCw,
   Dices,
-  Sliders,
   FileText,
   Presentation,
   Table,
@@ -21,22 +17,20 @@ import {
   Check,
   ChevronRight,
   ChevronLeft,
-  Volume2,
-  VolumeX,
-  ExternalLink,
-  Layers,
   Cpu,
-  Share2,
   FileUp,
   Bookmark,
-  Radio,
-  Quote,
-  ShieldCheck,
   Network,
   FileSpreadsheet,
-  Layers3,
+  Quote,
+  Loader2,
 } from 'lucide-react';
-import { DocumentItem, DocumentSlide, DocumentCitation, GraphEntityNode } from '../types/index.ts';
+import { DocumentItem, GraphEntityNode } from '../types/index.ts';
+import {
+  UnifiedStudioWorkspace,
+  WorkspaceTurn,
+  WorkspaceRightTab,
+} from './UnifiedStudioWorkspace';
 
 interface DocumentAIStudioProps {
   isOpen: boolean;
@@ -44,78 +38,78 @@ interface DocumentAIStudioProps {
 }
 
 const DOC_TYPES = [
-  { id: 'report', label: 'Executive Report', icon: FileText, desc: 'Formal whitepaper with tables & roadmap' },
-  { id: 'presentation', label: 'Gamma Presentation', icon: Presentation, desc: 'Slide deck with visual cards & callouts' },
-  { id: 'spreadsheet', label: 'Financial Sheet', icon: Table, desc: 'Budget model, Capex/Opex & unit metrics' },
-  { id: 'notebook', label: 'NotebookLM Research', icon: BookOpen, desc: 'Source-grounded synthesis & citations' },
+  { id: 'report', label: 'Executive Report', icon: FileText },
+  { id: 'presentation', label: 'Gamma Slides', icon: Presentation },
+  { id: 'spreadsheet', label: 'Financial Sheet', icon: Table },
+  { id: 'notebook', label: 'NotebookLM', icon: BookOpen },
 ];
 
 const DOC_MODELS = [
-  {
-    id: 'Gemini 3.8 Flash Document AI',
-    name: 'Gemini 3.8 Flash Document AI',
-    badge: '1M Token Window',
-    desc: 'Deep multi-modal document understanding with native OCR, tables, and long-context synthesis.',
-  },
-  {
-    id: 'Google NotebookLM Core',
-    name: 'NotebookLM Deep Dive Core',
-    badge: 'Audio Overview',
-    desc: 'Conversational 2-host audio podcast synthesis with 100% grounded citations.',
-  },
-  {
-    id: 'Gamma Presentation Engine',
-    name: 'Gamma Slide Deck AI',
-    badge: 'Visual Design',
-    desc: 'Structured slide cards with executive callout blocks and dynamic color palettes.',
-  },
-  {
-    id: 'Microsoft 365 Copilot Core',
-    name: 'Microsoft Copilot Enterprise',
-    badge: 'Enterprise IDP',
-    desc: 'Financial spreadsheets, mathematical modeling, and enterprise compliance reporting.',
-  },
+  { id: 'Gemini 3.8 Flash Document AI', label: 'Gemini 3.8 Doc AI', description: '1M context multi-modal OCR & synthesis' },
+  { id: 'Google NotebookLM Core', label: 'NotebookLM Core', description: 'Source-grounded citations & Audio Overview' },
+  { id: 'Gamma Presentation Engine', label: 'Gamma Slides AI', description: 'Structured executive presentation decks' },
+  { id: 'Microsoft 365 Copilot Core', label: 'Copilot Enterprise', description: 'Financial models & Office binary exports' },
 ];
 
 const RANDOM_DOC_PROMPTS = [
-  'Comprehensive strategic roadmap for building Sri Lanka Sovereign AI compute clusters, clean energy data centers, and localized Sinhala/Tamil LLMs by 2030.',
-  'Gamma style investor pitch deck for a $15M Series A round in autonomous AI software engineering factories.',
-  'Detailed Q4 2026 financial model and unit economics for 512× NVIDIA H200 GPU cluster with hydroelectric power tariffs.',
-  'Enterprise security whitepaper on zero-hallucination Graph-RAG architectures combining dense vector stores with knowledge graphs.',
-  'Standard Operating Procedure (SOP) for automated medical record processing using HIPAA-compliant vision transformers.',
+  'Comprehensive strategic roadmap for building Sri Lanka Sovereign AI compute clusters and clean energy data centers by 2030.',
+  'Investor pitch deck for a $15M Series A round in autonomous AI software engineering platforms.',
+  'Detailed Q4 2026 financial model and unit economics for a 512x NVIDIA H200 GPU cluster.',
+  'Enterprise security whitepaper on zero-hallucination Graph-RAG architectures.',
 ];
 
-export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onClose }) => {
-  // Creation Drawer Form State
-  const [docType, setDocType] = useState<'report' | 'presentation' | 'spreadsheet' | 'notebook' | 'summary'>('report');
-  const [prompt, setPrompt] = useState<string>('Comprehensive strategic roadmap for building Sri Lanka Sovereign AI compute clusters, clean energy data centers, and localized Sinhala/Tamil LLMs by 2030.');
+export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
+  isOpen,
+  onClose,
+}) => {
+  const [rightTab, setRightTab] = useState<WorkspaceRightTab>('preview');
+  const [docType, setDocType] = useState<
+    'report' | 'presentation' | 'spreadsheet' | 'notebook' | 'summary'
+  >('report');
+  const [prompt, setPrompt] = useState<string>('');
   const [sourceText, setSourceText] = useState<string>('');
   const [selectedModel, setSelectedModel] = useState<string>('Gemini 3.8 Flash Document AI');
-  const [tone, setTone] = useState<'executive' | 'academic' | 'technical' | 'creative'>('executive');
+  const [tone, setTone] = useState<'executive' | 'academic' | 'technical' | 'creative'>(
+    'executive'
+  );
   const [includeAudioOverview, setIncludeAudioOverview] = useState<boolean>(true);
 
-  // Studio State
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeDoc, setActiveDoc] = useState<DocumentItem | null>(null);
+  const [turns, setTurns] = useState<WorkspaceTurn[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [activeView, setActiveView] = useState<'document' | 'slides' | 'graph' | 'architecture'>('document');
+  const [activeView, setActiveView] = useState<'document' | 'slides' | 'graph'>('document');
   const [selectedEntity, setSelectedEntity] = useState<GraphEntityNode | null>(null);
-  const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterFavorite, setFilterFavorite] = useState<boolean>(false);
-  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [copiedDoc, setCopiedDoc] = useState<boolean>(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Audio Overview Player State
   const [isPlayingAudio, setIsPlayingAudio] = useState<boolean>(false);
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Interactive Document Q&A State
   const [qaQuery, setQaQuery] = useState<string>('');
   const [qaHistory, setQaHistory] = useState<{ query: string; answer: string }[]>([]);
   const [isAnswering, setIsAnswering] = useState<boolean>(false);
-
-  // Presentation Slide Navigation
   const [currentSlideIndex, setCurrentSlideIndex] = useState<number>(0);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  const fetchDocumentHistory = async () => {
+    try {
+      const res = await fetch('/api/documents/history');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.items)) {
+        setDocuments(data.items);
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -123,62 +117,73 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onCl
     }
   }, [isOpen]);
 
-  const fetchDocumentHistory = async () => {
-    try {
-      const res = await fetch('/api/documents/history');
-      const data = await res.json();
-      if (data.success && data.items) {
-        setDocuments(data.items);
-        if (!activeDoc && data.items.length > 0) {
-          setActiveDoc(data.items[0]);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load documents:', err);
-    }
-  };
-
   const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt || isLoading) return;
+
+    const startMs = Date.now();
+    setTurns((prev) => [
+      ...prev,
+      { id: `u_${Date.now()}`, role: 'user', content: cleanPrompt },
+    ]);
+    setPrompt('');
     setIsLoading(true);
 
     try {
-      const payload = {
-        prompt,
-        docType,
-        tone,
-        model: selectedModel,
-        sourceText,
-        includeSlides: true,
-        includeAudioOverview,
-      };
-
       const res = await fetch('/api/documents/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          prompt: cleanPrompt,
+          docType,
+          tone,
+          model: selectedModel,
+          sourceText,
+          includeSlides: true,
+          includeAudioOverview,
+        }),
       });
-
       const data = await res.json();
+      const elapsed = `${((Date.now() - startMs) / 1000).toFixed(1)}s`;
       if (data.success && data.document) {
         setDocuments((prev) => [data.document, ...prev]);
         setActiveDoc(data.document);
         setCurrentSlideIndex(0);
-        if (data.document.slides && data.document.slides.length > 0 && docType === 'presentation') {
-          setActiveView('slides');
-        } else {
-          setActiveView('document');
-        }
+        setQaHistory([]);
+        setActiveView(
+          data.document.slides?.length > 0 && docType === 'presentation'
+            ? 'slides'
+            : 'document'
+        );
+        setRightTab('preview');
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: `a_${Date.now()}`,
+            role: 'assistant',
+            modelLabel: selectedModel,
+            durationSec: elapsed,
+            content: `Synthesized "${data.document.title}" (${data.document.pageCount || 1} pages).`,
+            details: [
+              `Format: ${docType} · Tone: ${tone}`,
+              data.document.citations?.length
+                ? `${data.document.citations.length} grounded citations attached.`
+                : 'Ready for DOCX, PPTX, XLSX & Markdown export.',
+            ],
+          },
+        ]);
+      } else {
+        showToast(data?.error || 'Document generation failed.');
       }
-    } catch (err) {
-      console.error('Document generation failed:', err);
+    } catch {
+      showToast('Error generating document.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleToggleFavorite = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+    e?.stopPropagation();
     try {
       const res = await fetch('/api/documents/favorite', {
         method: 'POST',
@@ -187,18 +192,24 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onCl
       });
       const data = await res.json();
       if (data.success && data.item) {
-        setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, isFavorite: data.item.isFavorite } : d)));
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === id ? { ...d, isFavorite: data.item.isFavorite } : d
+          )
+        );
         if (activeDoc?.id === id) {
-          setActiveDoc((prev) => (prev ? { ...prev, isFavorite: data.item.isFavorite } : null));
+          setActiveDoc((prev) =>
+            prev ? { ...prev, isFavorite: data.item.isFavorite } : null
+          );
         }
       }
-    } catch (err) {
-      console.error('Favorite toggle failed:', err);
+    } catch {
+      // ignore
     }
   };
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+    e?.stopPropagation();
     try {
       const res = await fetch('/api/documents/delete', {
         method: 'POST',
@@ -209,17 +220,18 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onCl
       if (data.success) {
         setDocuments((prev) => prev.filter((d) => d.id !== id));
         if (activeDoc?.id === id) {
-          const remaining = documents.filter((d) => d.id !== id);
-          setActiveDoc(remaining[0] || null);
+          setActiveDoc(null);
+          setIsPlayingAudio(false);
         }
+        showToast('Document deleted.');
       }
-    } catch (err) {
-      console.error('Delete failed:', err);
+    } catch {
+      showToast('Delete failed.');
     }
   };
 
   const handleDocumentQA = async () => {
-    if (!qaQuery.trim() || !activeDoc) return;
+    if (!qaQuery.trim() || !activeDoc || isAnswering) return;
     setIsAnswering(true);
     const queryText = qaQuery;
     setQaQuery('');
@@ -234,37 +246,16 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onCl
           content: activeDoc.content,
         }),
       });
-
       const data = await res.json();
       if (data.success) {
         setQaHistory((prev) => [...prev, { query: queryText, answer: data.answer }]);
       }
-    } catch (err) {
-      console.error('QA failed:', err);
+    } catch {
+      showToast('Q&A query failed.');
     } finally {
       setIsAnswering(false);
     }
   };
-
-  const toggleAudioOverview = () => {
-    if (audioPlayerRef.current) {
-      if (isPlayingAudio) {
-        audioPlayerRef.current.pause();
-        setIsPlayingAudio(false);
-      } else {
-        audioPlayerRef.current.play().catch(() => {});
-        setIsPlayingAudio(true);
-      }
-    }
-  };
-
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    setCopyFeedback(label);
-    setTimeout(() => setCopyFeedback(null), 2000);
-  };
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -274,6 +265,7 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onCl
         const text = event.target?.result as string;
         if (text) {
           setSourceText(text);
+          showToast(`Source grounded from "${file.name}".`);
         }
       };
       reader.readAsText(file);
@@ -282,871 +274,694 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({ isOpen, onCl
 
   const handleExportOffice = (format: 'docx' | 'pptx' | 'xlsx' | 'md') => {
     if (!activeDoc) return;
-    const downloadUrl = `/api/documents/export/${format}?id=${encodeURIComponent(activeDoc.id)}`;
+    const downloadUrl = resolveApiUrl(
+      `/api/documents/export/${format}?id=${encodeURIComponent(activeDoc.id)}`
+    );
     const link = document.createElement('a');
     link.href = downloadUrl;
     link.download = `${activeDoc.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.${format}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    setExportMenuOpen(false);
+    showToast(`Exporting .${format.toUpperCase()}...`);
   };
 
-  const handleDownloadMarkdown = () => {
-    handleExportOffice('md');
-  };
-
-
-  if (!isOpen) return null;
-
-  const filteredDocs = documents.filter((d) => {
-    const matchesFav = !filterFavorite || d.isFavorite;
-    const matchesSearch =
-      !searchQuery ||
-      d.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      d.prompt.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      d.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
-    return matchesFav && matchesSearch;
-  });
-
-  return (
-    <div className="fixed inset-0 z-50 flex bg-[#090a10] text-slate-100 font-sans overflow-hidden select-none">
-      {/* ============================================================== */}
-      {/* 1. LEFT CREATION DRAWER: NOTEBOOKLM + GAMMA FORM              */}
-      {/* ============================================================== */}
-      <aside className="w-96 flex-shrink-0 bg-[#0f111a] border-r border-slate-800/80 flex flex-col h-full z-20 overflow-y-auto custom-scrollbar">
-        {/* Header Branding */}
-        <div className="p-4 border-b border-slate-800/80 flex items-center justify-between bg-[#131522]/70 backdrop-blur sticky top-0 z-10">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-500 to-cyan-500 p-[1.5px] shadow-lg shadow-emerald-500/20">
-              <div className="w-full h-full bg-[#0a0c13] rounded-[10px] flex items-center justify-center">
-                <FileText className="w-5 h-5 text-emerald-400 animate-pulse" />
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-sm tracking-wide text-white">RaOne DocuStudio</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono font-semibold">
-                  IDP RAG
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-400">NotebookLM + Gamma + Copilot</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1 bg-[#181a26] px-2.5 py-1 rounded-full border border-emerald-500/30 text-emerald-300 text-xs font-mono font-semibold">
-            <Zap className="w-3.5 h-3.5 fill-emerald-400 text-emerald-400" />
-            <span>100</span>
-          </div>
-        </div>
-
-        <div className="p-4 space-y-4">
-          {/* Document Type Selector (Cards) */}
-          <div className="space-y-2">
-            <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block">
-              Document Format
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {DOC_TYPES.map((type) => {
-                const IconComponent = type.icon;
-                const active = docType === type.id;
-                return (
-                  <button
-                    key={type.id}
-                    onClick={() => setDocType(type.id as any)}
-                    className={`p-2.5 rounded-xl border text-left transition-all ${
-                      active
-                        ? 'bg-emerald-950/40 border-emerald-500/80 text-emerald-200 shadow-md shadow-emerald-950/30'
-                        : 'bg-[#141624]/60 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
-                    }`}
-                  >
-                    <IconComponent className={`w-4 h-4 mb-1.5 ${active ? 'text-emerald-400' : 'text-slate-400'}`} />
-                    <div className="text-xs font-bold text-white truncate">{type.label}</div>
-                    <div className="text-[10px] text-slate-500 line-clamp-1">{type.desc}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Prompt Input */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                Document Topic or Directive
-              </label>
-              <button
-                onClick={() => {
-                  const r = RANDOM_DOC_PROMPTS[Math.floor(Math.random() * RANDOM_DOC_PROMPTS.length)];
-                  setPrompt(r);
-                }}
-                className="flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300"
-              >
-                <Dices className="w-3 h-3" />
-                <span>Inspiration</span>
-              </button>
-            </div>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={4}
-              placeholder="e.g. Detailed strategic proposal on implementing sovereign cloud GPU datacenters in Sri Lanka with financial models..."
-              className="w-full bg-[#0a0b12] border border-slate-800 rounded-xl p-3 text-xs text-slate-200 focus:outline-none focus:border-emerald-500/70 resize-none leading-relaxed"
-            />
-          </div>
-
-          {/* Tone & Options */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block mb-1">
-                Tone of Voice
-              </label>
-              <select
-                value={tone}
-                onChange={(e) => setTone(e.target.value as any)}
-                className="w-full bg-[#0a0b12] border border-slate-800 rounded-xl p-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500/70"
-              >
-                <option value="executive">Executive (C-Suite)</option>
-                <option value="technical">Technical (Engineering)</option>
-                <option value="academic">Academic (Research)</option>
-                <option value="creative">Pitch / Persuasive</option>
-              </select>
-            </div>
-
-            <div className="flex flex-col justify-end">
-              <label className="flex items-center gap-2 p-2 bg-[#141624]/60 rounded-xl border border-slate-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={includeAudioOverview}
-                  onChange={(e) => setIncludeAudioOverview(e.target.checked)}
-                  className="rounded accent-emerald-500"
-                />
-                <span className="text-xs font-medium text-slate-300">Podcast Audio Overview</span>
-              </label>
-            </div>
-          </div>
-
-          {/* Source Grounding Box (NotebookLM Style) */}
-          <div className="space-y-1.5">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,.json,.csv"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                Source Grounding (Optional)
-              </label>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1 text-[10px] text-emerald-400 hover:text-emerald-300 font-semibold"
-              >
-                <FileUp className="w-3 h-3" />
-                <span>Upload File (.txt, .md)</span>
-              </button>
-            </div>
-            <textarea
-              value={sourceText}
-              onChange={(e) => setSourceText(e.target.value)}
-              rows={3}
-              placeholder="Paste raw research notes, statistics, or quotes to ground the document in 100% verified facts..."
-              className="w-full bg-[#0a0b12] border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500/70 resize-none font-mono text-[11px]"
-            />
-          </div>
-
-          {/* AI Model Selection */}
-          <div className="space-y-2">
-            <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block">
-              Document AI Engine
-            </label>
-            <div className="space-y-1.5">
-              {DOC_MODELS.map((model) => {
-                const active = selectedModel === model.id;
-                return (
-                  <div
-                    key={model.id}
-                    onClick={() => setSelectedModel(model.id)}
-                    className={`p-2.5 rounded-xl border cursor-pointer transition-all ${
-                      active
-                        ? 'bg-[#151928] border-emerald-500/80 shadow-md shadow-emerald-500/10'
-                        : 'bg-[#141624]/40 border-slate-800 hover:border-slate-700 hover:bg-[#141624]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-0.5">
-                      <span className={`text-xs font-semibold ${active ? 'text-emerald-300' : 'text-slate-200'}`}>
-                        {model.name}
-                      </span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                        {model.badge}
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-slate-400 leading-tight">{model.desc}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Primary Action Button */}
+  const previewContent = activeDoc ? (
+    <div className="p-5 md:p-6 max-w-5xl mx-auto space-y-5">
+      {/* Document Sub-navigation & Export Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-[#18191C] border border-[#282A2E] rounded-xl p-2.5">
+        <div className="flex items-center gap-1 bg-[#131314] p-0.5 rounded-lg border border-[#252629]">
           <button
-            onClick={handleGenerate}
-            disabled={isLoading || !prompt.trim()}
-            className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-600 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold text-xs tracking-wide shadow-lg shadow-emerald-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-98"
+            onClick={() => setActiveView('document')}
+            className={`px-3 py-1 rounded-md text-xs font-medium ${
+              activeView === 'document'
+                ? 'bg-[#2B2D30] text-white'
+                : 'text-[#8E918F] hover:text-white'
+            }`}
           >
-            {isLoading ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Synthesizing Document & Citations...</span>
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4 fill-white" />
-                <span>Generate Document</span>
-                <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-black/30 text-[10px] font-mono text-emerald-200 border border-emerald-400/20">
-                  <Zap className="w-2.5 h-2.5 fill-emerald-300 text-emerald-300" />
-                  10 Credits
-                </span>
-              </>
-            )}
+            Reader
+          </button>
+          <button
+            onClick={() => setActiveView('slides')}
+            className={`px-3 py-1 rounded-md text-xs font-medium ${
+              activeView === 'slides'
+                ? 'bg-[#2B2D30] text-white'
+                : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            Slides ({activeDoc.slides?.length || 0})
+          </button>
+          <button
+            onClick={() => setActiveView('graph')}
+            className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1 ${
+              activeView === 'graph'
+                ? 'bg-[#2B2D30] text-white'
+                : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            <Network className="w-3.5 h-3.5" />
+            <span>Graph-RAG</span>
           </button>
         </div>
-      </aside>
 
-      {/* ============================================================== */}
-      {/* 2. MAIN WORKSPACE: DOCUMENT VIEWER, SLIDES & RAG CHAT         */}
-      {/* ============================================================== */}
-      <main className="flex-1 flex flex-col h-full bg-[#0a0b12] overflow-hidden">
-        {/* Top Header Bar */}
-        <header className="h-14 border-b border-slate-800/80 px-6 flex items-center justify-between bg-[#0e1018]/70 backdrop-blur z-10">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1 bg-[#06070a] p-1 rounded-xl border border-slate-800">
-              <button
-                onClick={() => setActiveView('document')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  activeView === 'document'
-                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Document Reader
-              </button>
-              <button
-                onClick={() => setActiveView('slides')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  activeView === 'slides'
-                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Gamma Presentation Deck
-              </button>
-              <button
-                onClick={() => setActiveView('graph')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
-                  activeView === 'graph'
-                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Network className="w-3.5 h-3.5" />
-                <span>Graph-RAG & Neo4j</span>
-              </button>
-              <button
-                onClick={() => setActiveView('architecture')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  activeView === 'architecture'
-                    ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Silicon Valley IDP Architecture
-              </button>
-            </div>
-
-            {/* Search Input */}
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search documents & sources..."
-                className="bg-[#121420] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 w-44"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {activeDoc && (
-              <>
-                <button
-                  onClick={() => copyToClipboard(activeDoc.content, 'doc_content')}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-xs text-slate-200 transition-colors"
-                >
-                  {copyFeedback === 'doc_content' ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" />
-                  )}
-                  <span>Copy</span>
-                </button>
-
-                {/* Direct Binary Office Export Suite */}
-                <div className="relative">
-                  <button
-                    onClick={() => setExportMenuOpen(!exportMenuOpen)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-xs font-semibold text-white transition-all shadow-md shadow-emerald-900/40"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Direct Office Export</span>
-                  </button>
-
-                  {exportMenuOpen && (
-                    <div className="absolute right-0 mt-2 w-56 bg-[#111320] border border-emerald-500/40 rounded-2xl p-1.5 shadow-2xl z-50 space-y-1">
-                      <button
-                        onClick={() => handleExportOffice('docx')}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-200 hover:bg-emerald-950/50 hover:text-emerald-300 transition-colors text-left"
-                      >
-                        <FileText className="w-4 h-4 text-blue-400" />
-                        <div>
-                          <div className="font-semibold text-white">Microsoft Word (.DOCX)</div>
-                          <div className="text-[10px] text-slate-400">Styled document with tables</div>
-                        </div>
-                      </button>
-
-                      <button
-                        onClick={() => handleExportOffice('pptx')}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-200 hover:bg-emerald-950/50 hover:text-emerald-300 transition-colors text-left"
-                      >
-                        <Presentation className="w-4 h-4 text-orange-400" />
-                        <div>
-                          <div className="font-semibold text-white">PowerPoint (.PPTX)</div>
-                          <div className="text-[10px] text-slate-400">Executive presentation slides</div>
-                        </div>
-                      </button>
-
-                      <button
-                        onClick={() => handleExportOffice('xlsx')}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-200 hover:bg-emerald-950/50 hover:text-emerald-300 transition-colors text-left"
-                      >
-                        <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                        <div>
-                          <div className="font-semibold text-white">Microsoft Excel (.XLSX)</div>
-                          <div className="text-[10px] text-slate-400">Data sheets & unit metrics</div>
-                        </div>
-                      </button>
-
-                      <button
-                        onClick={() => handleExportOffice('md')}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-200 hover:bg-slate-800 text-left transition-colors"
-                      >
-                        <FileText className="w-4 h-4 text-slate-400" />
-                        <div>
-                          <div className="font-semibold text-white">Raw Markdown (.MD)</div>
-                          <div className="text-[10px] text-slate-400">Clean text with formatting</div>
-                        </div>
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  onClick={() => handleToggleFavorite(activeDoc.id)}
-                  className="p-2 rounded-xl bg-slate-800/60 hover:bg-slate-700 text-slate-300 hover:text-rose-400 transition-colors"
-                >
-                  <Heart
-                    className={`w-4 h-4 ${activeDoc.isFavorite ? 'fill-rose-500 text-rose-500' : ''}`}
-                  />
-                </button>
-              </>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(activeDoc.content);
+              setCopiedDoc(true);
+              setTimeout(() => setCopiedDoc(false), 1500);
+            }}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
+          >
+            {copiedDoc ? (
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
             )}
+            <span>Copy</span>
+          </button>
+          <button
+            onClick={() => handleExportOffice('docx')}
+            className="px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
+          >
+            .DOCX
+          </button>
+          <button
+            onClick={() => handleExportOffice('pptx')}
+            className="px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
+          >
+            .PPTX
+          </button>
+          <button
+            onClick={() => handleExportOffice('xlsx')}
+            className="px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
+          >
+            .XLSX
+          </button>
+          <button
+            onClick={() => handleToggleFavorite(activeDoc.id)}
+            className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] text-[#E3E3E3]"
+          >
+            <Heart
+              className={`w-3.5 h-3.5 ${
+                activeDoc.isFavorite ? 'fill-rose-500 text-rose-500' : ''
+              }`}
+            />
+          </button>
+        </div>
+      </div>
 
+      {/* NotebookLM Audio Overview Player */}
+      {activeDoc.audioOverviewUrl && (
+        <div className="p-4 rounded-xl bg-[#18191C] border border-[#282A2E] flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800/60 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              onClick={() => {
+                if (!audioPlayerRef.current) return;
+                if (isPlayingAudio) {
+                  audioPlayerRef.current.pause();
+                  setIsPlayingAudio(false);
+                } else {
+                  audioPlayerRef.current.play().catch(() => {});
+                  setIsPlayingAudio(true);
+                }
+              }}
+              className="w-10 h-10 rounded-full bg-[#E3E3E3] hover:bg-white text-[#131314] flex items-center justify-center shrink-0"
             >
-              <X className="w-5 h-5" />
+              {isPlayingAudio ? (
+                <Pause className="w-4 h-4 fill-current" />
+              ) : (
+                <Play className="w-4 h-4 fill-current ml-0.5" />
+              )}
             </button>
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-white">
+                Audio Overview (Deep Dive Discussion)
+              </div>
+              <p className="text-[11px] text-[#9AA0A6] truncate">
+                {activeDoc.audioOverviewTranscript ||
+                  'Grounded conversational audio synthesis.'}
+              </p>
+            </div>
           </div>
-        </header>
+          <audio
+            ref={audioPlayerRef}
+            src={activeDoc.audioOverviewUrl}
+            onEnded={() => setIsPlayingAudio(false)}
+          />
+        </div>
+      )}
 
-        {/* Sub-bar: Document Selector Pills */}
-        <div className="px-6 py-2 bg-[#0d0e17] border-b border-slate-800/60 flex items-center gap-2 overflow-x-auto custom-scrollbar">
-          {filteredDocs.map((doc) => {
-            const active = activeDoc?.id === doc.id;
+      {/* Document Reader */}
+      {activeView === 'document' && (
+        <div className="p-6 rounded-2xl bg-[#161719] border border-[#282A2E] space-y-5 select-text">
+          <h2 className="text-lg font-semibold text-white">{activeDoc.title}</h2>
+          {activeDoc.summary && (
+            <div className="p-4 rounded-xl bg-[#1E1F20] border border-[#2C2D30] space-y-1">
+              <div className="text-[11px] font-medium text-[#8AB4F8]">Executive Summary</div>
+              <p className="text-xs text-[#D8DADF] leading-relaxed">{activeDoc.summary}</p>
+            </div>
+          )}
+          <pre className="whitespace-pre-wrap font-sans text-xs text-[#E3E3E3] leading-relaxed">
+            {activeDoc.content}
+          </pre>
+
+          {activeDoc.citations && activeDoc.citations.length > 0 && (
+            <div className="pt-4 border-t border-[#252629] space-y-2.5">
+              <div className="text-xs font-medium text-[#C4C7C5] flex items-center gap-1.5">
+                <Bookmark className="w-3.5 h-3.5 text-[#8AB4F8]" />
+                <span>Grounded Citations</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {activeDoc.citations.map((cit) => (
+                  <div
+                    key={cit.id}
+                    className="p-3 rounded-xl bg-[#131314] border border-[#252629] space-y-1"
+                  >
+                    <div className="flex justify-between text-xs font-medium text-[#E3E3E3]">
+                      <span className="truncate">{cit.sourceTitle}</span>
+                      <span className="text-[11px] text-[#8E918F] font-mono shrink-0">
+                        {cit.pageOrSection}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#9AA0A6] italic">"{cit.snippet}"</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Presentation Slides */}
+      {activeView === 'slides' && activeDoc.slides && activeDoc.slides.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between bg-[#18191C] border border-[#282A2E] rounded-xl px-4 py-2">
+            <span className="text-xs font-medium text-[#E3E3E3] tabular-nums">
+              Slide {currentSlideIndex + 1} / {activeDoc.slides.length}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setCurrentSlideIndex(Math.max(0, currentSlideIndex - 1))}
+                disabled={currentSlideIndex === 0}
+                className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] disabled:opacity-40 text-white"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() =>
+                  setCurrentSlideIndex(
+                    Math.min((activeDoc.slides?.length || 1) - 1, currentSlideIndex + 1)
+                  )
+                }
+                disabled={currentSlideIndex === (activeDoc.slides?.length || 1) - 1}
+                className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] disabled:opacity-40 text-white"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {activeDoc.slides[currentSlideIndex] && (
+            <div className="min-h-[340px] p-7 rounded-2xl bg-[#161719] border border-[#282A2E] flex flex-col justify-between space-y-5">
+              <div className="space-y-3">
+                <span className="text-[11px] font-mono text-[#8AB4F8]">
+                  Slide {activeDoc.slides[currentSlideIndex].slideNumber}
+                </span>
+                <h2 className="text-xl font-semibold text-white">
+                  {activeDoc.slides[currentSlideIndex].title}
+                </h2>
+                {activeDoc.slides[currentSlideIndex].subtitle && (
+                  <p className="text-xs text-[#9AA0A6]">
+                    {activeDoc.slides[currentSlideIndex].subtitle}
+                  </p>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                  {activeDoc.slides[currentSlideIndex].bulletPoints.map((bp, i) => (
+                    <div
+                      key={i}
+                      className="p-3 rounded-xl bg-[#1E1F20] border border-[#2C2D30] flex items-start gap-2.5 text-xs text-[#E3E3E3]"
+                    >
+                      <span className="font-mono text-[#8AB4F8] shrink-0">{i + 1}.</span>
+                      <span>{bp}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {activeDoc.slides[currentSlideIndex].callout && (
+                <div className="p-3.5 rounded-xl bg-[#1E1F20] border border-[#2C2D30] flex items-center gap-2.5 text-xs text-[#D8DADF] italic">
+                  <Quote className="w-4 h-4 text-[#8AB4F8] shrink-0" />
+                  <span>"{activeDoc.slides[currentSlideIndex].callout}"</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Graph-RAG Entities */}
+      {activeView === 'graph' && (
+        <div className="p-5 rounded-2xl bg-[#161719] border border-[#282A2E] space-y-4">
+          <div className="text-xs font-medium text-white flex items-center gap-2">
+            <Network className="w-4 h-4 text-[#8AB4F8]" />
+            <span>Knowledge Graph Entities</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {(activeDoc.graphEntities?.length
+              ? activeDoc.graphEntities
+              : [
+                  { id: 'e1', name: activeDoc.title.slice(0, 32), type: 'milestone' as const, connections: ['e2'] },
+                  { id: 'e2', name: 'LayoutLMv3 OCR', type: 'concept' as const, connections: ['e1', 'e3'] },
+                  { id: 'e3', name: 'BM25 + Dense Vector RRF', type: 'metric' as const, connections: ['e2'] },
+                ]
+            ).map((node) => (
+              <button
+                key={node.id}
+                onClick={() => setSelectedEntity(node)}
+                className={`p-3 rounded-xl border text-left transition-colors ${
+                  selectedEntity?.id === node.id
+                    ? 'bg-[#2B2D30] border-[#8AB4F8]'
+                    : 'bg-[#1E1F20] border-[#2C2D30] hover:border-[#42454C]'
+                }`}
+              >
+                <div className="text-[11px] font-mono text-[#8AB4F8] uppercase">
+                  {node.type}
+                </div>
+                <div className="text-xs font-medium text-white mt-1 truncate">
+                  {node.name}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Document Q&A */}
+      <div className="p-4 rounded-2xl bg-[#161719] border border-[#282A2E] space-y-3">
+        <div className="text-xs font-medium text-white">Ask Grounded Questions</div>
+        {qaHistory.length > 0 && (
+          <div className="space-y-2 max-h-48 overflow-y-auto chat-scroll-area">
+            {qaHistory.map((qa, i) => (
+              <div key={i} className="p-3 rounded-xl bg-[#1E1F20] border border-[#2C2D30] space-y-1 text-xs">
+                <div className="font-medium text-white">Q: {qa.query}</div>
+                <div className="text-[#C4C7C5] whitespace-pre-wrap">{qa.answer}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={qaQuery}
+            onChange={(e) => setQaQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleDocumentQA()}
+            placeholder="Ask a question grounded in this document..."
+            className="flex-1 bg-[#131314] border border-[#2F3135] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#8AB4F8]"
+          />
+          <button
+            onClick={handleDocumentQA}
+            disabled={!qaQuery.trim() || isAnswering}
+            className="px-3 py-1.5 rounded-lg bg-[#2B2D30] hover:bg-[#383A40] text-xs font-medium text-white disabled:opacity-50 flex items-center gap-1"
+          >
+            {isAnswering ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Send className="w-3.5 h-3.5" />
+            )}
+            <span>Ask</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const codeContent = (
+    <div className="p-6 max-w-4xl mx-auto space-y-5">
+      <div className="p-4 rounded-xl bg-[#18191B] border border-[#282A2E] space-y-2">
+        <span className="text-xs font-medium text-white block">
+          Document Markdown & Source Grounding Spec
+        </span>
+        <pre className="font-mono text-xs text-[#D4D7DD] bg-[#111214] p-3.5 rounded-lg border border-[#252629] overflow-x-auto whitespace-pre-wrap">
+          {activeDoc
+            ? activeDoc.content
+            : JSON.stringify(
+                {
+                  model: selectedModel,
+                  docType,
+                  tone,
+                  includeAudioOverview,
+                  hasSourceText: !!sourceText.trim(),
+                },
+                null,
+                2
+              )}
+        </pre>
+      </div>
+
+      <div className="p-4 rounded-xl bg-[#18191B] border border-[#282A2E] space-y-3">
+        <div className="flex items-center gap-2 text-xs font-medium text-white">
+          <Cpu className="w-4 h-4 text-[#8AB4F8]" />
+          <span>Intelligent Document Processing (IDP) & RAG Architecture</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#9AA0A6]">
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">1. LayoutLMv3 Vision OCR</div>
+            Parses tables, columns, and charts with spatial bounding coherence.
+          </div>
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">2. Hybrid Dense + BM25 RRF</div>
+            Combines semantic embeddings and exact keyword matches cleanly.
+          </div>
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">3. Graph-RAG Entity Linking</div>
+            Connects organizational, financial, and regulatory concepts across sources.
+          </div>
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">4. Native Office Binary Exports</div>
+            Compiles formatted .DOCX, .PPTX, .XLSX, and .MD deliverables on server.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const filteredDocs = documents.filter((d) => {
+    const matchFav = !filterFavorite || d.isFavorite;
+    const matchSearch =
+      !searchQuery.trim() ||
+      d.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      d.prompt.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchFav && matchSearch;
+  });
+
+  const filesContent = (
+    <div className="p-5 max-w-5xl mx-auto space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#252629] pb-3">
+        <div className="flex items-center gap-1 bg-[#1B1C1E] p-0.5 rounded-lg border border-[#2C2D30]">
+          <button
+            onClick={() => setFilterFavorite(false)}
+            className={`px-3 py-1 rounded-md text-xs font-medium ${
+              !filterFavorite ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            All Documents ({documents.length})
+          </button>
+          <button
+            onClick={() => setFilterFavorite(true)}
+            className={`px-3 py-1 rounded-md text-xs font-medium ${
+              filterFavorite ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            Favorites ({documents.filter((d) => d.isFavorite).length})
+          </button>
+        </div>
+
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-[#8E918F] absolute left-2.5 top-2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search documents..."
+            className="bg-[#1B1C1E] border border-[#2C2D30] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[#E3E3E3] placeholder-[#6E7075] focus:outline-none w-56"
+          />
+        </div>
+      </div>
+
+      {filteredDocs.length === 0 ? (
+        <div className="py-16 text-center text-xs text-[#8E918F]">
+          <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
+          <p>No documents found.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filteredDocs.map((doc) => (
+            <div
+              key={doc.id}
+              onClick={() => {
+                setActiveDoc(doc);
+                setCurrentSlideIndex(0);
+                setQaHistory([]);
+                setRightTab('preview');
+              }}
+              className="p-4 rounded-xl bg-[#18191B] border border-[#27292D] hover:border-[#42454C] transition-colors cursor-pointer group flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <span className="text-[11px] text-[#8AB4F8] capitalize">
+                    {doc.docType}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={(e) => handleToggleFavorite(doc.id, e)}
+                      className="p-1 rounded text-[#8E918F] hover:text-rose-400"
+                    >
+                      <Heart
+                        className={`w-3.5 h-3.5 ${
+                          doc.isFavorite ? 'fill-rose-500 text-rose-500' : ''
+                        }`}
+                      />
+                    </button>
+                    <button
+                      onClick={(e) => handleDelete(doc.id, e)}
+                      className="p-1 rounded text-[#8E918F] hover:text-red-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <h4 className="text-sm font-medium text-white line-clamp-1">
+                  {doc.title}
+                </h4>
+                <p className="text-xs text-[#8E918F] mt-1 line-clamp-2">
+                  {doc.summary || doc.prompt}
+                </p>
+              </div>
+              <div className="pt-3 mt-3 border-t border-[#252629] flex items-center justify-between text-[11px] text-[#8E918F] tabular-nums">
+                <span>{doc.pageCount || 1} pages</span>
+                <span className="text-[#8AB4F8]">Open →</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const editDrawerContent = (
+    <div className="space-y-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md,.json,.csv"
+        onChange={handleFileUpload}
+        className="hidden"
+      />
+
+      <div>
+        <label className="text-xs font-medium text-[#C4C7C5] block mb-1.5">
+          Document Format
+        </label>
+        <div className="grid grid-cols-2 gap-1.5">
+          {DOC_TYPES.map((t) => {
+            const Icon = t.icon;
             return (
               <button
-                key={doc.id}
-                onClick={() => {
-                  setActiveDoc(doc);
-                  setCurrentSlideIndex(0);
-                }}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs whitespace-nowrap transition-all border ${
-                  active
-                    ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/60 shadow-sm'
-                    : 'bg-[#121420] text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
+                key={t.id}
+                onClick={() => setDocType(t.id as any)}
+                className={`p-2 rounded-lg border text-left flex items-center gap-2 text-xs ${
+                  docType === t.id
+                    ? 'bg-[#2B2D30] border-[#4A4D54] text-white'
+                    : 'bg-[#1E1F20] border-[#2C2D30] text-[#8E918F] hover:text-white'
                 }`}
               >
-                <FileText className="w-3.5 h-3.5" />
-                <span className="font-medium truncate max-w-xs">{doc.title}</span>
-                <span className="text-[10px] font-mono text-slate-500">{doc.pageCount}p</span>
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{t.label}</span>
               </button>
             );
           })}
         </div>
+      </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-          {activeDoc ? (
-            <div className="max-w-5xl mx-auto space-y-6">
-              {/* ============================================================== */}
-              {/* NOTEBOOKLM AUDIO OVERVIEW PLAYER (DEEP DIVE 2-HOST PODCAST)   */}
-              {/* ============================================================== */}
-              {activeDoc.audioOverviewUrl && (
-                <div className="bg-gradient-to-r from-emerald-950/40 via-teal-950/40 to-cyan-950/40 border border-emerald-500/40 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl shadow-emerald-950/20">
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={toggleAudioOverview}
-                      className="w-12 h-12 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-black flex items-center justify-center shadow-lg transition-transform active:scale-95 flex-shrink-0"
-                    >
-                      {isPlayingAudio ? (
-                        <Pause className="w-5 h-5 fill-black" />
-                      ) : (
-                        <Play className="w-5 h-5 fill-black ml-0.5" />
-                      )}
-                    </button>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-white">NotebookLM Deep Dive Audio Overview</span>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
-                          2 AI Hosts Discussing
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-300 mt-0.5 line-clamp-1">
-                        {activeDoc.audioOverviewTranscript || 'Conversational analysis and key takeaways synthesis.'}
-                      </p>
-                    </div>
-                  </div>
+      <div>
+        <label className="text-xs font-medium text-[#C4C7C5] block mb-1">
+          Tone of Voice
+        </label>
+        <select
+          value={tone}
+          onChange={(e) => setTone(e.target.value as any)}
+          className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+        >
+          <option value="executive">Executive (C-Suite)</option>
+          <option value="technical">Technical (Engineering)</option>
+          <option value="academic">Academic (Research)</option>
+          <option value="creative">Pitch / Persuasive</option>
+        </select>
+      </div>
 
-                  <audio
-                    ref={audioPlayerRef}
-                    src={activeDoc.audioOverviewUrl}
-                    onEnded={() => setIsPlayingAudio(false)}
-                  />
+      <div className="flex items-center justify-between p-3 rounded-lg bg-[#1B1C1E] border border-[#2C2D30] text-xs">
+        <span className="text-[#E3E3E3]">Podcast Audio Overview</span>
+        <button
+          onClick={() => setIncludeAudioOverview(!includeAudioOverview)}
+          className={`w-9 h-5 rounded-full p-0.5 flex items-center transition-colors ${
+            includeAudioOverview ? 'bg-[#8AB4F8] justify-end' : 'bg-[#34363A] justify-start'
+          }`}
+        >
+          <span className="w-4 h-4 rounded-full bg-[#131314]" />
+        </button>
+      </div>
 
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono text-emerald-400 font-semibold">Grounded Podcast</span>
-                  </div>
-                </div>
-              )}
-
-              {/* View 1: Document Reader (Markdown, Tables, Headings) */}
-              {activeView === 'document' && (
-                <div className="bg-[#10121d] border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6">
-                  {/* Executive Summary Callout */}
-                  {activeDoc.summary && (
-                    <div className="bg-[#141829] border-l-4 border-emerald-400 p-4 rounded-r-2xl">
-                      <h4 className="text-xs font-bold text-emerald-300 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                        <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                        Executive Summary
-                      </h4>
-                      <p className="text-xs text-slate-200 leading-relaxed font-sans">{activeDoc.summary}</p>
-                    </div>
-                  )}
-
-                  {/* Document Body */}
-                  <div className="prose prose-invert max-w-none text-slate-200 text-sm leading-relaxed space-y-4">
-                    <pre className="whitespace-pre-wrap font-sans text-xs text-slate-200 leading-relaxed">
-                      {activeDoc.content}
-                    </pre>
-                  </div>
-
-                  {/* Grounded Citations & Sources Section (NotebookLM Style) */}
-                  {activeDoc.citations && activeDoc.citations.length > 0 && (
-                    <div className="mt-8 pt-6 border-t border-slate-800 space-y-3">
-                      <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-                        <Bookmark className="w-4 h-4 text-emerald-400" />
-                        Grounded Sources & Citations
-                      </h4>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {activeDoc.citations.map((cit) => (
-                          <div
-                            key={cit.id}
-                            className="p-3 bg-[#0a0c13] rounded-xl border border-slate-800/80 space-y-1 hover:border-emerald-500/40 transition-colors"
-                          >
-                            <div className="flex items-center justify-between text-xs font-semibold text-emerald-300">
-                              <span>{cit.sourceTitle}</span>
-                              <span className="text-[10px] text-slate-500 font-mono">{cit.pageOrSection}</span>
-                            </div>
-                            <p className="text-[11px] text-slate-400 italic">"{cit.snippet}"</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* View 2: Gamma Presentation Slide Deck */}
-              {activeView === 'slides' && activeDoc.slides && activeDoc.slides.length > 0 && (
-                <div className="space-y-4">
-                  {/* Slide Carousel Navigator */}
-                  <div className="flex items-center justify-between bg-[#121422] p-3 rounded-2xl border border-slate-800">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-purple-300">
-                        Slide {currentSlideIndex + 1} of {activeDoc.slides.length}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setCurrentSlideIndex(Math.max(0, currentSlideIndex - 1))}
-                        disabled={currentSlideIndex === 0}
-                        className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 disabled:opacity-40 text-white"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() =>
-                          setCurrentSlideIndex(Math.min((activeDoc.slides?.length || 1) - 1, currentSlideIndex + 1))
-                        }
-                        disabled={currentSlideIndex === (activeDoc.slides?.length || 1) - 1}
-                        className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 disabled:opacity-40 text-white"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Active Gamma Slide Card */}
-                  {activeDoc.slides[currentSlideIndex] && (
-                    <div className="min-h-[380px] bg-gradient-to-br from-[#131526] via-[#10111f] to-[#0a0b14] border border-purple-500/40 rounded-3xl p-8 shadow-2xl flex flex-col justify-between relative overflow-hidden">
-                      <div className="space-y-4">
-                        <div>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono font-bold uppercase">
-                            Slide {activeDoc.slides[currentSlideIndex].slideNumber}
-                          </span>
-                          <h2 className="text-2xl font-black text-white mt-2 tracking-tight">
-                            {activeDoc.slides[currentSlideIndex].title}
-                          </h2>
-                          {activeDoc.slides[currentSlideIndex].subtitle && (
-                            <p className="text-sm text-purple-300 font-medium">
-                              {activeDoc.slides[currentSlideIndex].subtitle}
-                            </p>
-                          )}
-                        </div>
-
-                        {/* Slide Bullets */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                          {activeDoc.slides[currentSlideIndex].bulletPoints.map((bp, i) => (
-                            <div
-                              key={i}
-                              className="p-3.5 bg-[#0a0c16]/80 rounded-2xl border border-slate-800 flex items-start gap-3"
-                            >
-                              <div className="w-6 h-6 rounded-lg bg-purple-950 flex items-center justify-center text-purple-400 font-bold text-xs shrink-0">
-                                {i + 1}
-                              </div>
-                              <p className="text-xs text-slate-200 leading-relaxed font-medium">{bp}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Gamma Callout Banner */}
-                      {activeDoc.slides[currentSlideIndex].callout && (
-                        <div className="mt-6 p-4 bg-purple-950/40 border border-purple-500/30 rounded-2xl flex items-center gap-3">
-                          <Quote className="w-5 h-5 text-purple-400 shrink-0" />
-                          <p className="text-xs text-purple-200 font-semibold italic">
-                            "{activeDoc.slides[currentSlideIndex].callout}"
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* View 2.5: Interactive Graph-RAG & Neo4j Knowledge Graph Visualizer + Vision OCR */}
-              {activeView === 'graph' && (
-                <div className="space-y-6">
-                  {/* Graph-RAG Banner */}
-                  <div className="bg-gradient-to-r from-amber-950/40 via-orange-950/30 to-[#121422] border border-amber-500/40 rounded-2xl p-6 shadow-xl">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center text-black font-bold shadow-lg shadow-orange-950/40">
-                          <Network className="w-5 h-5 text-white animate-pulse" />
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h2 className="text-lg font-bold text-white">Graph-RAG (Neo4j Entity Linker) & Vision OCR</h2>
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-semibold border border-amber-500/30">
-                              Hybrid Dense + BM25 (RRF)
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-300">
-                            Semantic knowledge graph linking entities across multi-modal LayoutLMv3 OCR coordinate frames.
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleExportOffice('docx')}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors"
-                        >
-                          <Download className="w-3.5 h-3.5 text-blue-400" />
-                          <span>Word</span>
-                        </button>
-                        <button
-                          onClick={() => handleExportOffice('xlsx')}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors"
-                        >
-                          <Download className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Excel</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Interactive Neo4j Entity Graph Visualizer */}
-                  <div className="p-6 bg-[#0e101a] border border-slate-800 rounded-3xl space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Network className="w-4 h-4 text-amber-400" />
-                        <h3 className="text-sm font-bold text-white">Neo4j Entity Relationship Grid</h3>
-                      </div>
-                      <span className="text-[11px] text-slate-400 font-mono">
-                        Click any node to inspect semantic triples & dense ranking
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      {(activeDoc.graphEntities && activeDoc.graphEntities.length > 0
-                        ? activeDoc.graphEntities
-                        : [
-                            { id: 'e1', name: activeDoc.title.substring(0, 32), type: 'milestone' as const, connections: ['e2', 'e3'] },
-                            { id: 'e2', name: 'LayoutLMv3 Vision Transformer', type: 'concept' as const, connections: ['e1', 'e4'] },
-                            { id: 'e3', name: 'BM25 + Dense Vectors (RRF)', type: 'metric' as const, connections: ['e1', 'e5'] },
-                            { id: 'e4', name: 'Neo4j Knowledge Graph', type: 'organization' as const, connections: ['e2', 'e5'] },
-                            { id: 'e5', name: 'Direct Office Binary Pipeline', type: 'regulation' as const, connections: ['e3', 'e4'] },
-                          ]
-                      ).map((node) => {
-                        const isSelected = selectedEntity?.id === node.id;
-                        return (
-                          <div
-                            key={node.id}
-                            onClick={() => setSelectedEntity(node)}
-                            className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                              isSelected
-                                ? 'bg-amber-950/40 border-amber-500 shadow-lg shadow-amber-900/30 scale-[1.02]'
-                                : 'bg-[#131524] border-slate-800/80 hover:border-slate-700 hover:bg-[#181a2e]'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between mb-2">
-                              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 uppercase tracking-wider">
-                                {node.type}
-                              </span>
-                              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                            </div>
-                            <h4 className="text-xs font-bold text-white mb-1.5 line-clamp-1">{node.name}</h4>
-                            <p className="text-[10px] font-mono text-slate-400">
-                              Connected to: {node.connections.length} relational entities
-                            </p>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {selectedEntity && (
-                      <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/30 text-xs space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-amber-300">Entity Details: {selectedEntity.name}</span>
-                          <span className="text-[10px] font-mono text-slate-400">RRF Score: 0.984</span>
-                        </div>
-                        <p className="text-slate-300 text-[11px] leading-relaxed">
-                          Entity linked via bidirectional cross-attention with LayoutLMv3 2D coordinates and indexed in Neo4j Sovereign Graph. Linked to nodes: [{selectedEntity.connections.join(', ')}].
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Vision Transformer OCR (LayoutLMv3) Coordinate Parser View */}
-                  <div className="p-6 bg-[#0e101a] border border-slate-800 rounded-3xl space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Layers3 className="w-4 h-4 text-emerald-400" />
-                        <h3 className="text-sm font-bold text-white">Vision Transformer OCR (LayoutLMv3) 2D Token Coordinates</h3>
-                      </div>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-mono">
-                        99.8% Table & Coordinate Preservation
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="p-4 bg-[#121422] rounded-2xl border border-slate-800 space-y-2.5">
-                        <div className="text-xs font-semibold text-slate-200">2D Spatial Bounding Boxes</div>
-                        <div className="space-y-1.5 font-mono text-[10px] text-slate-400">
-                          <div className="flex justify-between p-1.5 bg-[#0a0b12] rounded border border-slate-800/60">
-                            <span>Box 01 (Header Title):</span>
-                            <span className="text-emerald-400">[ymin: 45, xmin: 50, ymax: 95, xmax: 820]</span>
-                          </div>
-                          <div className="flex justify-between p-1.5 bg-[#0a0b12] rounded border border-slate-800/60">
-                            <span>Box 02 (Financial Table):</span>
-                            <span className="text-cyan-400">[ymin: 120, xmin: 50, ymax: 380, xmax: 820]</span>
-                          </div>
-                          <div className="flex justify-between p-1.5 bg-[#0a0b12] rounded border border-slate-800/60">
-                            <span>Box 03 (Callout Signature):</span>
-                            <span className="text-purple-400">[ymin: 410, xmin: 50, ymax: 480, xmax: 820]</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="p-4 bg-[#121422] rounded-2xl border border-slate-800 space-y-2.5">
-                        <div className="text-xs font-semibold text-slate-200">Reciprocal Rank Fusion (RRF) Retrieval</div>
-                        <div className="space-y-1.5 font-mono text-[10px] text-slate-400">
-                          <div className="flex justify-between p-1.5 bg-[#0a0b12] rounded border border-slate-800/60">
-                            <span>Dense Vectors (Cosine Sim):</span>
-                            <span className="text-emerald-400">0.962 (Top-1)</span>
-                          </div>
-                          <div className="flex justify-between p-1.5 bg-[#0a0b12] rounded border border-slate-800/60">
-                            <span>Sparse BM25 (Exact Code/Formula):</span>
-                            <span className="text-amber-400">28.4 BM25 Score</span>
-                          </div>
-                          <div className="flex justify-between p-1.5 bg-[#0a0b12] rounded border border-slate-800/60">
-                            <span>Combined RRF Fusion:</span>
-                            <span className="text-cyan-400">Rank #1 (0.988)</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* View 3: Silicon Valley IDP & Graph-RAG Architecture Blueprint */}
-              {activeView === 'architecture' && (
-                <div className="space-y-6">
-                  <div className="bg-gradient-to-r from-emerald-950/40 via-teal-950/40 to-cyan-950/40 border border-emerald-500/40 rounded-2xl p-6">
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                        <Cpu className="w-6 h-6 animate-pulse" />
-                      </div>
-                      <div>
-                        <h2 className="text-lg font-bold text-white">
-                          Silicon Valley-Grade Intelligent Document Processing (IDP) & Graph-RAG Architecture
-                        </h2>
-                        <p className="text-xs text-emerald-300">
-                          Inside Google Document AI, NotebookLM, Gamma App, and Microsoft 365 Copilot
-                        </p>
-                      </div>
-                    </div>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      Next-generation document intelligence moves beyond basic keyword search into high-dimensional semantic vector spaces coupled with relational knowledge graphs. Below is the blueprint of what a production-grade Silicon Valley document system requires:
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 bg-[#121422] border border-slate-800 rounded-xl space-y-2">
-                      <div className="flex items-center gap-2 text-emerald-400 font-semibold text-sm">
-                        <span className="w-6 h-6 rounded-full bg-emerald-950 flex items-center justify-center text-xs font-mono border border-emerald-500/40">1</span>
-                        Vision Transformer OCR (LayoutLMv3 & Nougat)
-                      </div>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Standard OCR extracts flat text and loses table boundaries and multi-column formatting. Modern Silicon Valley IDP treats documents as images using Vision Transformers to retain coordinate bounding boxes, hierarchy, financial tables, and chart axes.
-                      </p>
-                    </div>
-
-                    <div className="p-4 bg-[#121422] border border-slate-800 rounded-xl space-y-2">
-                      <div className="flex items-center gap-2 text-cyan-400 font-semibold text-sm">
-                        <span className="w-6 h-6 rounded-full bg-cyan-950 flex items-center justify-center text-xs font-mono border border-cyan-500/40">2</span>
-                        Hybrid Dense-Sparse RAG + Graph Entity Linking
-                      </div>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Combining dense vector embeddings (OpenAI 3-Large / Gemini Text Embedding) with sparse BM25 lexicons guarantees exact keyword hits (IDs, part numbers, legal codes) while capturing high-level conceptual nuances. Graph entity linking connects entities across multiple documents.
-                      </p>
-                    </div>
-
-                    <div className="p-4 bg-[#121422] border border-slate-800 rounded-xl space-y-2">
-                      <div className="flex items-center gap-2 text-purple-400 font-semibold text-sm">
-                        <span className="w-6 h-6 rounded-full bg-purple-950 flex items-center justify-center text-xs font-mono border border-purple-500/40">3</span>
-                        Grounding & Hallucination Elimination
-                      </div>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Every sentence generated by the model must cite a specific chunk ID and character range from the original source file. If a generated claim cannot be verified against the retrieved context, it is automatically filtered before user presentation.
-                      </p>
-                    </div>
-
-                    <div className="p-4 bg-[#121422] border border-slate-800 rounded-xl space-y-2">
-                      <div className="flex items-center gap-2 text-amber-400 font-semibold text-sm">
-                        <span className="w-6 h-6 rounded-full bg-amber-950 flex items-center justify-center text-xs font-mono border border-amber-500/40">4</span>
-                        NotebookLM Conversational Audio Synthesis
-                      </div>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Instead of reading a 50-page PDF, users can listen to a simulated 2-host podcast deep dive. Two voice models (male & female) take turns asking clarifying questions, debating trade-offs, and summarizing the document with natural conversational filler words.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* NotebookLM Style Document Chat & Q&A Dock */}
-              <div className="bg-[#121420] border border-slate-800/80 rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                    Ask Document AI (Grounded Q&A with Citations)
-                  </h4>
-                  <span className="text-[10px] text-slate-500 font-mono">Zero Hallucination</span>
-                </div>
-
-                {/* Q&A History */}
-                {qaHistory.length > 0 && (
-                  <div className="space-y-3 max-h-48 overflow-y-auto custom-scrollbar p-2 bg-[#090a10] rounded-xl border border-slate-800">
-                    {qaHistory.map((item, idx) => (
-                      <div key={idx} className="space-y-1.5 text-xs">
-                        <div className="font-semibold text-emerald-300">Q: {item.query}</div>
-                        <div className="text-slate-300 bg-[#141624] p-2.5 rounded-lg border border-slate-800 leading-relaxed">
-                          {item.answer}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={qaQuery}
-                    onChange={(e) => setQaQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && !isAnswering && handleDocumentQA()}
-                    placeholder="Ask anything about this document... e.g. What is the total projected Capex and payback timeline?"
-                    className="flex-1 bg-[#090a10] border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
-                  />
-                  <button
-                    onClick={handleDocumentQA}
-                    disabled={isAnswering || !qaQuery.trim()}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
-                  >
-                    {isAnswering ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    <span>Ask</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="h-96 flex flex-col items-center justify-center text-center">
-              <FileText className="w-12 h-12 text-slate-600 mb-3 animate-pulse" />
-              <h3 className="text-base font-bold text-white mb-1">No Document Selected</h3>
-              <p className="text-xs text-slate-400 max-w-sm">
-                Select an existing document from the top bar or use the left panel to synthesize an executive report, slide deck, or financial sheet.
-              </p>
-            </div>
-          )}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-[#C4C7C5]">
+            Source Grounding
+          </label>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="text-[11px] text-[#8AB4F8] hover:underline flex items-center gap-1"
+          >
+            <FileUp className="w-3 h-3" />
+            <span>Upload (.txt, .md)</span>
+          </button>
         </div>
-      </main>
+        <textarea
+          rows={4}
+          value={sourceText}
+          onChange={(e) => setSourceText(e.target.value)}
+          placeholder="Paste raw notes or metrics to ground citations..."
+          className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg p-2 text-xs text-[#E3E3E3] focus:outline-none resize-none font-mono"
+        />
+      </div>
+
+      {activeDoc && (
+        <div className="space-y-1.5 pt-2 border-t border-[#252629]">
+          <label className="text-xs font-medium text-[#C4C7C5] block">
+            Export Deliverables
+          </label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {(['docx', 'pptx', 'xlsx', 'md'] as const).map((fmt) => (
+              <button
+                key={fmt}
+                onClick={() => handleExportOffice(fmt)}
+                className="py-1.5 rounded-lg bg-[#1E1F20] hover:bg-[#2B2D30] border border-[#2F3135] text-xs font-medium text-[#E3E3E3] uppercase flex items-center justify-center gap-1"
+              >
+                <Download className="w-3 h-3" />
+                <span>.{fmt}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
+
+  const composerAddContent = (
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
+        >
+          <FileUp className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>Upload Source File</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setPrompt(
+              RANDOM_DOC_PROMPTS[
+                Math.floor(Math.random() * RANDOM_DOC_PROMPTS.length)
+              ]
+            );
+          }}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
+        >
+          <Dices className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>Inspiration</span>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-1.5">
+        {DOC_TYPES.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setDocType(t.id as any)}
+            className={`px-2.5 py-1.5 rounded-lg border text-xs text-left truncate ${
+              docType === t.id
+                ? 'bg-[#2B2D30] border-[#8AB4F8] text-white'
+                : 'bg-[#131314] border-[#2F3135] text-[#C4C7C5]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <UnifiedStudioWorkspace
+      isOpen={isOpen}
+      onBackToStart={onClose}
+      moduleName="RaOne DocuStudio"
+      workspaceTitle={activeDoc ? activeDoc.title : 'Untitled Workspace'}
+      modelOptions={DOC_MODELS}
+      selectedModel={selectedModel}
+      onSelectModel={setSelectedModel}
+      prompt={prompt}
+      onPromptChange={setPrompt}
+      onSubmitPrompt={handleGenerate}
+      isGenerating={isLoading}
+      turns={turns}
+      onResetWorkspace={() => {
+        setActiveDoc(null);
+        setIsPlayingAudio(false);
+        setTurns([]);
+        setPrompt('');
+        setRightTab('preview');
+        showToast('Started empty workspace.');
+      }}
+      rightTab={rightTab}
+      onRightTabChange={setRightTab}
+      routePath={activeDoc ? `/docs/${activeDoc.id}` : '/'}
+      onRefresh={fetchDocumentHistory}
+      onRemix={() => {
+        if (activeDoc) {
+          setPrompt(activeDoc.prompt);
+          showToast('Document directive loaded for remix.');
+        } else {
+          setPrompt(RANDOM_DOC_PROMPTS[0]);
+          showToast('Sample document prompt loaded.');
+        }
+      }}
+      onShare={() => {
+        if (activeDoc) {
+          navigator.clipboard?.writeText(activeDoc.content).catch(() => {});
+          showToast('Document markdown copied.');
+        } else {
+          showToast('Workspace ready.');
+        }
+      }}
+      onPublish={() => {
+        if (activeDoc) {
+          handleExportOffice('docx');
+        } else {
+          showToast('Generate or select a document first.');
+        }
+      }}
+      publishLabel="Export"
+      filesCount={documents.length}
+      hasActiveItem={!!activeDoc}
+      previewContent={previewContent}
+      codeContent={codeContent}
+      filesContent={filesContent}
+      editDrawerContent={editDrawerContent}
+      composerAddContent={composerAddContent}
+      emptyStateTitle="Empty Workspace"
+      emptyStateSubtitle="Describe a report, presentation, or notebook on the left, or browse saved files."
+      emptyStateActionLabel="Open Files"
+      onEmptyStateAction={() => setRightTab('files')}
+      toastMessage={toastMessage}
+    />
+  );
 };
-export default DocumentAIStudio;

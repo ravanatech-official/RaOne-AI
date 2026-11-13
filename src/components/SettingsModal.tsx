@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { resolveApiUrl } from '../utils/api';
 import {
   X,
   User,
@@ -382,7 +383,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Export Data action
   const handleExportData = () => {
-    window.open('/api/user/settings/export-data', '_blank');
+    const link = document.createElement('a');
+    link.href = resolveApiUrl('/api/user/settings/export-data');
+    link.download = 'raone-workspace-export.json';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Memory deletion

@@ -2,7 +2,9 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+import {getApiBaseUrl} from './utils/api';
+
+const apiBaseUrl = getApiBaseUrl();
 if (apiBaseUrl) {
   const originalFetch = window.fetch.bind(window);
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {

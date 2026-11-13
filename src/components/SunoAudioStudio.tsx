@@ -1,47 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  X,
-  Sparkles,
-  Zap,
   Play,
   Pause,
-  Maximize2,
   Download,
-  Copy,
   Trash2,
   Heart,
-  RefreshCw,
   Dices,
-  Sliders,
   Music,
-  Radio,
-  Mic2,
   Volume2,
   VolumeX,
   SkipBack,
   SkipForward,
   Repeat,
-  Shuffle,
-  FileText,
   Scissors,
   FastForward,
   Cpu,
-  Layers,
   Wand2,
-  Check,
-  ChevronDown,
-  Clock,
-  Disc3,
   Search,
-  Share2,
-  Flame,
-  AudioWaveform,
   Mic,
-  Upload,
-  Activity,
-  CheckCircle2,
+  Disc3,
 } from 'lucide-react';
 import { GeneratedAudioItem, ClonedVoiceProfile } from '../types/index.ts';
+import {
+  UnifiedStudioWorkspace,
+  WorkspaceTurn,
+  WorkspaceRightTab,
+} from './UnifiedStudioWorkspace';
 
 interface SunoAudioStudioProps {
   isOpen: boolean;
@@ -49,46 +33,11 @@ interface SunoAudioStudioProps {
 }
 
 const TTA_MODELS = [
-  {
-    id: 'Suno v4 Alpha (RVQ DiT)',
-    name: 'Suno v4 Alpha (RVQ DiT)',
-    provider: 'Suno AI',
-    badge: 'State of the Art',
-    desc: '48kHz high-definition stereo master with natural vocal inflections, rich acoustic drums, and multi-part harmonies.',
-    color: 'from-amber-500 to-rose-600',
-  },
-  {
-    id: 'Suno v3.5 SOTA',
-    name: 'Suno v3.5 SOTA',
-    provider: 'Suno AI',
-    badge: 'Hitmaker Standard',
-    desc: 'Elite song structure adherence, radio-ready verse/chorus transitions, and polished pop/electronic production.',
-    color: 'from-orange-500 to-amber-600',
-  },
-  {
-    id: 'Udio 130 Clarity Pro',
-    name: 'Udio 130 Clarity Pro',
-    provider: 'Udio Research',
-    badge: 'Vocal Nuance',
-    desc: 'High dynamic range vocal synthesis with expressive vibrato, emotional breath control, and complex time signatures.',
-    color: 'from-purple-500 to-indigo-600',
-  },
-  {
-    id: 'Google Lyria AudioLM',
-    name: 'Google Lyria AudioLM',
-    provider: 'Google DeepMind',
-    badge: 'Multimodal Audio',
-    desc: 'Hierarchical acoustic and semantic token conditioning for sprawling instrumental landscapes and seamless continuation.',
-    color: 'from-blue-500 to-cyan-600',
-  },
-  {
-    id: 'ElevenLabs Music/Voice Pro',
-    name: 'ElevenLabs Voice Pro',
-    provider: 'ElevenLabs',
-    badge: 'Spoken / Speech',
-    desc: 'Pristine human voice generation, audio storytelling, spoken word poetry, and studio voiceovers.',
-    color: 'from-emerald-500 to-teal-600',
-  },
+  { id: 'Suno v4 Alpha (RVQ DiT)', label: 'Suno v4 Alpha', description: '48kHz stereo master & expressive vocals' },
+  { id: 'Suno v3.5 SOTA', label: 'Suno v3.5', description: 'Radio song structure & transitions' },
+  { id: 'Udio 130 Clarity Pro', label: 'Udio 130 Pro', description: 'High dynamic range vocal synthesis' },
+  { id: 'Google Lyria AudioLM', label: 'Google Lyria', description: 'Hierarchical acoustic token conditioning' },
+  { id: 'ElevenLabs Music/Voice Pro', label: 'ElevenLabs Voice', description: 'Voiceovers & spoken storytelling' },
 ];
 
 const GENRE_TAGS = [
@@ -102,8 +51,6 @@ const GENRE_TAGS = [
   'RnB Melodic',
   'Acoustic Folk',
   'Deep House',
-  'Trap Beats',
-  'Orchestral Choir',
 ];
 
 const KEY_SIGNATURES = [
@@ -115,103 +62,81 @@ const KEY_SIGNATURES = [
   'B Minor',
   'F Major',
   'D Minor',
-  'Bb Major',
-  'G Minor',
 ];
 
 const RANDOM_SONG_IDEAS = [
   {
     title: 'Quantum Horizon',
-    prompt: 'Upbeat 80s synthwave anthem with pulsating basslines, glittering analog synths, and powerful emotive female vocals about escaping to the neon stars.',
-    style: 'Synthwave, Retro Electro, 128 BPM',
+    prompt: 'Upbeat 80s synthwave anthem with pulsating basslines, glittering analog synths, and emotive vocals.',
+    style: 'Synthwave, Retro Electro',
   },
   {
     title: 'Monsoon in Kandy',
-    prompt: 'Soothing lo-fi chillhop with organic rain sounds, mellow Rhodes keyboard chords, smooth bassline, and warm acoustic guitar fingerpicking.',
-    style: 'Lo-Fi Chill, Study Beats, 85 BPM',
+    prompt: 'Soothing lo-fi chillhop with organic rain sounds, mellow Rhodes keyboard chords, and warm acoustic guitar.',
+    style: 'Lo-Fi Chill, Study Beats',
   },
   {
     title: 'Thunder over Sigiriya',
-    prompt: 'Epic cinematic orchestral hybrid with ancient Sri Lankan traditional geta bera drums, heavy brass horns, and dramatic operatic choir crescendos.',
-    style: 'Cinematic Orchestral, Epic Trailer, Choir',
-  },
-  {
-    title: 'Electric Baila Fiesta',
-    prompt: 'High energy modern Baila dance party with acoustic guitar strums, fast brass horn stabs, bouncy synth bass, and celebratory Sinhala fusion vibes.',
-    style: 'Baila Fusion, World Beat, 135 BPM',
-  },
-  {
-    title: 'Silicon Awakening',
-    prompt: 'Dark cyber industrial rock with heavily distorted guitars, aggressive electronic beat, raw passionate male vocals, and soaring lead synths.',
-    style: 'Industrial Rock, Cyberpunk, 140 BPM',
+    prompt: 'Epic cinematic orchestral hybrid with traditional Sri Lankan geta bera drums, brass horns, and choir.',
+    style: 'Cinematic Orchestral, Choir',
   },
 ];
 
-export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClose }) => {
-  // Creation Form State (Suno Left Drawer)
+export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
+  isOpen,
+  onClose,
+}) => {
+  const [rightTab, setRightTab] = useState<WorkspaceRightTab>('preview');
   const [customMode, setCustomMode] = useState<boolean>(true);
   const [isInstrumental, setIsInstrumental] = useState<boolean>(false);
-  const [prompt, setPrompt] = useState<string>('Cyberpunk synthwave electronic with driving analog bassline, retro arpeggiators, punchy 80s drums, and soaring futuristic synth leads');
-  const [lyrics, setLyrics] = useState<string>(
-    `[Verse 1]\nRain falling down on the chrome and glass\nHovercars burning in the neon flash\nFrom Pettah towers to the ocean line\nQuantum signals humming through the wire and vine\n\n[Chorus]\nWe are the children of the neon sea\nElectric pulses set our spirits free\nColombo 2099, shining in the rain\nRewriting all the codes inside our veins!\n\n[Guitar Solo]\n\n[Outro]\nPulse in the dark\nIgnite the spark\nHorizon glow...`
-  );
-  const [title, setTitle] = useState<string>('Neon Horizons of Colombo 2099');
+  const [prompt, setPrompt] = useState<string>('');
+  const [lyrics, setLyrics] = useState<string>('');
+  const [title, setTitle] = useState<string>('');
   const [selectedModel, setSelectedModel] = useState<string>('Suno v4 Alpha (RVQ DiT)');
-  const [styleInput, setStyleInput] = useState<string>('Synthwave, Cyberpunk, Retro Electro, 120 BPM');
+  const [styleInput, setStyleInput] = useState<string>('Synthwave, Cyberpunk, Retro Electro');
   const [bpm, setBpm] = useState<number>(120);
   const [keySignature, setKeySignature] = useState<string>('D Minor');
 
-  // Studio State
   const [tracks, setTracks] = useState<GeneratedAudioItem[]>([]);
+  const [activeTrack, setActiveTrack] = useState<GeneratedAudioItem | null>(null);
+  const [turns, setTurns] = useState<WorkspaceTurn[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isEnhancingLyrics, setIsEnhancingLyrics] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'library' | 'architecture'>('library');
   const [filterFavorite, setFilterFavorite] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [showLyricsModal, setShowLyricsModal] = useState<boolean>(false);
-  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Persistent Global Audio Player State
-  const [activeTrack, setActiveTrack] = useState<GeneratedAudioItem | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.85);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false);
-  const [stemMode, setStemMode] = useState<'mix' | 'vocals' | 'bass' | 'drums' | 'synths' | 'instrumental'>('mix');
+  const [stemMode, setStemMode] = useState<
+    'mix' | 'vocals' | 'bass' | 'drums' | 'synths' | 'instrumental'
+  >('mix');
 
-  // Personal Voice Cloning State
   const [clonedVoices, setClonedVoices] = useState<ClonedVoiceProfile[]>([]);
   const [selectedVoiceClone, setSelectedVoiceClone] = useState<ClonedVoiceProfile | null>(null);
-  const [showVoiceCloneModal, setShowVoiceCloneModal] = useState<boolean>(false);
-  const [newCloneName, setNewCloneName] = useState<string>('My Studio Vocals');
+  const [newCloneName, setNewCloneName] = useState<string>('Studio Vocal');
   const [isRecordingVoice, setIsRecordingVoice] = useState<boolean>(false);
-  const [recordProgress, setRecordProgress] = useState<number>(0);
-  const [isCloningVoice, setIsCloningVoice] = useState<boolean>(false);
 
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
 
-  // Load Tracks & Voice Clones on mount & when open
-  useEffect(() => {
-    if (isOpen) {
-      fetchAudioHistory();
-      fetchVoiceClones();
-    }
-  }, [isOpen]);
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 2500);
+  };
 
   const fetchAudioHistory = async () => {
     try {
       const res = await fetch('/api/audio/history');
       const data = await res.json();
-      if (data.success && data.items) {
+      if (data.success && Array.isArray(data.items)) {
         setTracks(data.items);
-        if (!activeTrack && data.items.length > 0) {
-          setActiveTrack(data.items[0]);
-        }
       }
-    } catch (err) {
-      console.error('Failed to load audio history:', err);
+    } catch {
+      // ignore
     }
   };
 
@@ -219,52 +144,32 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
     try {
       const res = await fetch('/api/audio/voice-clone/list');
       const data = await res.json();
-      if (data.success && data.items) {
+      if (data.success && Array.isArray(data.items)) {
         setClonedVoices(data.items);
       }
-    } catch (err) {
-      console.error('Failed to load voice clones:', err);
+    } catch {
+      // ignore
     }
   };
 
-  const handleStartVoiceRecording = () => {
-    setIsRecordingVoice(true);
-    setRecordProgress(0);
-    let seconds = 0;
-    const interval = setInterval(() => {
-      seconds += 1;
-      setRecordProgress(seconds);
-      if (seconds >= 10) {
-        clearInterval(interval);
-        setIsRecordingVoice(false);
-        handleSaveVoiceClone();
-      }
-    }, 1000);
-  };
-
-  const handleSaveVoiceClone = async () => {
-    setIsCloningVoice(true);
-    try {
-      const res = await fetch('/api/audio/voice-clone', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newCloneName || 'Personal Cloned Vocal', sampleDuration: 10 }),
-      });
-      const data = await res.json();
-      if (data.success && data.clone) {
-        setClonedVoices((prev) => [data.clone, ...prev]);
-        setSelectedVoiceClone(data.clone);
-        setShowVoiceCloneModal(false);
-      }
-    } catch (err) {
-      console.error('Voice cloning failed:', err);
-    } finally {
-      setIsCloningVoice(false);
+  useEffect(() => {
+    if (isOpen) {
+      fetchAudioHistory();
+      fetchVoiceClones();
     }
-  };
+  }, [isOpen]);
 
   const handleGenerate = async () => {
-    if (!prompt.trim() && !lyrics.trim()) return;
+    const cleanPrompt = prompt.trim();
+    if ((!cleanPrompt && !lyrics.trim()) || isLoading) return;
+
+    const startMs = Date.now();
+    const userDisplay = cleanPrompt || `Generate track: ${title || 'Custom Lyrics'}`;
+    setTurns((prev) => [
+      ...prev,
+      { id: `u_${Date.now()}`, role: 'user', content: userDisplay },
+    ]);
+    setPrompt('');
     setIsLoading(true);
 
     try {
@@ -273,47 +178,60 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
         .map((s) => s.trim())
         .filter(Boolean);
 
-      const payload = {
-        prompt,
-        lyrics: isInstrumental ? '' : lyrics,
-        title: title || 'Sovereign Track',
-        styleTags: tags,
-        model: selectedModel,
-        isInstrumental,
-        bpm,
-        keySignature,
-        duration: 180,
-        clonedVoiceName: selectedVoiceClone?.name,
-        clonedVoiceId: selectedVoiceClone?.id,
-      };
-
       const res = await fetch('/api/audio/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          prompt: cleanPrompt || title || 'Studio Audio Composition',
+          lyrics: isInstrumental ? '' : lyrics,
+          title: title || cleanPrompt.slice(0, 32) || 'Untitled Track',
+          styleTags: tags,
+          model: selectedModel,
+          isInstrumental,
+          bpm,
+          keySignature,
+          duration: 180,
+          clonedVoiceName: selectedVoiceClone?.name,
+          clonedVoiceId: selectedVoiceClone?.id,
+        }),
       });
-
       const data = await res.json();
+      const elapsed = `${((Date.now() - startMs) / 1000).toFixed(1)}s`;
       if (data.success && data.track) {
         setTracks((prev) => [data.track, ...prev]);
         setActiveTrack(data.track);
         setIsPlaying(true);
-        if (audioPlayerRef.current) {
-          audioPlayerRef.current.currentTime = 0;
-          audioPlayerRef.current.play().catch(() => {});
-        }
+        setRightTab('preview');
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: `a_${Date.now()}`,
+            role: 'assistant',
+            modelLabel: selectedModel,
+            durationSec: elapsed,
+            content: `Synthesized "${data.track.title}" (${bpm} BPM · ${keySignature}).`,
+            details: [
+              `Tags: ${data.track.styleTags?.join(', ') || styleInput}`,
+              isInstrumental ? 'Instrumental Arrangement' : 'Vocals + Full Mix',
+            ],
+          },
+        ]);
+        setTimeout(() => {
+          audioPlayerRef.current?.play().catch(() => {});
+        }, 100);
+      } else {
+        showToast(data?.error || 'Track synthesis failed.');
       }
-    } catch (err) {
-      console.error('Generation failed:', err);
+    } catch {
+      showToast('Audio generation error.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleEnhanceLyrics = async () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || isEnhancingLyrics) return;
     setIsEnhancingLyrics(true);
-
     try {
       const res = await fetch('/api/audio/enhance-lyrics', {
         method: 'POST',
@@ -321,42 +239,48 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
         body: JSON.stringify({
           prompt,
           style: styleInput,
-          title,
+          title: title || prompt.slice(0, 28),
         }),
       });
-
       const data = await res.json();
       if (data.success && data.lyrics) {
         setLyrics(data.lyrics);
         setCustomMode(true);
+        showToast('Lyrics generated into editor.');
       }
-    } catch (err) {
-      console.error('Lyrics generation failed:', err);
+    } catch {
+      showToast('Lyrics generation failed.');
     } finally {
       setIsEnhancingLyrics(false);
     }
   };
 
-  const handleRandomizeSongIdea = () => {
-    const random = RANDOM_SONG_IDEAS[Math.floor(Math.random() * RANDOM_SONG_IDEAS.length)];
-    setTitle(random.title);
-    setPrompt(random.prompt);
-    setStyleInput(random.style);
-    setBpm(Math.floor(Math.random() * 60) + 80);
-    setKeySignature(KEY_SIGNATURES[Math.floor(Math.random() * KEY_SIGNATURES.length)]);
-  };
-
-  const handleToggleTag = (tag: string) => {
-    const existing = styleInput.split(',').map((s) => s.trim()).filter(Boolean);
-    if (existing.includes(tag)) {
-      setStyleInput(existing.filter((t) => t !== tag).join(', '));
-    } else {
-      setStyleInput([...existing, tag].join(', '));
+  const handleSaveVoiceClone = async () => {
+    setIsRecordingVoice(true);
+    try {
+      const res = await fetch('/api/audio/voice-clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newCloneName || 'Studio Vocal',
+          sampleDuration: 10,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.clone) {
+        setClonedVoices((prev) => [data.clone, ...prev]);
+        setSelectedVoiceClone(data.clone);
+        showToast(`Voice profile "${data.clone.name}" created.`);
+      }
+    } catch {
+      showToast('Voice cloning failed.');
+    } finally {
+      setIsRecordingVoice(false);
     }
   };
 
   const handleToggleFavorite = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+    e?.stopPropagation();
     try {
       const res = await fetch('/api/audio/favorite', {
         method: 'POST',
@@ -365,18 +289,24 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
       });
       const data = await res.json();
       if (data.success && data.item) {
-        setTracks((prev) => prev.map((t) => (t.id === id ? { ...t, isFavorite: data.item.isFavorite } : t)));
+        setTracks((prev) =>
+          prev.map((t) =>
+            t.id === id ? { ...t, isFavorite: data.item.isFavorite } : t
+          )
+        );
         if (activeTrack?.id === id) {
-          setActiveTrack((prev) => (prev ? { ...prev, isFavorite: data.item.isFavorite } : null));
+          setActiveTrack((prev) =>
+            prev ? { ...prev, isFavorite: data.item.isFavorite } : null
+          );
         }
       }
-    } catch (err) {
-      console.error('Favorite toggle failed:', err);
+    } catch {
+      // ignore
     }
   };
 
   const handleDelete = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+    e?.stopPropagation();
     try {
       const res = await fetch('/api/audio/delete', {
         method: 'POST',
@@ -387,19 +317,24 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
       if (data.success) {
         setTracks((prev) => prev.filter((t) => t.id !== id));
         if (activeTrack?.id === id) {
-          const remaining = tracks.filter((t) => t.id !== id);
-          setActiveTrack(remaining[0] || null);
+          setActiveTrack(null);
+          setIsPlaying(false);
         }
+        showToast('Track deleted.');
       }
-    } catch (err) {
-      console.error('Delete failed:', err);
+    } catch {
+      showToast('Delete failed.');
     }
   };
 
-  const handleExtendTrack = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+  const handleTrackOp = async (
+    endpoint: 'extend' | 'separate-stems',
+    id: string,
+    label: string
+  ) => {
+    showToast(`Running ${label}...`);
     try {
-      const res = await fetch('/api/audio/extend', {
+      const res = await fetch(`/api/audio/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
@@ -408,31 +343,13 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
       if (data.success && data.item) {
         setTracks((prev) => prev.map((t) => (t.id === id ? data.item : t)));
         if (activeTrack?.id === id) setActiveTrack(data.item);
+        showToast(`${label} complete.`);
       }
-    } catch (err) {
-      console.error('Extend failed:', err);
+    } catch {
+      showToast(`${label} failed.`);
     }
   };
 
-  const handleSeparateStems = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    try {
-      const res = await fetch('/api/audio/separate-stems', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      });
-      const data = await res.json();
-      if (data.success && data.item) {
-        setTracks((prev) => prev.map((t) => (t.id === id ? data.item : t)));
-        if (activeTrack?.id === id) setActiveTrack(data.item);
-      }
-    } catch (err) {
-      console.error('Separate stems failed:', err);
-    }
-  };
-
-  // Global Audio Playback controls
   const handlePlayTrack = (track: GeneratedAudioItem) => {
     if (activeTrack?.id === track.id) {
       if (isPlaying) {
@@ -446,72 +363,15 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
       setActiveTrack(track);
       setIsPlaying(true);
       setStemMode('mix');
-      // Record play count
       fetch('/api/audio/play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: track.id }),
       }).catch(() => {});
+      setTimeout(() => {
+        audioPlayerRef.current?.play().catch(() => {});
+      }, 80);
     }
-  };
-
-  const handleNextTrack = () => {
-    if (!activeTrack || tracks.length === 0) return;
-    const currentIndex = tracks.findIndex((t) => t.id === activeTrack.id);
-    const nextIndex = (currentIndex + 1) % tracks.length;
-    setActiveTrack(tracks[nextIndex]);
-    setIsPlaying(true);
-  };
-
-  const handlePrevTrack = () => {
-    if (!activeTrack || tracks.length === 0) return;
-    const currentIndex = tracks.findIndex((t) => t.id === activeTrack.id);
-    const prevIndex = (currentIndex - 1 + tracks.length) % tracks.length;
-    setActiveTrack(tracks[prevIndex]);
-    setIsPlaying(true);
-  };
-
-  const handleTimeUpdate = () => {
-    if (audioPlayerRef.current) {
-      setCurrentTime(audioPlayerRef.current.currentTime);
-      setDuration(audioPlayerRef.current.duration || 0);
-    }
-  };
-
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const time = Number(e.target.value);
-    setCurrentTime(time);
-    if (audioPlayerRef.current) {
-      audioPlayerRef.current.currentTime = time;
-    }
-  };
-
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value);
-    setVolume(val);
-    if (audioPlayerRef.current) {
-      audioPlayerRef.current.volume = val;
-    }
-    if (val === 0) setIsMuted(true);
-    else setIsMuted(false);
-  };
-
-  const toggleMute = () => {
-    if (audioPlayerRef.current) {
-      if (isMuted) {
-        audioPlayerRef.current.volume = volume || 0.8;
-        setIsMuted(false);
-      } else {
-        audioPlayerRef.current.volume = 0;
-        setIsMuted(true);
-      }
-    }
-  };
-
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    setCopyFeedback(label);
-    setTimeout(() => setCopyFeedback(null), 2000);
   };
 
   const formatTime = (secs: number) => {
@@ -521,1105 +381,646 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({ isOpen, onClos
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Determine which audio stream URL to play based on 4-track stem mode
-  const currentAudioSource =
-    stemMode === 'vocals' && activeTrack?.vocalStemUrl
-      ? activeTrack.vocalStemUrl
-      : stemMode === 'bass' && activeTrack?.bassStemUrl
-      ? activeTrack.bassStemUrl
-      : stemMode === 'drums' && activeTrack?.drumsStemUrl
-      ? activeTrack.drumsStemUrl
-      : stemMode === 'synths' && (activeTrack?.otherStemUrl || activeTrack?.instrumentalStemUrl)
-      ? (activeTrack?.otherStemUrl || activeTrack?.instrumentalStemUrl)
-      : stemMode === 'instrumental' && activeTrack?.instrumentalStemUrl
-      ? activeTrack.instrumentalStemUrl
-      : activeTrack?.audioUrl || '';
+  const downloadTrack = (track: GeneratedAudioItem) => {
+    const a = document.createElement('a');
+    a.href = track.audioUrl;
+    a.download = `${track.title}.mp3`;
+    a.click();
+  };
 
-  useEffect(() => {
-    if (audioPlayerRef.current && isPlaying) {
-      audioPlayerRef.current.play().catch(() => {});
-    }
-  }, [activeTrack, stemMode, isPlaying]);
-
-  if (!isOpen) return null;
-
-  const filteredTracks = tracks.filter((t) => {
-    const matchesFav = !filterFavorite || t.isFavorite;
-    const matchesSearch =
-      !searchQuery ||
-      t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.styleTags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      t.prompt.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFav && matchesSearch;
-  });
-
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#08080c] text-slate-100 font-sans overflow-hidden select-none">
-      {/* Hidden Global Audio Element */}
+  const previewContent = activeTrack ? (
+    <div className="p-5 md:p-6 max-w-4xl mx-auto space-y-5">
       <audio
         ref={audioPlayerRef}
-        src={currentAudioSource}
+        src={activeTrack.audioUrl}
         loop={isLooping}
-        onTimeUpdate={handleTimeUpdate}
-        onEnded={handleNextTrack}
-        autoPlay={isPlaying}
+        onTimeUpdate={() => {
+          if (audioPlayerRef.current) {
+            setCurrentTime(audioPlayerRef.current.currentTime);
+            setDuration(audioPlayerRef.current.duration || 0);
+          }
+        }}
+        onEnded={() => setIsPlaying(false)}
       />
 
-      {/* Main Studio Body: Left Suno Drawer + Right Track Library / Guide */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* ============================================================== */}
-        {/* 1. LEFT DRAWER: EXACT SUNO AI CREATION PANEL                  */}
-        {/* ============================================================== */}
-        <aside className="w-96 flex-shrink-0 bg-[#0e0f18] border-r border-slate-800/80 flex flex-col h-full z-20 overflow-y-auto custom-scrollbar">
-          {/* Header Branding */}
-          <div className="p-4 border-b border-slate-800/80 flex items-center justify-between bg-[#121320]/70 backdrop-blur sticky top-0 z-10">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-600 p-[1.5px] shadow-lg shadow-orange-500/20">
-                <div className="w-full h-full bg-[#0a0b12] rounded-[10px] flex items-center justify-center">
-                  <Music className="w-5 h-5 text-amber-400 animate-pulse" />
-                </div>
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="font-bold text-sm tracking-wide text-white">RaOne Suno</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-semibold">
-                    v4 SOTA
-                  </span>
-                </div>
-                <p className="text-[10px] text-slate-400">Generative Music & Audio Synthesis</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1 bg-[#191b2c] px-2.5 py-1 rounded-full border border-amber-500/30 text-amber-300 text-xs font-mono font-semibold">
-              <Zap className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-              <span>250</span>
-            </div>
-          </div>
-
-          <div className="p-4 space-y-4">
-            {/* Mode Controls: Custom Mode Toggle & Instrumental Toggle */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between p-2.5 bg-[#141624] rounded-xl border border-slate-800">
-                <div className="flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-amber-400" />
-                  <span className="text-xs font-semibold text-slate-200">Custom Mode</span>
-                </div>
-                <button
-                  onClick={() => setCustomMode(!customMode)}
-                  className={`w-11 h-6 rounded-full transition-colors relative p-0.5 ${
-                    customMode ? 'bg-amber-500' : 'bg-slate-700'
-                  }`}
-                >
-                  <div
-                    className={`w-5 h-5 rounded-full bg-white transition-transform ${
-                      customMode ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between p-2.5 bg-[#141624] rounded-xl border border-slate-800">
-                <div className="flex items-center gap-2">
-                  <Radio className="w-4 h-4 text-cyan-400" />
-                  <span className="text-xs font-semibold text-slate-200">Instrumental Only</span>
-                </div>
-                <button
-                  onClick={() => setIsInstrumental(!isInstrumental)}
-                  className={`w-11 h-6 rounded-full transition-colors relative p-0.5 ${
-                    isInstrumental ? 'bg-cyan-500' : 'bg-slate-700'
-                  }`}
-                >
-                  <div
-                    className={`w-5 h-5 rounded-full bg-white transition-transform ${
-                      isInstrumental ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            {/* Personal Voice Cloning Section (Silicon Valley SOTA) */}
-            {!isInstrumental && (
-              <div className="p-3 bg-gradient-to-r from-purple-950/40 via-[#151324] to-[#10121e] rounded-xl border border-purple-500/30 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Mic className="w-4 h-4 text-purple-400" />
-                    <div>
-                      <span className="text-xs font-semibold text-white">Personal Voice Cloning</span>
-                      <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono">
-                        10s Timbre
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowVoiceCloneModal(true)}
-                    className="text-[11px] font-semibold text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-colors"
-                  >
-                    <span>+ New Clone</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <select
-                    value={selectedVoiceClone?.id || ''}
-                    onChange={(e) => {
-                      const found = clonedVoices.find((v) => v.id === e.target.value);
-                      setSelectedVoiceClone(found || null);
-                    }}
-                    className="flex-1 bg-[#090912] border border-purple-500/30 rounded-lg px-2.5 py-1.5 text-xs text-purple-200 focus:outline-none focus:border-purple-400 font-medium"
-                  >
-                    <option value="">Default AI Generative Vocalist</option>
-                    {clonedVoices.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        🎤 {v.name} ({v.pitchRange.split(' ')[0]})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {selectedVoiceClone && (
-                  <div className="p-2 rounded-lg bg-purple-950/30 border border-purple-500/20 text-[10px] space-y-1 text-purple-200/90 font-mono">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Timbre:</span>
-                      <span className="text-purple-300 font-sans truncate max-w-[160px]">{selectedVoiceClone.timbre}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Formants:</span>
-                      <span className="text-emerald-400">{selectedVoiceClone.formants}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Studio HNR:</span>
-                      <span className="text-amber-400">{selectedVoiceClone.hnr}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Custom Mode: Lyrics & Songwriting AI */}
-            {customMode && !isInstrumental ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <FileText className="w-3.5 h-3.5 text-amber-400" />
-                    Lyrics & Song Structure
-                  </label>
-                  <button
-                    onClick={handleEnhanceLyrics}
-                    disabled={isEnhancingLyrics || !prompt.trim()}
-                    className="flex items-center gap-1 text-[11px] font-semibold text-amber-400 hover:text-amber-300 disabled:opacity-50"
-                  >
-                    <Wand2 className={`w-3 h-3 ${isEnhancingLyrics ? 'animate-spin' : ''}`} />
-                    <span>{isEnhancingLyrics ? 'Writing...' : 'Write Lyrics with AI'}</span>
-                  </button>
-                </div>
-                <textarea
-                  value={lyrics}
-                  onChange={(e) => setLyrics(e.target.value)}
-                  rows={6}
-                  placeholder="[Verse 1]&#10;Write your lyrics here...&#10;[Chorus]&#10;Add catchy hook...&#10;[Bridge]&#10;Climax of the song..."
-                  className="w-full bg-[#07080e] border border-slate-800 rounded-xl p-3 text-xs text-slate-200 focus:outline-none focus:border-amber-500/70 font-mono resize-none leading-relaxed"
-                />
-              </div>
-            ) : (
-              /* Simple Mode: Song Description */
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                    Song Description
-                  </label>
-                  <button
-                    onClick={handleRandomizeSongIdea}
-                    className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300"
-                  >
-                    <Dices className="w-3 h-3" />
-                    <span>Surprise Me</span>
-                  </button>
-                </div>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  rows={3}
-                  placeholder="A cinematic 80s synthwave anthem with punchy analog drums, heavy bass, and driving guitar solo..."
-                  className="w-full bg-[#07080e] border border-slate-800 rounded-xl p-3 text-xs text-slate-200 focus:outline-none focus:border-amber-500/70 resize-none"
-                />
-              </div>
-            )}
-
-            {/* Song Title */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block">
-                Song Title
-              </label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Neon Horizons of Colombo"
-                className="w-full bg-[#07080e] border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500/70"
-              />
-            </div>
-
-            {/* Style of Music Tags & Quick Toggles */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block">
-                Style of Music & Genre Tags
-              </label>
-              <input
-                type="text"
-                value={styleInput}
-                onChange={(e) => setStyleInput(e.target.value)}
-                placeholder="e.g. Synthwave, Cyberpunk, 120 BPM, Melodic Vocals"
-                className="w-full bg-[#07080e] border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500/70"
-              />
-              {/* Quick Tag Pills */}
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {GENRE_TAGS.map((tag) => {
-                  const active = styleInput.toLowerCase().includes(tag.toLowerCase());
-                  return (
-                    <button
-                      key={tag}
-                      onClick={() => handleToggleTag(tag)}
-                      className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${
-                        active
-                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                          : 'bg-[#141624] text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
-                      }`}
-                    >
-                      +{tag}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* AI Audio Model Selection */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block">
-                AI Music Engine
-              </label>
-              <div className="space-y-1.5">
-                {TTA_MODELS.map((model) => {
-                  const active = selectedModel === model.id;
-                  return (
-                    <div
-                      key={model.id}
-                      onClick={() => setSelectedModel(model.id)}
-                      className={`p-2.5 rounded-xl border cursor-pointer transition-all ${
-                        active
-                          ? 'bg-[#181a2c] border-amber-500/80 shadow-md shadow-amber-500/10'
-                          : 'bg-[#141624]/60 border-slate-800/80 hover:border-slate-700 hover:bg-[#141624]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className={`text-xs font-semibold ${active ? 'text-amber-300' : 'text-slate-200'}`}>
-                          {model.name}
-                        </span>
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-medium bg-gradient-to-r ${model.color} text-white`}
-                        >
-                          {model.badge}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-400 leading-tight">{model.desc}</p>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Tempo (BPM) & Key Signature Selector */}
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <div>
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300 mb-1">
-                  <span>Tempo</span>
-                  <span className="font-mono text-amber-400">{bpm} BPM</span>
-                </div>
-                <input
-                  type="range"
-                  min="60"
-                  max="180"
-                  step="1"
-                  value={bpm}
-                  onChange={(e) => setBpm(Number(e.target.value))}
-                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">Key Signature</label>
-                <select
-                  value={keySignature}
-                  onChange={(e) => setKeySignature(e.target.value)}
-                  className="w-full bg-[#07080e] border border-slate-800 rounded-lg p-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500/70"
-                >
-                  {KEY_SIGNATURES.map((k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Primary Create Button */}
-            <button
-              onClick={handleGenerate}
-              disabled={isLoading || (!prompt.trim() && !lyrics.trim())}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-white font-bold text-xs tracking-wide shadow-lg shadow-orange-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-98"
-            >
-              {isLoading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Synthesizing Audio Waveforms...</span>
-                </>
+      {/* Track Header Card */}
+      <div className="p-5 rounded-2xl bg-[#18191C] border border-[#282A2E] flex flex-col sm:flex-row items-start sm:items-center gap-5">
+        <div className="relative w-28 h-28 rounded-xl overflow-hidden bg-black shrink-0 border border-[#2C2D30]">
+          <img
+            src={activeTrack.coverUrl}
+            alt={activeTrack.title}
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover"
+          />
+          <button
+            onClick={() => handlePlayTrack(activeTrack)}
+            className="absolute inset-0 bg-black/40 hover:bg-black/55 flex items-center justify-center transition-colors"
+          >
+            <div className="w-11 h-11 rounded-full bg-[#E3E3E3] text-[#131314] flex items-center justify-center">
+              {isPlaying ? (
+                <Pause className="w-5 h-5 fill-current" />
               ) : (
-                <>
-                  <Sparkles className="w-4 h-4 fill-white" />
-                  <span>Create Track</span>
-                  <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-black/30 text-[10px] font-mono text-amber-200 border border-amber-400/20">
-                    <Zap className="w-2.5 h-2.5 fill-amber-300 text-amber-300" />
-                    10 Credits
-                  </span>
-                </>
+                <Play className="w-5 h-5 fill-current ml-0.5" />
               )}
-            </button>
-          </div>
-        </aside>
-
-        {/* ============================================================== */}
-        {/* 2. MAIN WORKSPACE: SUNO TRACK FEED & ARCHITECTURE GUIDE        */}
-        {/* ============================================================== */}
-        <main className="flex-1 flex flex-col h-full bg-[#08080c] overflow-hidden">
-          {/* Top Bar Header */}
-          <header className="h-14 border-b border-slate-800/80 px-6 flex items-center justify-between bg-[#0e0f18]/60 backdrop-blur z-10">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-1 bg-[#050508] p-1 rounded-xl border border-slate-800">
-                <button
-                  onClick={() => setActiveTab('library')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    activeTab === 'library'
-                      ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  My Library ({tracks.length})
-                </button>
-                <button
-                  onClick={() => setActiveTab('architecture')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    activeTab === 'architecture'
-                      ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Silicon Valley TTA Architecture Guide
-                </button>
-              </div>
-
-              {/* Search Bar */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search tracks, styles, lyrics..."
-                  className="bg-[#121320] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/60 w-56"
-                />
-              </div>
-
-              <button
-                onClick={() => setFilterFavorite(!filterFavorite)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-all ${
-                  filterFavorite
-                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
-                    : 'bg-[#141624]/60 text-slate-400 border-slate-800 hover:text-white'
-                }`}
-              >
-                <Heart className={`w-3.5 h-3.5 ${filterFavorite ? 'fill-rose-400 text-rose-400' : ''}`} />
-                Favorites
-              </button>
             </div>
+          </button>
+        </div>
 
+        <div className="flex-1 min-w-0 space-y-2 w-full">
+          <div>
+            <h2 className="text-lg font-semibold text-white truncate">{activeTrack.title}</h2>
+            <p className="text-xs text-[#9AA0A6] tabular-nums">
+              {activeTrack.model} · {activeTrack.bpm} BPM · {activeTrack.keySignature} ·{' '}
+              {activeTrack.isInstrumental ? 'Instrumental' : 'Vocals'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5 text-[11px] text-[#9AA0A6]">
+            {activeTrack.styleTags?.map((tag, i) => (
+              <span key={i}>
+                {i > 0 && '· '}
+                {tag}
+              </span>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
             <button
-              onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800/60 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              onClick={() => handleTrackOp('separate-stems', activeTrack.id, 'Stem Separation')}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
             >
-              <X className="w-5 h-5" />
+              <Scissors className="w-3.5 h-3.5" />
+              <span>{activeTrack.stemsSeparated ? 'Stems Ready' : 'Separate Stems'}</span>
             </button>
-          </header>
-
-          {/* Content Area */}
-          <div className="flex-1 overflow-y-auto p-6 custom-scrollbar pb-28">
-            {activeTab === 'library' ? (
-              <div className="max-w-6xl mx-auto space-y-4">
-                {filteredTracks.length === 0 ? (
-                  <div className="h-80 flex flex-col items-center justify-center text-center">
-                    <Disc3 className="w-12 h-12 text-slate-600 mb-3 animate-spin-slow" />
-                    <h3 className="text-base font-bold text-white mb-1">No Tracks Found</h3>
-                    <p className="text-xs text-slate-400 max-w-sm">
-                      Use the left panel to create your first hit song with lyrics, beats, and instruments.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {filteredTracks.map((track) => {
-                      const isCurrent = activeTrack?.id === track.id;
-                      const isCurrentlyPlaying = isCurrent && isPlaying;
-
-                      return (
-                        <div
-                          key={track.id}
-                          onClick={() => handlePlayTrack(track)}
-                          className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-4 cursor-pointer group ${
-                            isCurrent
-                              ? 'bg-[#151728] border-amber-500/60 shadow-lg shadow-amber-950/20'
-                              : 'bg-[#0f101b] border-slate-800/80 hover:border-slate-700 hover:bg-[#121322]'
-                          }`}
-                        >
-                          {/* Album Art + Play Overlay */}
-                          <div className="flex items-center gap-4 min-w-0 flex-1">
-                            <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-black flex-shrink-0 group/cover">
-                              <img
-                                src={track.coverUrl}
-                                alt={track.title}
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                              />
-                              <div
-                                className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity ${
-                                  isCurrentlyPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                                }`}
-                              >
-                                <div className="w-8 h-8 rounded-full bg-amber-500 text-black flex items-center justify-center shadow-lg">
-                                  {isCurrentlyPlaying ? (
-                                    <Pause className="w-4 h-4 fill-black" />
-                                  ) : (
-                                    <Play className="w-4 h-4 fill-black ml-0.5" />
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Title & Metadata */}
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <h4
-                                  className={`text-sm font-bold truncate ${
-                                    isCurrent ? 'text-amber-400' : 'text-white'
-                                  }`}
-                                >
-                                  {track.title}
-                                </h4>
-                                {track.isInstrumental ? (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/30 font-mono">
-                                    Instrumental
-                                  </span>
-                                ) : (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-rose-950/80 text-rose-300 border border-rose-500/30 font-mono">
-                                    Vocals
-                                  </span>
-                                )}
-                                {track.stemsSeparated && (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-950/80 text-purple-300 border border-purple-500/30 font-mono">
-                                    Stems Ready
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
-                                {track.styleTags.slice(0, 3).map((tag, i) => (
-                                  <span
-                                    key={i}
-                                    className="text-[10px] px-2 py-0.5 rounded-md bg-[#191b2c] text-slate-300 border border-slate-800"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
-                                <span className="text-[10px] text-slate-500 font-mono">
-                                  • {track.bpm} BPM • {track.keySignature}
-                                </span>
-                              </div>
-
-                              <p className="text-[11px] text-slate-400 truncate max-w-lg">
-                                {track.lyrics || track.prompt}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Interactive Mini Waveform Visualizer */}
-                          <div className="hidden lg:flex items-center gap-1 h-8 w-36 px-2 bg-black/40 rounded-lg">
-                            {Array.from({ length: 24 }).map((_, i) => {
-                              const height = Math.sin(i * 0.5) * 12 + 14;
-                              return (
-                                <div
-                                  key={i}
-                                  style={{ height: `${height}px` }}
-                                  className={`w-1 rounded-full transition-all ${
-                                    isCurrentlyPlaying
-                                      ? 'bg-amber-400 animate-pulse'
-                                      : 'bg-slate-700'
-                                  }`}
-                                />
-                              );
-                            })}
-                          </div>
-
-                          {/* Right Utilities & Actions */}
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="text-xs font-mono text-slate-400 w-12 text-right">
-                              {formatTime(track.duration)}
-                            </span>
-
-                            {/* View Lyrics */}
-                            {track.lyrics && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveTrack(track);
-                                  setShowLyricsModal(true);
-                                }}
-                                className="p-2 rounded-xl bg-slate-800/60 hover:bg-slate-700 text-slate-300 hover:text-amber-300 transition-colors"
-                                title="View Lyrics"
-                              >
-                                <FileText className="w-4 h-4" />
-                              </button>
-                            )}
-
-                            {/* Separate Stems */}
-                            <button
-                              onClick={(e) => handleSeparateStems(track.id, e)}
-                              className={`p-2 rounded-xl border transition-colors ${
-                                track.stemsSeparated
-                                  ? 'bg-purple-950/60 text-purple-300 border-purple-500/50'
-                                  : 'bg-slate-800/60 hover:bg-slate-700 text-slate-300 border-slate-800'
-                              }`}
-                              title={
-                                track.stemsSeparated
-                                  ? 'Stems Separated (Vocals & Instruments)'
-                                  : 'Separate Stems (Demucs v4)'
-                              }
-                            >
-                              <Scissors className="w-4 h-4" />
-                            </button>
-
-                            {/* Extend Track (+60s) */}
-                            <button
-                              onClick={(e) => handleExtendTrack(track.id, e)}
-                              className={`p-2 rounded-xl border transition-colors ${
-                                track.extended
-                                  ? 'bg-cyan-950/60 text-cyan-300 border-cyan-500/50'
-                                  : 'bg-slate-800/60 hover:bg-slate-700 text-slate-300 border-slate-800'
-                              }`}
-                              title="Extend Song +60 Seconds"
-                            >
-                              <FastForward className="w-4 h-4" />
-                            </button>
-
-                            {/* Favorite Heart */}
-                            <button
-                              onClick={(e) => handleToggleFavorite(track.id, e)}
-                              className="p-2 rounded-xl bg-slate-800/60 hover:bg-slate-700 text-slate-300 hover:text-rose-400 transition-colors"
-                            >
-                              <Heart
-                                className={`w-4 h-4 ${
-                                  track.isFavorite ? 'fill-rose-500 text-rose-500' : ''
-                                }`}
-                              />
-                            </button>
-
-                            {/* Download MP3 */}
-                            <a
-                              href={track.audioUrl}
-                              download={`${track.title}.mp3`}
-                              onClick={(e) => e.stopPropagation()}
-                              className="p-2 rounded-xl bg-slate-800/60 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                              title="Download MP3"
-                            >
-                              <Download className="w-4 h-4" />
-                            </a>
-
-                            {/* Delete */}
-                            <button
-                              onClick={(e) => handleDelete(track.id, e)}
-                              className="p-2 rounded-xl bg-slate-800/60 hover:bg-red-950/60 text-slate-400 hover:text-red-400 transition-colors"
-                              title="Delete Track"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ) : (
-              /* ============================================================== */
-              /* 3. SILICON VALLEY GRADE TTA ARCHITECTURE EXPLANATION           */
-              /* ============================================================== */
-              <div className="max-w-4xl mx-auto py-4 space-y-6">
-                <div className="bg-gradient-to-r from-amber-950/40 via-orange-950/40 to-rose-950/40 border border-amber-500/40 rounded-2xl p-6">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                      <Cpu className="w-6 h-6 animate-pulse" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-bold text-white">
-                        Silicon Valley-Grade Text-to-Audio (TTA) Synthesis Architecture
-                      </h2>
-                      <p className="text-xs text-amber-300">
-                        Inside Suno AI, Udio, Google Lyria AudioLM, and ElevenLabs
-                      </p>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    AI Music Generation (Text-to-Audio / Generative Audio Models) synthesizes full studio-grade acoustic arrangements, human vocalists, and complex melodies in a single unified neural pass. Below is the blueprint of what a production-grade Silicon Valley music generation engine requires:
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 bg-[#111220] border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center gap-2 text-amber-400 font-semibold text-sm">
-                      <span className="w-6 h-6 rounded-full bg-amber-950 flex items-center justify-center text-xs font-mono border border-amber-500/40">1</span>
-                      Neural Audio Codecs with RVQ (Residual Vector Quantization)
-                    </div>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      Raw 48kHz audio contains 48,000 samples per second. Models like EnCodec, SoundStream, and DAC (Descript Audio Codec) compress raw waveforms into discrete acoustic tokens across 8-32 hierarchical quantizer codebooks, reducing token count by 300× while retaining full audio fidelity.
-                    </p>
-                  </div>
-
-                  <div className="p-4 bg-[#111220] border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center gap-2 text-rose-400 font-semibold text-sm">
-                      <span className="w-6 h-6 rounded-full bg-rose-950 flex items-center justify-center text-xs font-mono border border-rose-500/40">2</span>
-                      Autoregressive Transformers & Flow Matching
-                    </div>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      Suno v4 and Udio use a two-stage architecture: an Autoregressive Transformer generates coarse semantic acoustic tokens (melody & structure), followed by a continuous Flow-Matching Diffusion model that denoises high-frequency spectrograms into pristine 48kHz master audio.
-                    </p>
-                  </div>
-
-                  <div className="p-4 bg-[#111220] border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center gap-2 text-purple-400 font-semibold text-sm">
-                      <span className="w-6 h-6 rounded-full bg-purple-950 flex items-center justify-center text-xs font-mono border border-purple-500/40">3</span>
-                      Phoneme Alignment & Lyric Cross-Attention
-                    </div>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      To synchronize singing voices with beats, text lyrics are converted to IPA phoneme tokens. Cross-attention layers in the Transformer map each phoneme to its musical timestamp, ensuring the virtual singer lands exactly on beat without slurring or skipped words.
-                    </p>
-                  </div>
-
-                  <div className="p-4 bg-[#111220] border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center gap-2 text-cyan-400 font-semibold text-sm">
-                      <span className="w-6 h-6 rounded-full bg-cyan-950 flex items-center justify-center text-xs font-mono border border-cyan-500/40">4</span>
-                      Deep Stem Isolation (Demucs v4 Hybrid Transformer)
-                    </div>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      After generation, artists need separate tracks for mixing. Neural stem separators (Demucs / MDX-Net) process the stereo mix in time and frequency domains simultaneously, cleanly splitting the audio into isolated Vocals, Drums, Bass, and Synth stems.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="bg-[#0f101b] border border-slate-800 rounded-2xl p-5 space-y-3">
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-amber-400" />
-                    Key Silicon Valley Upgrades for RaOne Suno Audio:
-                  </h3>
-                  <ul className="text-xs text-slate-300 space-y-2 list-disc pl-5 leading-relaxed">
-                    <li>
-                      <strong className="text-white">Karaoke Real-Time Phoneme Highlighting:</strong> Synchronize the lyrics view with the audio playback cursor so words glow in real time.
-                    </li>
-                    <li>
-                      <strong className="text-white">Multi-Stem Mixing Console:</strong> Provide separate volume faders for Vocals, Bass, Drums, and Melodies directly in the bottom player dock.
-                    </li>
-                    <li>
-                      <strong className="text-white">Audio Inpainting / Section Replace:</strong> Allow creators to highlight a 5-second guitar solo or vocal line and re-generate just that bar without changing the rest of the song.
-                    </li>
-                    <li>
-                      <strong className="text-white">Custom Voice Cloning:</strong> Upload a 10-second vocal sample to sing the user's generated songs with personalized voice timbre.
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            )}
-          </div>
-        </main>
-      </div>
-
-      {/* ============================================================== */}
-      {/* 4. PERSISTENT GLOBAL SUNO BOTTOM PLAYER DOCK                   */}
-      {/* ============================================================== */}
-      {activeTrack && (
-        <div className="h-20 bg-[#0d0e19] border-t border-slate-800/80 px-6 flex items-center justify-between z-30 shadow-2xl relative">
-          {/* Left: Track Info & Cover */}
-          <div className="flex items-center gap-3 w-72 min-w-0">
-            <img
-              src={activeTrack.coverUrl}
-              alt={activeTrack.title}
-              className="w-12 h-12 rounded-xl object-cover flex-shrink-0 border border-slate-700 shadow-md"
-            />
-            <div className="min-w-0">
-              <h4 className="text-xs font-bold text-white truncate">{activeTrack.title}</h4>
-              <p className="text-[10px] text-amber-400 truncate">{activeTrack.model}</p>
-            </div>
             <button
-              onClick={(e) => handleToggleFavorite(activeTrack.id, e)}
-              className="p-1.5 text-slate-400 hover:text-rose-400 transition-colors flex-shrink-0"
+              onClick={() => handleTrackOp('extend', activeTrack.id, 'Extend +60s')}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
+            >
+              <FastForward className="w-3.5 h-3.5" />
+              <span>Extend +60s</span>
+            </button>
+            <button
+              onClick={() => handleToggleFavorite(activeTrack.id)}
+              className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] text-[#E3E3E3]"
             >
               <Heart
-                className={`w-4 h-4 ${
+                className={`w-3.5 h-3.5 ${
                   activeTrack.isFavorite ? 'fill-rose-500 text-rose-500' : ''
                 }`}
               />
             </button>
-          </div>
-
-          {/* Center: Playback Controls & Progress Scrubber */}
-          <div className="flex-1 max-w-2xl px-4 flex flex-col items-center gap-1.5">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => setIsLooping(!isLooping)}
-                className={`p-1.5 rounded-lg text-xs transition-colors ${
-                  isLooping ? 'text-amber-400' : 'text-slate-500 hover:text-white'
-                }`}
-                title="Loop Track"
-              >
-                <Repeat className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                onClick={handlePrevTrack}
-                className="p-1.5 text-slate-300 hover:text-white transition-colors"
-                title="Previous Track"
-              >
-                <SkipBack className="w-4 h-4" />
-              </button>
-
-              <button
-                onClick={() => handlePlayTrack(activeTrack)}
-                className="w-9 h-9 rounded-full bg-amber-500 hover:bg-amber-400 text-black flex items-center justify-center shadow-lg transition-transform active:scale-95"
-              >
-                {isPlaying ? <Pause className="w-4 h-4 fill-black" /> : <Play className="w-4 h-4 fill-black ml-0.5" />}
-              </button>
-
-              <button
-                onClick={handleNextTrack}
-                className="p-1.5 text-slate-300 hover:text-white transition-colors"
-                title="Next Track"
-              >
-                <SkipForward className="w-4 h-4" />
-              </button>
-
-              {/* Demucs v4 4-Track Stem Switcher Pill */}
-              {activeTrack.stemsSeparated && (
-                <div className="flex items-center bg-[#07080e] p-0.5 rounded-lg border border-slate-800 text-[10px] font-mono">
-                  <button
-                    onClick={() => setStemMode('mix')}
-                    className={`px-2 py-0.5 rounded transition-colors ${
-                      stemMode === 'mix' ? 'bg-amber-500 text-black font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Mix
-                  </button>
-                  <button
-                    onClick={() => setStemMode('vocals')}
-                    className={`px-2 py-0.5 rounded transition-colors ${
-                      stemMode === 'vocals' ? 'bg-rose-500 text-white font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Vocals
-                  </button>
-                  <button
-                    onClick={() => setStemMode('bass')}
-                    className={`px-2 py-0.5 rounded transition-colors ${
-                      stemMode === 'bass' ? 'bg-purple-500 text-white font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Bass
-                  </button>
-                  <button
-                    onClick={() => setStemMode('drums')}
-                    className={`px-2 py-0.5 rounded transition-colors ${
-                      stemMode === 'drums' ? 'bg-amber-600 text-white font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Drums
-                  </button>
-                  <button
-                    onClick={() => setStemMode('synths')}
-                    className={`px-2 py-0.5 rounded transition-colors ${
-                      stemMode === 'synths' ? 'bg-cyan-500 text-black font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Synths
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Scrubber Bar */}
-            <div className="w-full flex items-center gap-3">
-              <span className="text-[10px] font-mono text-slate-400 w-9 text-right">
-                {formatTime(currentTime)}
-              </span>
-              <input
-                type="range"
-                min="0"
-                max={duration || activeTrack.duration || 180}
-                step="0.1"
-                value={currentTime}
-                onChange={handleSeek}
-                className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-              />
-              <span className="text-[10px] font-mono text-slate-400 w-9">
-                {formatTime(duration || activeTrack.duration || 180)}
-              </span>
-            </div>
-          </div>
-
-          {/* Right: Volume & Extra Utilities */}
-          <div className="flex items-center gap-3 w-72 justify-end">
-            {activeTrack.lyrics && (
-              <button
-                onClick={() => setShowLyricsModal(true)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#191b2c] hover:bg-[#23263e] text-xs text-amber-300 font-medium transition-colors"
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>Lyrics</span>
-              </button>
-            )}
-
-            <div className="flex items-center gap-2">
-              <button onClick={toggleMute} className="text-slate-400 hover:text-white transition-colors">
-                {isMuted || volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={isMuted ? 0 : volume}
-                onChange={handleVolumeChange}
-                className="w-20 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-              />
-            </div>
-
-            <a
-              href={activeTrack.audioUrl}
-              download={`${activeTrack.title}.mp3`}
-              className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-              title="Download MP3"
+            <button
+              onClick={() => downloadTrack(activeTrack)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#2B2D30] hover:bg-[#383A40] text-xs font-medium text-white"
             >
-              <Download className="w-4 h-4" />
-            </a>
+              <Download className="w-3.5 h-3.5" />
+              <span>MP3</span>
+            </button>
+            <button
+              onClick={() => handleDelete(activeTrack.id)}
+              className="p-1.5 rounded-lg bg-[#252629] hover:bg-red-950/60 text-[#9AA0A6] hover:text-red-400"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* ============================================================== */}
-      {/* 5. LYRICS MODAL DRAWER                                         */}
-      {/* ============================================================== */}
-      {showLyricsModal && activeTrack && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="relative w-full max-w-xl bg-[#10111d] border border-amber-500/40 rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="p-4 border-b border-slate-800/80 flex items-center justify-between bg-[#151728]">
-              <div className="flex items-center gap-3">
+      {/* Stem Channel Switcher */}
+      <div className="flex flex-wrap items-center gap-1.5 bg-[#161719] border border-[#252629] rounded-xl p-2">
+        {(['mix', 'vocals', 'drums', 'bass', 'synths', 'instrumental'] as const).map((stem) => (
+          <button
+            key={stem}
+            onClick={() => setStemMode(stem)}
+            className={`px-3 py-1 rounded-lg text-xs font-medium capitalize transition-colors ${
+              stemMode === stem
+                ? 'bg-[#2B2D30] text-white'
+                : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            {stem}
+          </button>
+        ))}
+      </div>
+
+      {/* Lyrics / Prompt Display */}
+      <div className="p-5 rounded-2xl bg-[#161719] border border-[#252629] space-y-2">
+        <div className="text-xs font-medium text-[#9AA0A6]">
+          {activeTrack.lyrics ? 'Lyrics & Arrangement' : 'Prompt Description'}
+        </div>
+        <pre className="whitespace-pre-wrap font-sans text-xs text-[#E3E3E3] leading-relaxed select-text">
+          {activeTrack.lyrics || activeTrack.prompt}
+        </pre>
+      </div>
+    </div>
+  ) : null;
+
+  const bottomDockContent = activeTrack ? (
+    <div className="px-4 py-2.5 flex items-center gap-4">
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => {
+            if (!tracks.length) return;
+            const idx = tracks.findIndex((t) => t.id === activeTrack.id);
+            const prevTrack = tracks[(idx - 1 + tracks.length) % tracks.length];
+            handlePlayTrack(prevTrack);
+          }}
+          className="p-1 text-[#9AA0A6] hover:text-white"
+        >
+          <SkipBack className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => handlePlayTrack(activeTrack)}
+          className="w-8 h-8 rounded-full bg-[#E3E3E3] hover:bg-white text-[#131314] flex items-center justify-center"
+        >
+          {isPlaying ? (
+            <Pause className="w-4 h-4 fill-current" />
+          ) : (
+            <Play className="w-4 h-4 fill-current ml-0.5" />
+          )}
+        </button>
+        <button
+          onClick={() => {
+            if (!tracks.length) return;
+            const idx = tracks.findIndex((t) => t.id === activeTrack.id);
+            const nextTrack = tracks[(idx + 1) % tracks.length];
+            handlePlayTrack(nextTrack);
+          }}
+          className="p-1 text-[#9AA0A6] hover:text-white"
+        >
+          <SkipForward className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 flex items-center gap-2 min-w-0">
+        <span className="text-[11px] font-mono text-[#9AA0A6] tabular-nums">
+          {formatTime(currentTime)}
+        </span>
+        <input
+          type="range"
+          min="0"
+          max={duration || activeTrack.duration || 180}
+          value={currentTime}
+          onChange={(e) => {
+            const val = Number(e.target.value);
+            setCurrentTime(val);
+            if (audioPlayerRef.current) audioPlayerRef.current.currentTime = val;
+          }}
+          className="flex-1 accent-[#8AB4F8]"
+        />
+        <span className="text-[11px] font-mono text-[#9AA0A6] tabular-nums">
+          {formatTime(duration || activeTrack.duration)}
+        </span>
+      </div>
+
+      <div className="hidden sm:flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => setIsLooping(!isLooping)}
+          className={`p-1 rounded ${isLooping ? 'text-[#8AB4F8]' : 'text-[#8E918F] hover:text-white'}`}
+          title="Repeat"
+        >
+          <Repeat className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => {
+            if (!audioPlayerRef.current) return;
+            if (isMuted) {
+              audioPlayerRef.current.volume = volume || 0.85;
+              setIsMuted(false);
+            } else {
+              audioPlayerRef.current.volume = 0;
+              setIsMuted(true);
+            }
+          }}
+          className="p-1 text-[#9AA0A6] hover:text-white"
+        >
+          {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  const codeContent = (
+    <div className="p-6 max-w-4xl mx-auto space-y-5">
+      <div className="p-4 rounded-xl bg-[#18191B] border border-[#282A2E] space-y-2">
+        <span className="text-xs font-medium text-white block">
+          Audio Synthesis Parameters & Lyrics Spec
+        </span>
+        <pre className="font-mono text-xs text-[#D4D7DD] bg-[#111214] p-3.5 rounded-lg border border-[#252629] overflow-x-auto">
+          {JSON.stringify(
+            activeTrack || {
+              model: selectedModel,
+              title: title || 'Untitled Track',
+              styleTags: styleInput,
+              bpm,
+              keySignature,
+              isInstrumental,
+              customMode,
+            },
+            null,
+            2
+          )}
+        </pre>
+      </div>
+
+      <div className="p-4 rounded-xl bg-[#18191B] border border-[#282A2E] space-y-3">
+        <div className="flex items-center gap-2 text-xs font-medium text-white">
+          <Cpu className="w-4 h-4 text-[#8AB4F8]" />
+          <span>Neural Audio Synthesis Architecture</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#9AA0A6]">
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">1. RVQ Neural Audio Codecs</div>
+            Compresses 48kHz audio into discrete multi-codebook acoustic tokens.
+          </div>
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">2. Autoregressive + Flow Matching</div>
+            Two-stage melody structure and high-frequency spectrogram denoising.
+          </div>
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">3. IPA Phoneme Alignment</div>
+            Aligns vocal syllables cleanly to tempo and measure boundaries.
+          </div>
+          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
+            <div className="font-medium text-[#E3E3E3] mb-1">4. Demucs v4 Stem Separation</div>
+            Isolates Vocals, Drums, Bass, and Synths cleanly from stereo mix.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const filteredTracks = tracks.filter((t) => {
+    const matchFav = !filterFavorite || t.isFavorite;
+    const matchSearch =
+      !searchQuery.trim() ||
+      t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      t.prompt.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchFav && matchSearch;
+  });
+
+  const filesContent = (
+    <div className="p-5 max-w-5xl mx-auto space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#252629] pb-3">
+        <div className="flex items-center gap-1 bg-[#1B1C1E] p-0.5 rounded-lg border border-[#2C2D30]">
+          <button
+            onClick={() => setFilterFavorite(false)}
+            className={`px-3 py-1 rounded-md text-xs font-medium ${
+              !filterFavorite ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            All Tracks ({tracks.length})
+          </button>
+          <button
+            onClick={() => setFilterFavorite(true)}
+            className={`px-3 py-1 rounded-md text-xs font-medium ${
+              filterFavorite ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F] hover:text-white'
+            }`}
+          >
+            Favorites ({tracks.filter((t) => t.isFavorite).length})
+          </button>
+        </div>
+
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-[#8E918F] absolute left-2.5 top-2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search tracks..."
+            className="bg-[#1B1C1E] border border-[#2C2D30] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[#E3E3E3] placeholder-[#6E7075] focus:outline-none w-56"
+          />
+        </div>
+      </div>
+
+      {filteredTracks.length === 0 ? (
+        <div className="py-16 text-center text-xs text-[#8E918F]">
+          <Disc3 className="w-8 h-8 mx-auto mb-2 opacity-40" />
+          <p>No tracks found.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filteredTracks.map((track) => (
+            <div
+              key={track.id}
+              onClick={() => {
+                handlePlayTrack(track);
+                setRightTab('preview');
+              }}
+              className="p-3 rounded-xl bg-[#18191B] border border-[#27292D] hover:border-[#42454C] transition-colors cursor-pointer flex items-center justify-between gap-4"
+            >
+              <div className="flex items-center gap-3 min-w-0">
                 <img
-                  src={activeTrack.coverUrl}
-                  alt={activeTrack.title}
-                  className="w-10 h-10 rounded-lg object-cover"
+                  src={track.coverUrl}
+                  alt={track.title}
+                  referrerPolicy="no-referrer"
+                  className="w-11 h-11 rounded-lg object-cover bg-black shrink-0"
                 />
-                <div>
-                  <h3 className="text-sm font-bold text-white">{activeTrack.title}</h3>
-                  <p className="text-[11px] text-amber-400 font-mono">
-                    Lyrics & Song Structure
-                  </p>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-white truncate">{track.title}</div>
+                  <div className="text-[11px] text-[#8E918F] truncate tabular-nums">
+                    {track.bpm} BPM · {track.keySignature} · {formatTime(track.duration)}
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
-                  onClick={() => copyToClipboard(activeTrack.lyrics || '', 'lyrics')}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#1e2035] hover:bg-[#282b48] text-slate-300 text-xs font-medium"
+                  onClick={(e) => handleToggleFavorite(track.id, e)}
+                  className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-rose-400"
                 >
-                  {copyFeedback === 'lyrics' ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" />
-                  )}
-                  <span>Copy</span>
-                </button>
-                <button
-                  onClick={() => setShowLyricsModal(false)}
-                  className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 text-slate-400 hover:text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-6 overflow-y-auto custom-scrollbar bg-[#0b0c14]">
-              <pre className="text-xs font-mono text-slate-200 whitespace-pre-wrap leading-relaxed">
-                {activeTrack.lyrics}
-              </pre>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Personal Voice Cloning Modal (10s Acoustic Capture) */}
-      {showVoiceCloneModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="relative w-full max-w-lg bg-[#11121e] border border-purple-500/50 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
-            <div className="p-5 border-b border-slate-800/80 flex items-center justify-between bg-[#17192a]">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-purple-900/40">
-                  <Mic className="w-5 h-5 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                    <span>Personal Voice Cloning Studio</span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-mono">
-                      10s Zero-Shot
-                    </span>
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Acoustic Timbre & Formant Neural Embedding
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowVoiceCloneModal(false)}
-                className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-5 bg-[#0b0c14]">
-              {/* Vocal Name */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-300">Cloned Vocalist Name</label>
-                <input
-                  type="text"
-                  value={newCloneName}
-                  onChange={(e) => setNewCloneName(e.target.value)}
-                  placeholder="e.g. Shan's Studio Vocals, Custom Vocalist #1"
-                  className="w-full bg-[#141624] border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-purple-500 font-medium"
-                />
-              </div>
-
-              {/* 10-Second Acoustic Sample Recorder */}
-              <div className="p-4 rounded-2xl bg-[#121422] border border-purple-500/30 text-center space-y-3">
-                <div className="flex items-center justify-center">
-                  <div
-                    className={`w-16 h-16 rounded-full flex items-center justify-center transition-all ${
-                      isRecordingVoice
-                        ? 'bg-rose-500 text-white animate-ping scale-110'
-                        : 'bg-purple-600/30 text-purple-400 border border-purple-500/50'
+                  <Heart
+                    className={`w-3.5 h-3.5 ${
+                      track.isFavorite ? 'fill-rose-500 text-rose-500' : ''
                     }`}
-                  >
-                    <Mic className="w-8 h-8" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs font-semibold text-white">
-                    {isRecordingVoice ? `Recording Voice Sample (${recordProgress}/10s)...` : 'Record 10-Second Voice Sample'}
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Speak or sing clearly into your microphone for 10 seconds to calibrate vocal formants.
-                  </p>
-                </div>
-
-                {/* Progress bar */}
-                <div className="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-gradient-to-r from-purple-500 to-rose-500 h-full transition-all duration-300"
-                    style={{ width: `${(recordProgress / 10) * 100}%` }}
                   />
-                </div>
-
-                <div className="flex items-center justify-center gap-3 pt-1">
-                  {!isRecordingVoice ? (
-                    <button
-                      type="button"
-                      onClick={handleStartVoiceRecording}
-                      disabled={isCloningVoice}
-                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-900/30 transition-transform active:scale-95 disabled:opacity-50"
-                    >
-                      <Mic className="w-3.5 h-3.5" />
-                      <span>Start 10s Recording</span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-semibold animate-pulse">
-                      <Activity className="w-4 h-4" />
-                      <span>Calibrating Pitch & Formants ({10 - recordProgress}s remaining)</span>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleSaveVoiceClone}
-                    disabled={isCloningVoice || isRecordingVoice}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors disabled:opacity-50"
-                  >
-                    <Upload className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Upload Audio Sample</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Neural Acoustic Feature Specs */}
-              <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-                <div className="p-2.5 rounded-xl bg-[#131525] border border-slate-800/80 space-y-1">
-                  <div className="text-slate-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                    <span>Acoustic Timbre</span>
-                  </div>
-                  <div className="text-purple-300 font-semibold font-sans">Warm Resonant Formants</div>
-                </div>
-                <div className="p-2.5 rounded-xl bg-[#131525] border border-slate-800/80 space-y-1">
-                  <div className="text-slate-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                    <span>RVQ DiT Vocals</span>
-                  </div>
-                  <div className="text-emerald-400 font-semibold">48kHz / 24-Bit FLAC</div>
-                </div>
+                </button>
+                <button
+                  onClick={(e) => handleDelete(track.id, e)}
+                  className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-red-400"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
-
-            <div className="p-4 border-t border-slate-800/80 bg-[#141626] flex items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setShowVoiceCloneModal(false)}
-                className="px-4 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-xs text-slate-300 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveVoiceClone}
-                disabled={isCloningVoice || isRecordingVoice}
-                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-xs font-bold text-white shadow-lg shadow-purple-900/40 transition-all active:scale-95 disabled:opacity-50"
-              >
-                {isCloningVoice ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Synthesizing Voice Profile...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                    <span>Save & Use Cloned Voice</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
+          ))}
         </div>
       )}
     </div>
   );
+
+  const editDrawerContent = (
+    <div className="space-y-4">
+      <div className="p-3 rounded-lg bg-[#1B1C1E] border border-[#2C2D30] space-y-2 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-[#E3E3E3]">Custom Lyrics Mode</span>
+          <button
+            onClick={() => setCustomMode(!customMode)}
+            className={`w-9 h-5 rounded-full p-0.5 flex items-center transition-colors ${
+              customMode ? 'bg-[#8AB4F8] justify-end' : 'bg-[#34363A] justify-start'
+            }`}
+          >
+            <span className="w-4 h-4 rounded-full bg-[#131314]" />
+          </button>
+        </div>
+        <div className="flex items-center justify-between pt-2 border-t border-[#282A2E]">
+          <span className="text-[#E3E3E3]">Instrumental Only</span>
+          <button
+            onClick={() => setIsInstrumental(!isInstrumental)}
+            className={`w-9 h-5 rounded-full p-0.5 flex items-center transition-colors ${
+              isInstrumental ? 'bg-[#8AB4F8] justify-end' : 'bg-[#34363A] justify-start'
+            }`}
+          >
+            <span className="w-4 h-4 rounded-full bg-[#131314]" />
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <label className="text-xs font-medium text-[#C4C7C5] block mb-1">Track Title</label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Untitled Track"
+          className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+        />
+      </div>
+
+      {customMode && !isInstrumental && (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs font-medium text-[#C4C7C5]">Lyrics</label>
+            <button
+              onClick={handleEnhanceLyrics}
+              disabled={!prompt.trim() || isEnhancingLyrics}
+              className="text-[11px] text-[#8AB4F8] hover:underline disabled:opacity-50"
+            >
+              {isEnhancingLyrics ? 'Writing...' : 'AI Write Lyrics'}
+            </button>
+          </div>
+          <textarea
+            rows={5}
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
+            placeholder="[Verse 1]..."
+            className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg p-2 text-xs text-[#E3E3E3] focus:outline-none resize-none font-mono"
+          />
+        </div>
+      )}
+
+      <div>
+        <label className="text-xs font-medium text-[#C4C7C5] block mb-1">Style Tags</label>
+        <input
+          type="text"
+          value={styleInput}
+          onChange={(e) => setStyleInput(e.target.value)}
+          className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+        />
+        <div className="flex flex-wrap gap-1 mt-2">
+          {GENRE_TAGS.slice(0, 6).map((tag) => (
+            <button
+              key={tag}
+              onClick={() => {
+                const list = styleInput.split(',').map((s) => s.trim()).filter(Boolean);
+                setStyleInput(
+                  list.includes(tag)
+                    ? list.filter((x) => x !== tag).join(', ')
+                    : [...list, tag].join(', ')
+                );
+              }}
+              className="px-2 py-0.5 rounded bg-[#1E1F20] hover:bg-[#2B2D30] border border-[#2F3135] text-[11px] text-[#C4C7C5]"
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs font-medium text-[#C4C7C5] block mb-1">
+            BPM ({bpm})
+          </label>
+          <input
+            type="range"
+            min="60"
+            max="180"
+            value={bpm}
+            onChange={(e) => setBpm(Number(e.target.value))}
+            className="w-full accent-[#8AB4F8]"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-[#C4C7C5] block mb-1">Key</label>
+          <select
+            value={keySignature}
+            onChange={(e) => setKeySignature(e.target.value)}
+            className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2 py-1.5 text-xs text-white"
+          >
+            {KEY_SIGNATURES.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-lg bg-[#1B1C1E] border border-[#2C2D30] space-y-2">
+        <div className="text-xs font-medium text-white flex items-center gap-1.5">
+          <Mic className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>Voice Clone Profile</span>
+        </div>
+        {clonedVoices.length > 0 && (
+          <select
+            value={selectedVoiceClone?.id || ''}
+            onChange={(e) =>
+              setSelectedVoiceClone(
+                clonedVoices.find((v) => v.id === e.target.value) || null
+              )
+            }
+            className="w-full bg-[#131314] border border-[#2F3135] rounded-lg px-2 py-1.5 text-xs text-white"
+          >
+            <option value="">Default Studio Vocalist</option>
+            {clonedVoices.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <div className="flex gap-1.5">
+          <input
+            type="text"
+            value={newCloneName}
+            onChange={(e) => setNewCloneName(e.target.value)}
+            placeholder="Voice name"
+            className="flex-1 bg-[#131314] border border-[#2F3135] rounded-lg px-2 py-1 text-xs text-white"
+          />
+          <button
+            onClick={handleSaveVoiceClone}
+            disabled={isRecordingVoice}
+            className="px-2.5 py-1 rounded-lg bg-[#2B2D30] hover:bg-[#383A40] text-xs text-white shrink-0"
+          >
+            {isRecordingVoice ? 'Saving...' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const composerAddContent = (
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          onClick={handleEnhanceLyrics}
+          disabled={!prompt.trim() || isEnhancingLyrics}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3] disabled:opacity-50"
+        >
+          <Wand2 className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>{isEnhancingLyrics ? 'Writing...' : 'Generate Lyrics'}</span>
+        </button>
+
+        <button
+          onClick={() => {
+            const idea =
+              RANDOM_SONG_IDEAS[
+                Math.floor(Math.random() * RANDOM_SONG_IDEAS.length)
+              ];
+            setTitle(idea.title);
+            setPrompt(idea.prompt);
+            setStyleInput(idea.style);
+          }}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
+        >
+          <Dices className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>Song Idea</span>
+        </button>
+
+        <button
+          onClick={() => setIsInstrumental(!isInstrumental)}
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs ${
+            isInstrumental
+              ? 'bg-[#2B2D30] border-[#8AB4F8] text-white'
+              : 'bg-[#252629] border-[#35373B] text-[#E3E3E3]'
+          }`}
+        >
+          <Music className="w-3.5 h-3.5" />
+          <span>Instrumental: {isInstrumental ? 'On' : 'Off'}</span>
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <UnifiedStudioWorkspace
+      isOpen={isOpen}
+      onBackToStart={onClose}
+      moduleName="RaOne Suno Audio"
+      workspaceTitle={activeTrack ? activeTrack.title : 'Untitled Workspace'}
+      modelOptions={TTA_MODELS}
+      selectedModel={selectedModel}
+      onSelectModel={setSelectedModel}
+      prompt={prompt}
+      onPromptChange={setPrompt}
+      onSubmitPrompt={handleGenerate}
+      isGenerating={isLoading}
+      turns={turns}
+      onResetWorkspace={() => {
+        setActiveTrack(null);
+        setIsPlaying(false);
+        setTurns([]);
+        setPrompt('');
+        setRightTab('preview');
+        showToast('Started empty workspace.');
+      }}
+      rightTab={rightTab}
+      onRightTabChange={setRightTab}
+      routePath={activeTrack ? `/audio/${activeTrack.id}` : '/'}
+      onRefresh={fetchAudioHistory}
+      onRemix={() => {
+        if (activeTrack) {
+          setTitle(`${activeTrack.title} Remix`);
+          setPrompt(activeTrack.prompt);
+          setLyrics(activeTrack.lyrics || '');
+          setStyleInput(activeTrack.styleTags?.join(', ') || styleInput);
+          showToast('Track parameters loaded for remix.');
+        } else {
+          const idea = RANDOM_SONG_IDEAS[0];
+          setTitle(idea.title);
+          setPrompt(idea.prompt);
+          showToast('Sample song idea loaded.');
+        }
+      }}
+      onShare={() => {
+        if (activeTrack) {
+          navigator.clipboard?.writeText(activeTrack.prompt).catch(() => {});
+          showToast('Track prompt copied.');
+        } else {
+          showToast('Workspace ready.');
+        }
+      }}
+      onPublish={() => {
+        if (activeTrack) {
+          downloadTrack(activeTrack);
+        } else {
+          showToast('Generate or select a track first.');
+        }
+      }}
+      publishLabel="Download"
+      filesCount={tracks.length}
+      hasActiveItem={!!activeTrack}
+      previewContent={previewContent}
+      codeContent={codeContent}
+      filesContent={filesContent}
+      editDrawerContent={editDrawerContent}
+      composerAddContent={composerAddContent}
+      bottomDockContent={bottomDockContent}
+      emptyStateTitle="Empty Workspace"
+      emptyStateSubtitle="Describe a song, beat, or voiceover on the left, or browse saved tracks."
+      emptyStateActionLabel="Open Files"
+      onEmptyStateAction={() => setRightTab('files')}
+      toastMessage={toastMessage}
+    />
+  );
 };
-export default SunoAudioStudio;

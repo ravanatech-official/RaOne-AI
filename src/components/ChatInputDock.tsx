@@ -4,12 +4,10 @@ import {
   Mic,
   Brain,
   Paperclip,
-  FileText,
   ImageIcon,
   Globe,
   Folder,
   Compass,
-  Puzzle,
 } from 'lucide-react';
 
 interface ChatInputDockProps {
@@ -36,6 +34,7 @@ interface ChatInputDockProps {
   selectedModel?: string;
   onSelectModel?: (model: string) => void;
   onOpenStudioHub?: (tab?: 'image' | 'music' | 'video' | 'transcribe') => void;
+  onOpenLibrary?: () => void;
   isCenterState?: boolean;
   inputFocusTrigger?: number;
   isTemporary?: boolean;
@@ -46,6 +45,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   isLoading,
   onOpenVoice,
   onOpenStudioHub,
+  onOpenLibrary,
   isCenterState = false,
   inputFocusTrigger = 0,
   isTemporary = false,
@@ -79,7 +79,13 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       id: 'library',
       title: 'Add from library',
       desc: 'Browse and search your files',
-      icon: <FileText className="w-4 h-4 text-[#e0e0e0] shrink-0" />,
+      icon: (
+        <img
+          src="/assets/aistudio/RaOne_Library_4c928d53.png"
+          alt="RaOne Library Logo"
+          className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_5px_rgba(56,189,248,0.5)]"
+        />
+      ),
     },
     {
       id: 'image',
@@ -134,7 +140,13 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       id: 'plugin',
       title: 'Plugin Creator',
       desc: 'Create and edit plugins',
-      icon: <Puzzle className="w-4 h-4 text-[#e0e0e0] shrink-0" />,
+      icon: (
+        <img
+          src="/assets/aistudio/RaOne_Plugins_4adb9c36.png"
+          alt="RaOne Plugins Logo"
+          className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_5px_rgba(250,204,21,0.5)]"
+        />
+      ),
     },
   ];
 
@@ -247,7 +259,8 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       setActiveItemIndex(-1);
       textareaRef.current?.focus();
     } else if (action === 'library') {
-      if (onOpenStudioHub) onOpenStudioHub('transcribe');
+      if (onOpenLibrary) onOpenLibrary();
+      else if (onOpenStudioHub) onOpenStudioHub('transcribe');
       setIsDropdownOpen(false);
       setActiveItemIndex(-1);
     } else if (action === 'project') {

@@ -4,8 +4,6 @@ import {
   Search,
   PanelLeftClose,
   Clock,
-  BookOpen,
-  Boxes,
   ImageIcon,
   Sparkles,
   Trash2,
@@ -47,6 +45,8 @@ interface SidebarProps {
   onOpenMotionStudio?: () => void;
   onOpenAudioStudio?: () => void;
   onOpenDocumentStudio?: () => void;
+  isLibraryOpen?: boolean;
+  onOpenLibrary?: () => void;
   projects?: ProjectItem[];
   activeProjectId?: string | null;
   onSelectProject?: (id: string | null) => void;
@@ -76,6 +76,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenMotionStudio,
   onOpenAudioStudio,
   onOpenDocumentStudio,
+  isLibraryOpen = false,
+  onOpenLibrary,
   projects = [],
   activeProjectId = null,
   onSelectProject,
@@ -286,20 +288,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Library Button */}
         <button
-          onClick={() => onOpenStudioHub && onOpenStudioHub('transcribe')}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors"
+          onClick={() => (onOpenLibrary ? onOpenLibrary() : onOpenStudioHub && onOpenStudioHub('transcribe'))}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors group ${
+            isLibraryOpen
+              ? 'bg-[#171717] text-white font-medium'
+              : 'text-[#ececec] hover:bg-[#171717]'
+          }`}
+          title="Library — Saved Images, Videos, Audio, Documents & Apps"
         >
-          <BookOpen className="w-4 h-4 text-[#8e8e8e]" />
-          <span>Library</span>
+          <img
+            src="/assets/aistudio/RaOne_Library_4c928d53.png"
+            alt="RaOne Library Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(56,189,248,0.6)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-sky-300 transition-colors truncate">
+            Library
+          </span>
         </button>
 
         {/* Plugins Button (moved under Library) */}
         <button
           onClick={onOpenSettings}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors"
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          title="Plugins — Extensions, API Connectors & Tools"
         >
-          <Boxes className="w-4 h-4 text-[#8e8e8e]" />
-          <span>Plugins</span>
+          <img
+            src="/assets/aistudio/RaOne_Plugins_4adb9c36.png"
+            alt="RaOne Plugins Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(250,204,21,0.55)] group-hover:scale-110 transition-transform"
+          />
+          <span className="font-medium text-white group-hover:text-amber-300 transition-colors truncate">
+            Plugins
+          </span>
         </button>
       </div>
 

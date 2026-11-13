@@ -20,6 +20,7 @@ import { LeonardoVisionStudio } from './components/LeonardoVisionStudio.tsx';
 import { LeonardoMotionStudio } from './components/LeonardoMotionStudio.tsx';
 import { SunoAudioStudio } from './components/SunoAudioStudio.tsx';
 import { DocumentAIStudio } from './components/DocumentAIStudio.tsx';
+import { LibraryWindow } from './components/LibraryWindow.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage, ProjectItem } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
@@ -66,6 +67,7 @@ export default function App() {
   const [isMotionStudioOpen, setIsMotionStudioOpen] = useState<boolean>(false);
   const [isAudioStudioOpen, setIsAudioStudioOpen] = useState<boolean>(false);
   const [isDocumentStudioOpen, setIsDocumentStudioOpen] = useState<boolean>(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
   const [currentPlan, setCurrentPlan] = useState<'free' | 'plus' | 'ultimate'>('free');
   const [searchTrigger, setSearchTrigger] = useState<number>(0);
   const [inputFocusTrigger, setInputFocusTrigger] = useState<number>(0);
@@ -94,6 +96,7 @@ export default function App() {
       // Ctrl+K / Cmd+K: Start new chat & focus input
       if (isMod && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        setIsLibraryOpen(false);
         setActiveId('new');
         setInputFocusTrigger((prev) => prev + 1);
         return;
@@ -752,6 +755,7 @@ export default function App() {
 
   // New Chat action (Exact ChatGPT behavior)
   const handleNewChat = () => {
+    setIsLibraryOpen(false);
     if (isTemporaryChat) {
       setTemporaryMessages([]);
     } else {
@@ -811,6 +815,7 @@ export default function App() {
         conversations={conversations}
         activeConversationId={activeId}
         onSelectConversation={(id) => {
+          setIsLibraryOpen(false);
           if (isTemporaryChat) {
             setIsTemporaryChat(false);
             setTemporaryMessages([]);
@@ -848,14 +853,30 @@ export default function App() {
         onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
         onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
         onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
+        isLibraryOpen={isLibraryOpen}
+        onOpenLibrary={() => setIsLibraryOpen(true)}
         projects={projects}
         activeProjectId={activeProjectId}
-        onSelectProject={setActiveProjectId}
+        onSelectProject={(id) => {
+          setIsLibraryOpen(false);
+          setActiveProjectId(id);
+        }}
         onCreateProject={handleCreateProject}
         onDeleteProject={handleDeleteProject}
       />
 
-      {/* Main Chat Workspace */}
+      {/* Main Chat Workspace or Library Window */}
+      {isLibraryOpen ? (
+        <LibraryWindow
+          isSidebarOpen={isSidebarOpen}
+          onOpenSidebar={() => setIsSidebarOpen(true)}
+          onOpenVisionStudio={() => setIsVisionStudioOpen(true)}
+          onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
+          onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
+          onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
+          onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
+        />
+      ) : (
       <div className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden relative bg-[#000000]">
         {/* Top Header */}
         <ChatHeader
@@ -926,6 +947,7 @@ export default function App() {
                 if (tab) setStudioHubTab(tab);
                 setIsStudioHubOpen(true);
               }}
+              onOpenLibrary={() => setIsLibraryOpen(true)}
               isCenterState={true}
               inputFocusTrigger={inputFocusTrigger}
               isTemporary={isTemporaryChat}
@@ -990,12 +1012,14 @@ export default function App() {
                 if (tab) setStudioHubTab(tab);
                 setIsStudioHubOpen(true);
               }}
+              onOpenLibrary={() => setIsLibraryOpen(true)}
               inputFocusTrigger={inputFocusTrigger}
               isTemporary={isTemporaryChat}
             />
           </>
         )}
       </div>
+      )}
 
       {/* Outputs / Artifacts Drawer (Right Rail matching screenshot) */}
       <OutputDrawer
