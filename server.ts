@@ -476,9 +476,62 @@ async function callCometAPI(
   return json.choices?.[0]?.message?.content || '';
 }
 
-// API Health Route
-app.get('/api/health', (_req, res) => {
-  res.json({
+// Gemini model candidate resolver (supports AI Studio Gemini 4 aliases & public Gemini 2.5 GA models)
+function getGeminiModelCandidates(requestedModel: string): string[] {
+  const m = String(requestedModel || '').toLowerCase();
+  if (m.includes('argon') || m.includes('pro') || m === 'raone-claude' || m === 'raone-deepseek-r1') {
+    return ['gemini-4-argon', 'gemini-2.5-pro', 'gemini-2.5-flash'];
+  }
+  if (m.includes('lite')) {
+    return ['gemini-3.1-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+  }
+  return ['gemini-4-hydrogen', 'gemini-2.5-flash'];
+}
+
+function isModelNotFoundError(err: any): boolean {
+  const status = err?.status || err?.code;
+  const msg = String(err?.message || '').toLowerCase();
+  return (
+    status === 404 ||
+    msg.includes('not_found') ||
+    msg.includes('is not found') ||
+    msg.includes('not supported for generatecontent')
+  );
+}
+
+async function generateWithGeminiFallback(
+  contents: any,
+  config: any,
+  requestedModel: string
+) {
+  if (!aiClient) {
+    throw new Error('GEMINI_API_KEY is not configured on the backend server.');
+  }
+  const candidates = getGeminiModelCandidates(requestedModel);
+  let lastErr: any;
+  for (const modelId of candidates) {
+    try {
+      const response = await aiClient.models.generateContent({
+        model: modelId,
+        contents,
+        config,
+      });
+      return { response, modelUsed: modelId };
+    } catch (err: any) {
+      lastErr = err;
+      if (isModelNotFoundError(err)) {
+        console.warn(`Model ${modelId} unavailable, trying next candidate...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('All Gemini model candidates failed.');
+}
+
+// API Health Route (supports ?verify=true to perform a live Gemini API brain ping)
+app.get('/api/health', async (req, res) => {
+  const basePayload: any = {
     status: 'online',
     brand: 'RaOne',
     productName: 'RaOne AI',
@@ -495,7 +548,30 @@ app.get('/api/health', (_req, res) => {
       xai: Boolean(XAI_API_KEY),
       cometapi: Boolean(COMET_API_KEY),
     },
-  });
+  };
+
+  if (req.query.verify === 'true') {
+    const pingStart = Date.now();
+    try {
+      const { response, modelUsed } = await generateWithGeminiFallback(
+        'Reply with exactly: OK',
+        { maxOutputTokens: 16 },
+        'gemini-4-hydrogen'
+      );
+      basePayload.geminiLive = true;
+      basePayload.verifiedModel = modelUsed;
+      basePayload.modelVersion = (response as any).modelVersion || modelUsed;
+      basePayload.responseId = (response as any).responseId || null;
+      basePayload.latencyMs = Date.now() - pingStart;
+      basePayload.sampleText = response.text?.trim() || 'OK';
+    } catch (err: any) {
+      basePayload.geminiLive = false;
+      basePayload.latencyMs = Date.now() - pingStart;
+      basePayload.geminiError = err?.message || 'Gemini verification failed';
+    }
+  }
+
+  res.json(basePayload);
 });
 
 // API Models Catalog
@@ -802,9 +878,9 @@ app.post('/api/studio/run', async (req, res) => {
     } = req.body;
 
     // Map model names to real Gemini model ID
-    let mappedModel = 'gemini-3.8-flash';
-    if (String(model).includes('pro') || String(model).includes('argon')) mappedModel = 'gemini-3.8-pro';
-    else mappedModel = 'gemini-3.8-flash';
+    let mappedModel = 'gemini-4-hydrogen';
+    if (String(model).includes('pro') || String(model).includes('argon')) mappedModel = 'gemini-4-argon';
+    else mappedModel = 'gemini-4-hydrogen';
 
     // Prepare contents array
     let preparedContents: any[] = [];
@@ -1090,7 +1166,7 @@ CRITICAL SENIOR SWE REQUIREMENTS:
 7. Zero placeholders, zero demo mocks, zero "TODO" comments. Every feature must work out of the box.
 8. Modern sleek dark mode UI (#0b0c10 base) with glowing accents and clean glassmorphism.`;
 
-      const candidateModels = ['gemini-3.8-flash', 'gemini-4-argon'];
+      const candidateModels = ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-2.5-flash'];
       for (const modelName of candidateModels) {
         try {
           const resp = await aiClient.models.generateContent({
@@ -1226,7 +1302,7 @@ CRITICAL INSTRUCTIONS:
 3. Verify that all event handlers, scripts, and styling remain 100% intact and working.`;
 
         const resp = await aiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: refineInstruction }] }],
         });
 
@@ -2214,24 +2290,11 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // Validate Google Gemini model selection
-    const allowedModels = ['gemini-3.8-flash', 'gemini-4-argon', 'gemini-3.1-flash-lite', 'raone-gpt4o', 'raone-claude', 'raone-deepseek-r1', 'comet-all-in-one'];
-    let activeModel = 'gemini-3.8-flash';
-    if (model === 'gemini-4-argon' || model === 'raone-argon' || model === 'raone-claude' || model === 'raone-deepseek-r1') {
-      activeModel = 'gemini-4-argon';
-    } else if (model === 'gemini-3.1-flash-lite' || model === 'raone-lite') {
-      activeModel = 'gemini-3.1-flash-lite';
-    } else {
-      activeModel = 'gemini-3.8-flash';
-    }
-
     if (!aiClient) {
-      return res.status(200).json({
-        text: generateIntelligentResponse(prompt, model, messages),
-        mode,
-        model,
-        groundingSources: [],
-        brandSignature: 'RaOne AI by RavanaTec',
+      return res.status(503).json({
+        error: 'GEMINI_API_KEY is not configured on the backend server. Set a valid Gemini API key in Cloud Run / environment settings.',
+        source: 'error',
+        brand: 'RaOne AI by RavanaTec',
       });
     }
 
@@ -2288,56 +2351,272 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    let replyText = '';
-    let groundingSources: any[] = [];
-    let mapsSources: any[] = [];
+    const startTime = Date.now();
+    const { response, modelUsed } = await generateWithGeminiFallback(
+      contents,
+      generateConfig,
+      model
+    );
+    const latencyMs = Date.now() - startTime;
 
-    try {
-      const response = await aiClient.models.generateContent({
-        model: activeModel,
-        contents,
-        config: generateConfig,
+    const replyText = response.text || '';
+    if (!replyText) {
+      return res.status(502).json({
+        error: 'Gemini returned an empty response.',
+        source: 'error',
+        brand: 'RaOne AI by RavanaTec',
       });
-
-      replyText = response.text || 'RaOne AI processed your request.';
-
-      // Extract Search grounding chunks
-      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      if (Array.isArray(chunks)) {
-        chunks.forEach((chunk: any) => {
-          if (chunk.web?.uri) {
-            groundingSources.push({
-              title: chunk.web.title || chunk.web.uri,
-              url: chunk.web.uri,
-            });
-          }
-          if (chunk.maps?.uri) {
-            mapsSources.push({
-              title: chunk.maps.title || 'Google Maps Location',
-              url: chunk.maps.uri,
-            });
-          }
-        });
-      }
-    } catch (genError: any) {
-      console.warn('Gemini API call notice:', genError.message);
-      replyText = generateIntelligentResponse(prompt, model, messages);
     }
+
+    const groundingSources: any[] = [];
+    const mapsSources: any[] = [];
+    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    if (Array.isArray(chunks)) {
+      chunks.forEach((chunk: any) => {
+        if (chunk.web?.uri) {
+          groundingSources.push({
+            title: chunk.web.title || chunk.web.uri,
+            url: chunk.web.uri,
+          });
+        }
+        if (chunk.maps?.uri) {
+          mapsSources.push({
+            title: chunk.maps.title || 'Google Maps Location',
+            url: chunk.maps.uri,
+          });
+        }
+      });
+    }
+
+    const usage = {
+      promptTokens: response.usageMetadata?.promptTokenCount ?? 0,
+      candidateTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+      totalTokens: response.usageMetadata?.totalTokenCount ?? 0,
+    };
 
     return res.json({
       text: replyText,
       mode,
-      model: activeModel,
+      model: modelUsed,
+      source: 'gemini',
+      verifiedModel: modelUsed,
+      modelVersion: (response as any).modelVersion || modelUsed,
+      responseId: (response as any).responseId || null,
+      usage,
+      latencyMs,
       groundingSources,
       mapsSources,
       brandSignature: 'RaOne AI by RavanaTec',
     });
   } catch (error: any) {
     console.error('RaOne Chat Error:', error);
-    return res.status(500).json({
-      error: error.message || 'An error occurred while processing with RaOne AI.',
+    const status = typeof error?.status === 'number' && error.status >= 400 && error.status < 600 ? error.status : 502;
+    return res.status(status).json({
+      error: error?.message || 'Gemini API request failed.',
+      source: 'error',
       brand: 'RaOne AI by RavanaTec',
     });
+  }
+});
+
+// 1b. Real-Time SSE Streaming Chat Endpoint (Live word-by-word Gemini output + verification telemetry)
+app.post('/api/chat/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const sendEvent = (payload: Record<string, any>) => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const startTime = Date.now();
+
+  try {
+    const {
+      messages = [],
+      mode = 'think',
+      prompt = '',
+      context = '',
+      model = 'gemini-4-hydrogen',
+      enableSearch = false,
+      enableMaps = false,
+      userLocation = null,
+      isTemporary = false,
+    } = req.body;
+
+    let modeInstruction = '';
+    if (mode === 'think') {
+      modeInstruction = `MODE: THINK (Deep Cognitive Reasoning). Analyze the query from multiple strategic perspectives. Provide deep, structured logic, clear trade-offs, step-by-step reasoning, and counter-perspectives where applicable.`;
+    } else if (mode === 'create') {
+      modeInstruction = `MODE: CREATE (Generative Studio & Synthesis). Generate production-ready code, elegant prose, architectural schemas, creative concepts, or scripts. Write clean, complete, runnable blocks with high craft and no placeholders.`;
+    } else if (mode === 'act') {
+      modeInstruction = `MODE: ACT (Autonomous Action Execution). Format your response as an executable blueprint and mission breakdown: 1. Executive Objective 2. Actionable Checklist 3. Direct Execution Deliverable 4. Verification & Next Milestones.`;
+    }
+    if (isTemporary) {
+      modeInstruction += `\n[CONFIDENTIALITY INVARIANT: This is a Temporary Chat. Zero persistence is active. Treat all input as ephemeral and confidential.]`;
+    }
+    const fullSystemInstruction = `${RAONE_CORE_SYSTEM_PROMPT}\n\n${modeInstruction}\n${context ? `Additional Context: ${context}` : ''}`;
+
+    // External providers (non-streaming gateway wrapped into SSE)
+    const externalResult = async (source: string, label: string, text: string) => {
+      sendEvent({ type: 'start', source, model: label });
+      sendEvent({ type: 'chunk', text });
+      sendEvent({
+        type: 'done',
+        source,
+        verifiedModel: label,
+        modelVersion: label,
+        responseId: null,
+        usage: null,
+        latencyMs: Date.now() - startTime,
+        groundingSources: [],
+        mapsSources: [],
+      });
+      res.end();
+    };
+
+    if (model === 'comet-all-in-one' && COMET_API_KEY) {
+      const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      return await externalResult('cometapi', 'comet-all-in-one', text);
+    }
+    if (model === 'raone-gpt4o' && OPENAI_API_KEY) {
+      const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      return await externalResult('openai', 'gpt-4o', text);
+    }
+    if (model === 'raone-claude' && ANTHROPIC_API_KEY) {
+      const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      return await externalResult('anthropic', 'claude-3-5-sonnet', text);
+    }
+    if (model === 'raone-deepseek-r1' && DEEPSEEK_API_KEY) {
+      const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], fullSystemInstruction);
+      return await externalResult('deepseek', 'deepseek-reasoner', text);
+    }
+
+    if (!aiClient) {
+      sendEvent({
+        type: 'error',
+        error: 'GEMINI_API_KEY is not configured on the backend server. Set a valid Gemini API key.',
+      });
+      return res.end();
+    }
+
+    let contents: any[] = [];
+    if (Array.isArray(messages) && messages.length > 0) {
+      contents = messages.map((m: { role: string; content: string }) => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }],
+      }));
+    }
+    if (prompt) {
+      contents.push({ role: 'user', parts: [{ text: prompt }] });
+    }
+    if (contents.length === 0) {
+      contents.push({ role: 'user', parts: [{ text: 'Hello RaOne!' }] });
+    }
+
+    const tools: any[] = [];
+    let toolConfig: any = undefined;
+    if (enableMaps) {
+      tools.push({ googleMaps: {} });
+      if (userLocation?.latitude && userLocation?.longitude) {
+        toolConfig = {
+          retrievalConfig: {
+            latLng: { latitude: userLocation.latitude, longitude: userLocation.longitude },
+          },
+        };
+      }
+    } else if (enableSearch) {
+      tools.push({ googleSearch: {} });
+    }
+
+    const generateConfig: any = { systemInstruction: fullSystemInstruction };
+    if (tools.length > 0) {
+      generateConfig.tools = tools;
+      if (toolConfig) generateConfig.toolConfig = toolConfig;
+    }
+
+    const candidates = getGeminiModelCandidates(model);
+    let streamedOk = false;
+    let lastError: any = null;
+
+    for (const candidateModel of candidates) {
+      try {
+        const stream = await aiClient.models.generateContentStream({
+          model: candidateModel,
+          contents,
+          config: generateConfig,
+        });
+
+        sendEvent({ type: 'start', source: 'gemini', model: candidateModel });
+
+        let modelVersion: string | undefined;
+        let responseId: string | undefined;
+        let usage: any = null;
+        const groundingSources: any[] = [];
+        const mapsSources: any[] = [];
+
+        for await (const chunk of stream) {
+          const c = chunk as any;
+          if (c.text) {
+            sendEvent({ type: 'chunk', text: c.text });
+          }
+          if (c.modelVersion) modelVersion = c.modelVersion;
+          if (c.responseId) responseId = c.responseId;
+          if (c.usageMetadata) {
+            usage = {
+              promptTokens: c.usageMetadata.promptTokenCount ?? 0,
+              candidateTokens: c.usageMetadata.candidatesTokenCount ?? 0,
+              totalTokens: c.usageMetadata.totalTokenCount ?? 0,
+            };
+          }
+          const gChunks = c.candidates?.[0]?.groundingMetadata?.groundingChunks;
+          if (Array.isArray(gChunks)) {
+            gChunks.forEach((gc: any) => {
+              if (gc.web?.uri && !groundingSources.some((s) => s.url === gc.web.uri)) {
+                groundingSources.push({ title: gc.web.title || gc.web.uri, url: gc.web.uri });
+              }
+              if (gc.maps?.uri && !mapsSources.some((s) => s.url === gc.maps.uri)) {
+                mapsSources.push({ title: gc.maps.title || 'Google Maps Location', url: gc.maps.uri });
+              }
+            });
+          }
+        }
+
+        sendEvent({
+          type: 'done',
+          source: 'gemini',
+          verifiedModel: candidateModel,
+          modelVersion: modelVersion || candidateModel,
+          responseId: responseId || null,
+          usage,
+          latencyMs: Date.now() - startTime,
+          groundingSources,
+          mapsSources,
+        });
+        streamedOk = true;
+        break;
+      } catch (err: any) {
+        lastError = err;
+        if (isModelNotFoundError(err)) {
+          console.warn(`Stream model ${candidateModel} unavailable, trying next candidate...`);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!streamedOk) {
+      throw lastError || new Error('All Gemini model candidates failed.');
+    }
+    return res.end();
+  } catch (error: any) {
+    console.error('RaOne Stream Chat Error:', error);
+    sendEvent({
+      type: 'error',
+      error: error?.message || 'Gemini streaming request failed.',
+    });
+    return res.end();
   }
 });
 
@@ -2660,7 +2939,7 @@ app.post('/api/vision/enhance-prompt', async (req, res) => {
     if (aiClient) {
       try {
         const response = await aiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-4-hydrogen',
           contents: {
             role: 'user',
             parts: [
@@ -3099,7 +3378,7 @@ app.post('/api/motion/enhance-prompt', async (req, res) => {
     if (aiClient) {
       try {
         const response = await aiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-4-hydrogen',
           contents: {
             role: 'user',
             parts: [
@@ -3539,7 +3818,7 @@ app.post('/api/audio/enhance-lyrics', async (req, res) => {
     if (aiClient) {
       try {
         const response = await aiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-4-hydrogen',
           contents: {
             role: 'user',
             parts: [
@@ -3918,7 +4197,7 @@ Respond in strict JSON format matching:
 }`;
 
         const response = await aiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: docPrompt }] }],
           config: { responseMimeType: 'application/json' },
         });
@@ -4053,7 +4332,7 @@ User Query: "${query || 'Summarize key takeaways, risks, and next steps'}"
 Provide your answer with specific grounded references.`;
 
         const response = await aiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: ragPrompt }] }],
         });
 

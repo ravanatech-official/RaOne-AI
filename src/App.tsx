@@ -317,54 +317,184 @@ export default function App() {
         isTemporary: isTemporaryChat,
       };
 
+      const streamChatRequest = async (
+        payload: Record<string, any>,
+        onChunk: (accumulatedText: string, meta?: any) => void
+      ) => {
+        const startMs = Date.now();
+        const response = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+
+        // If backend returned JSON (e.g. non-streaming fallback or error), handle cleanly
+        if (contentType.includes('application/json')) {
+          const data = await response.json();
+          if (!response.ok || data.source === 'error') {
+            throw new Error(data?.error || `Backend request failed (${response.status}).`);
+          }
+          const textOut = data.text || '';
+          onChunk(textOut, {
+            ...data,
+            elapsedSec: ((Date.now() - startMs) / 1000).toFixed(1),
+          });
+          return {
+            text: textOut,
+            meta: { ...data, elapsedSec: ((Date.now() - startMs) / 1000).toFixed(1) },
+          };
+        }
+
+        if (!contentType.includes('text/event-stream') || !response.body) {
+          throw new Error(
+            `Backend API returned non-JSON/non-SSE response (${response.status}). Make sure the RaOne backend server (server.ts) is deployed and connected.`
+          );
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let accumulated = '';
+        let finalMeta: any = {};
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+
+          for (const rawEvent of events) {
+            const lines = rawEvent
+              .split('\n')
+              .filter((l) => l.startsWith('data: '))
+              .map((l) => l.slice(6));
+            if (lines.length === 0) continue;
+
+            let evt: any;
+            try {
+              evt = JSON.parse(lines.join('\n'));
+            } catch {
+              continue;
+            }
+
+            if (evt.type === 'error') {
+              throw new Error(evt.error || 'Gemini streaming error');
+            }
+            if (evt.type === 'start') {
+              finalMeta = { ...finalMeta, source: evt.source, verifiedModel: evt.model };
+            }
+            if (evt.type === 'chunk' && typeof evt.text === 'string') {
+              accumulated += evt.text;
+              onChunk(accumulated, finalMeta);
+            }
+            if (evt.type === 'done') {
+              finalMeta = {
+                ...evt,
+                elapsedSec: ((Date.now() - startMs) / 1000).toFixed(1),
+              };
+            }
+          }
+        }
+
+        if (!accumulated) {
+          throw new Error('Empty response received from Gemini API.');
+        }
+
+        return { text: accumulated, meta: finalMeta };
+      };
+
+      const buildThoughtProcess = (meta: any) => {
+        const lines = [
+          `Verified Brain: ${meta?.source === 'gemini' ? 'Google Gemini API (Live)' : meta?.source || 'Verified Provider'}`,
+          `Model Executed: ${meta?.verifiedModel || meta?.model || selectedModel}`,
+        ];
+        if (meta?.modelVersion) lines.push(`Model Version: ${meta.modelVersion}`);
+        if (meta?.responseId) lines.push(`Response ID: ${meta.responseId}`);
+        if (meta?.usage?.totalTokens) {
+          lines.push(
+            `Tokens: ${meta.usage.promptTokens ?? 0} prompt + ${meta.usage.candidateTokens ?? 0} output = ${meta.usage.totalTokens} total`
+          );
+        }
+        if (typeof meta?.latencyMs === 'number') {
+          lines.push(`Server Latency: ${meta.latencyMs}ms`);
+        }
+        lines.push(`Grounding: Search (${Boolean(options?.enableSearch)}), Maps (${Boolean(options?.enableMaps)})`);
+        return lines.join('\n');
+      };
+
       // In-Memory Temporary Private Chat: Zero persistence to disk or backend
       if (isTemporaryChat) {
+        const tempMsgId = `m-${Date.now()}`;
         setTemporaryMessages((prev) => [...prev, userMessage]);
         setIsLoading(true);
 
         try {
           const history = temporaryMessages.slice(-6);
-          const response = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+          let insertedPlaceholder = false;
+
+          const { text: replyText, meta } = await streamChatRequest(
+            {
               prompt: text,
               mode: 'chat',
               model: selectedModel,
               enableSearch: options?.enableSearch,
               enableMaps: options?.enableMaps,
-              isTemporary: true, // Signal to backend: zero logging, zero persistence
+              isTemporary: true,
               messages: history.map((m) => ({
                 role: m.role,
                 content: m.content,
               })),
-            }),
-          });
+            },
+            (partialText, partialMeta) => {
+              if (!insertedPlaceholder) {
+                insertedPlaceholder = true;
+                setIsLoading(false);
+                setTemporaryMessages((prev) => [
+                  ...prev,
+                  {
+                    id: tempMsgId,
+                    role: 'model',
+                    content: partialText,
+                    model: partialMeta?.verifiedModel || selectedModel,
+                    verifiedSource: partialMeta?.source,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    isTemporary: true,
+                  },
+                ]);
+              } else {
+                setTemporaryMessages((prev) =>
+                  prev.map((m) => (m.id === tempMsgId ? { ...m, content: partialText } : m))
+                );
+              }
+            }
+          );
 
-          const contentType = response.headers.get('content-type') || '';
-          if (!contentType.includes('application/json')) {
-            throw new Error(
-              `Backend API returned non-JSON response (${response.status}). Make sure the RaOne backend server is running and reachable.`
-            );
-          }
-
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(data?.error || `Backend request failed (${response.status}).`);
-          }
-          const replyText = data.text || 'RaOne AI completed private synthesis.';
-
-          const modelMessage: ChatMessage = {
-            id: `m-${Date.now()}`,
+          const finalMsg: ChatMessage = {
+            id: tempMsgId,
             role: 'model',
             content: replyText,
-            model: data.model || selectedModel,
+            model: meta?.verifiedModel || meta?.model || selectedModel,
+            verifiedSource: meta?.source,
+            modelVersion: meta?.modelVersion,
+            responseId: meta?.responseId,
+            tokenUsage: meta?.usage,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            thinkingTime: '10s',
+            thinkingTime: `${meta?.elapsedSec || '0.5'}s`,
+            thoughtProcess: buildThoughtProcess(meta),
+            groundingSources: meta?.groundingSources,
+            mapsSources: meta?.mapsSources,
             isTemporary: true,
           };
 
-          setTemporaryMessages((prev) => [...prev, modelMessage]);
+          setTemporaryMessages((prev) =>
+            insertedPlaceholder
+              ? prev.map((m) => (m.id === tempMsgId ? finalMsg : m))
+              : [...prev, finalMsg]
+          );
 
           if (isVoiceModalOpen) {
             voice.speakText(replyText);
@@ -374,7 +504,7 @@ export default function App() {
           const errorMessage: ChatMessage = {
             id: `m-err-${Date.now()}`,
             role: 'model',
-            content: `⚠️ **Backend Connection Error:** ${err?.message || 'Unable to reach RaOne AI server.'}`,
+            content: `⚠️ **Backend / Gemini Error:** ${err?.message || 'Unable to reach RaOne AI server.'}`,
             model: selectedModel,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             isTemporary: true,
@@ -425,10 +555,11 @@ export default function App() {
 
       try {
         const history = isNewConv ? [] : activeConversation.messages.slice(-6);
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const streamMsgId = `m-${Date.now()}`;
+        let insertedPlaceholder = false;
+
+        const { text: replyText, meta } = await streamChatRequest(
+          {
             prompt: text,
             mode: 'chat',
             model: selectedModel,
@@ -438,43 +569,70 @@ export default function App() {
               role: m.role,
               content: m.content,
             })),
-          }),
-        });
-
-        const contentType = response.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-          throw new Error(
-            `Backend API returned non-JSON response (${response.status}). Make sure the RaOne backend server (server.ts) is deployed and connected.`
-          );
-        }
-
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data?.error || `Backend request failed (${response.status}).`);
-        }
-        const replyText = data.text || 'RaOne AI completed synthesis.';
+          },
+          (partialText, partialMeta) => {
+            if (!insertedPlaceholder) {
+              insertedPlaceholder = true;
+              setIsLoading(false);
+              const initialModelMsg: ChatMessage = {
+                id: streamMsgId,
+                role: 'model',
+                content: partialText,
+                model: partialMeta?.verifiedModel || selectedModel,
+                verifiedSource: partialMeta?.source,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              };
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === currentConvId
+                    ? { ...c, messages: [...c.messages, initialModelMsg], updatedAt: 'Just now' }
+                    : c
+                )
+              );
+            } else {
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === currentConvId
+                    ? {
+                        ...c,
+                        messages: c.messages.map((m) =>
+                          m.id === streamMsgId ? { ...m, content: partialText } : m
+                        ),
+                      }
+                    : c
+                )
+              );
+            }
+          }
+        );
 
         const modelMessage: ChatMessage = {
-          id: `m-${Date.now()}`,
+          id: streamMsgId,
           role: 'model',
           content: replyText,
-          model: data.model || selectedModel,
+          model: meta?.verifiedModel || meta?.model || selectedModel,
+          verifiedSource: meta?.source,
+          modelVersion: meta?.modelVersion,
+          responseId: meta?.responseId,
+          tokenUsage: meta?.usage,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          thinkingTime: '14s',
-          thoughtProcess: `Cognitive synthesis across RaOne AI vectors:\n- Model: ${data.model || selectedModel}\n- Multimodal groundings: Search (${Boolean(options?.enableSearch)}), Maps (${Boolean(options?.enableMaps)})\n- Invariant check: RaOne AI by RavanaTec — Think. Create. Act.`,
-          groundingSources: data.groundingSources,
-          mapsSources: data.mapsSources,
+          thinkingTime: `${meta?.elapsedSec || '0.5'}s`,
+          thoughtProcess: buildThoughtProcess(meta),
+          groundingSources: meta?.groundingSources,
+          mapsSources: meta?.mapsSources,
         };
 
         setConversations((prev) => {
           const updated = prev.map((c) => {
             if (c.id === currentConvId) {
+              const nextMessages = insertedPlaceholder
+                ? c.messages.map((m) => (m.id === streamMsgId ? modelMessage : m))
+                : [...c.messages, modelMessage];
               const updatedConv = {
                 ...c,
-                messages: [...c.messages, modelMessage],
+                messages: nextMessages,
                 updatedAt: 'Just now',
               };
-              // Save to backend
               fetch('/api/conversations', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -495,7 +653,7 @@ export default function App() {
         const errorMessage: ChatMessage = {
           id: `m-err-${Date.now()}`,
           role: 'model',
-          content: `⚠️ **Backend Connection Error:** ${err?.message || 'Unable to reach RaOne AI server.'}`,
+          content: `⚠️ **Backend / Gemini Error:** ${err?.message || 'Unable to reach RaOne AI server.'}`,
           model: selectedModel,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         };

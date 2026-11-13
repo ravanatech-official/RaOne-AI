@@ -65,7 +65,13 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
             onClick={() => setIsThinkingOpen(!isThinkingOpen)}
             className="flex items-center gap-1.5 text-xs text-[#8E8E8E] hover:text-[#B4B4B4] transition-colors py-1 px-1 rounded-md"
           >
-            <span>Worked for {message.thinkingTime || '14s'}</span>
+            <span>Worked for {message.thinkingTime || '1.0s'}</span>
+            {message.verifiedSource && (
+              <span className="text-[11px] text-emerald-400/90 font-mono">
+                · {message.verifiedSource === 'gemini' ? 'Gemini Verified' : message.verifiedSource}
+                {message.model ? ` (${message.model})` : ''}
+              </span>
+            )}
             {isThinkingOpen ? (
               <ChevronDown className="w-3.5 h-3.5" />
             ) : (

@@ -14,6 +14,14 @@ export interface ChatMessage {
   timestamp: string;
   mode?: Mode;
   model?: string;
+  verifiedSource?: string;
+  modelVersion?: string;
+  responseId?: string;
+  tokenUsage?: {
+    promptTokens?: number;
+    candidateTokens?: number;
+    totalTokens?: number;
+  };
   thinkingTime?: string;
   thoughtProcess?: string;
   sourcesCount?: number;
