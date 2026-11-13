@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { multiFactor } from 'firebase/auth';
+import { auth, logoutUser } from '../lib/firebase';
 import { resolveApiUrl } from '../utils/api';
 import {
   X,
@@ -92,8 +94,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [historyAndTraining, setHistoryAndTraining] = useState<boolean>(true);
   const [isConfirmDeleteAccountOpen, setIsConfirmDeleteAccountOpen] = useState<boolean>(false);
 
-  // Security State
-  const [mfaEnabled, setMfaEnabled] = useState<boolean>(false);
+  // Security State (Read from actual Firebase enrolled multi-factor state)
+  const [mfaFactorCount, setMfaFactorCount] = useState<number>(0);
   const [policiesData, setPoliciesData] = useState<any>(null);
   const [expandedPolicy, setExpandedPolicy] = useState<string | null>('privacyPolicy');
 
@@ -153,8 +155,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isOpen) {
       setProviderMode(activeProvider);
       setGroqTestResult(null);
+      if (auth?.currentUser) {
+        try {
+          setMfaFactorCount(multiFactor(auth.currentUser).enrolledFactors.length);
+        } catch {
+          setMfaFactorCount(0);
+        }
+      } else {
+        setMfaFactorCount(0);
+      }
+
       fetch('/api/user/settings')
-        .then((res) => res.json())
+        .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (data) {
             if (data.theme) setTheme(data.theme);
@@ -179,19 +191,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             if (data.dataControls) {
               setHistoryAndTraining(data.dataControls.historyAndTraining ?? true);
             }
-            if (data.security) {
-              setMfaEnabled(data.security.mfaEnabled ?? false);
-            }
           }
         })
         .catch(() => {});
 
       fetch('/api/keys')
-        .then((res) => res.json())
+        .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
-          setKeysConfigured(data);
-          if (data?.cometApiBaseUrl) {
-            setCometBaseUrl(data.cometApiBaseUrl);
+          if (data) {
+            setKeysConfigured(data);
+            if (data?.cometApiBaseUrl) {
+              setCometBaseUrl(data.cometApiBaseUrl);
+            }
           }
         })
         .catch(() => {});
@@ -288,22 +299,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         dataControls: {
           historyAndTraining,
         },
-        security: {
-          mfaEnabled,
-        },
       };
 
-      await fetch('/api/user/settings', {
+      const settingsRes = await fetch('/api/user/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      if (!settingsRes.ok) {
+        const errData = await settingsRes.json().catch(() => ({}));
+        setStatusNotice(errData?.error || 'Could not save settings.');
+        setTimeout(() => setStatusNotice(null), 3500);
+        return;
+      }
 
       if (onSelectProvider) onSelectProvider(providerMode);
 
-      // Save API keys if any entered or updated
-      if (geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || cometBaseUrl) {
-        await fetch('/api/keys', {
+      // Save API keys if any entered or updated (requires verified Firebase sign-in)
+      const hasAnyKeyChange = Boolean(
+        geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey
+      );
+      if (hasAnyKeyChange || (cometBaseUrl && cometBaseUrl !== (keysConfigured.cometApiBaseUrl || 'https://api.cometapi.com/v1'))) {
+        const keyRes = await fetch('/api/keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -317,6 +334,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             cometApiBaseUrl: cometBaseUrl || undefined,
           }),
         });
+        const keyData = await keyRes.json().catch(() => ({}));
+        if (!keyRes.ok) {
+          setStatusNotice(keyData?.error || 'Sign in with your account to save personal API keys.');
+          setTimeout(() => setStatusNotice(null), 4000);
+          return;
+        }
+        setGeminiKey('');
+        setGroqKey('');
+        setOpenAiKey('');
+        setAnthropicKey('');
+        setDeepSeekKey('');
+        setXaiKey('');
+        setCometKey('');
       }
 
       setSavedSuccess(true);
@@ -324,8 +354,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setSavedSuccess(false);
         onClose();
       }, 800);
-    } catch (err) {
-      console.warn('Could not save settings:', err);
+    } catch (err: any) {
+      setStatusNotice(err?.message || 'Could not save settings.');
+      setTimeout(() => setStatusNotice(null), 3500);
     }
   };
 
@@ -371,26 +402,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Delete all chats action
   const handleClearAllChats = async () => {
     try {
-      await fetch('/api/user/settings/clear-all-chats', { method: 'POST' });
+      const res = await fetch('/api/user/settings/clear-all-chats', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatusNotice(data?.error || 'Sign in required to purge server chat history.');
+        setTimeout(() => setStatusNotice(null), 3500);
+        return;
+      }
       if (onClearAllChats) onClearAllChats();
       setIsConfirmDeleteAllChatsOpen(false);
       setStatusNotice('All chat history was permanently deleted.');
       setTimeout(() => setStatusNotice(null), 3000);
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      setStatusNotice(e?.message || 'Failed to clear chat history.');
+      setTimeout(() => setStatusNotice(null), 3000);
     }
   };
 
-  // Export Data action
-  const handleExportData = () => {
-    const link = document.createElement('a');
-    link.href = resolveApiUrl('/api/user/settings/export-data');
-    link.download = 'raone-workspace-export.json';
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // Export Data action (uses authenticated fetch -> Blob download so Bearer token is preserved)
+  const handleExportData = async () => {
+    try {
+      const res = await fetch(resolveApiUrl('/api/user/settings/export-data'));
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setStatusNotice(data?.error || 'Please sign in to export your account workspace.');
+        setTimeout(() => setStatusNotice(null), 3500);
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = 'raone-workspace-export.json';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+      setStatusNotice('Workspace export downloaded.');
+      setTimeout(() => setStatusNotice(null), 2500);
+    } catch (err: any) {
+      setStatusNotice(err?.message || 'Export failed.');
+      setTimeout(() => setStatusNotice(null), 3000);
+    }
   };
 
   // Memory deletion
@@ -880,46 +933,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 5. SECURITY TAB */}
             {activeTab === 'security' && (
               <div className="space-y-5">
-                {/* Multi-Factor Authentication */}
+                {/* Multi-Factor Authentication (Verified from Firebase Auth enrolledFactors) */}
                 <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
                   <div>
                     <div className="text-sm font-semibold text-white">Multi-factor authentication (MFA)</div>
                     <div className="text-[11px] text-[#8e8e8e]">
-                      Require an extra security verification code when logging in
+                      {auth?.currentUser
+                        ? mfaFactorCount > 0
+                          ? `Firebase MFA active (${mfaFactorCount} verified factor${mfaFactorCount > 1 ? 's' : ''})`
+                          : 'No MFA factors enrolled on this Firebase Auth account'
+                        : 'Sign in with Firebase Auth to view enrolled MFA status'}
                     </div>
                   </div>
-                  <button
-                    onClick={() => {
-                      setMfaEnabled(!mfaEnabled);
-                      setStatusNotice(mfaEnabled ? 'MFA disabled' : 'MFA enabled successfully');
-                      setTimeout(() => setStatusNotice(null), 2500);
-                    }}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                      mfaEnabled
-                        ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
-                        : 'bg-[#242424] hover:bg-[#303030] border border-[#383838] text-white'
+                  <span
+                    className={`px-3 py-1 rounded-xl text-xs font-semibold border ${
+                      mfaFactorCount > 0
+                        ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                        : 'bg-[#242424] border-[#383838] text-[#9e9e9e]'
                     }`}
                   >
-                    {mfaEnabled ? 'Enabled' : 'Enable'}
-                  </button>
+                    {mfaFactorCount > 0 ? `Enrolled (${mfaFactorCount})` : 'Not enrolled'}
+                  </span>
                 </div>
 
-                {/* Log out of all devices */}
+                {/* Sign out active session */}
                 <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
                   <div>
-                    <div className="text-sm font-semibold text-white">Log out of all devices</div>
+                    <div className="text-sm font-semibold text-white">Sign out of current session</div>
                     <div className="text-[11px] text-[#8e8e8e]">
-                      Terminate all active web and mobile sessions for your account
+                      End your authenticated Firebase session in this browser
                     </div>
                   </div>
                   <button
-                    onClick={() => {
-                      setStatusNotice('Logged out of all other sessions.');
+                    onClick={async () => {
+                      await logoutUser();
+                      setStatusNotice('Signed out of current Firebase session.');
                       setTimeout(() => setStatusNotice(null), 2500);
                     }}
                     className="px-3.5 py-1.5 rounded-xl bg-[#242424] hover:bg-[#303030] border border-[#383838] text-white text-xs font-medium transition-colors"
                   >
-                    Log out all
+                    Sign out
                   </button>
                 </div>
 
@@ -1454,11 +1507,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="p-4 rounded-2xl bg-[#1c1c1c] border border-[#2a2a2a] space-y-3">
                   <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
                     <span className="text-[#8e8e8e]">Account Name</span>
-                    <span className="text-white font-medium">Shanthapriya Silva</span>
+                    <span className="text-white font-medium">
+                      {auth?.currentUser?.displayName || (auth?.currentUser ? 'Authenticated User' : 'Guest Session')}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
                     <span className="text-[#8e8e8e]">Email Address</span>
-                    <span className="text-white font-mono">info.ravanatech@gmail.com</span>
+                    <span className="text-white font-mono">
+                      {auth?.currentUser?.email || 'Sign in to link account'}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
                     <span className="text-[#8e8e8e]">Platform Provider</span>
@@ -1466,7 +1523,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-[#8e8e8e]">Encryption Architecture</span>
-                    <span className="text-emerald-400">Zero-Knowledge Sovereign Proxy</span>
+                    <span className="text-emerald-400">AES-256-GCM Per-Tenant Vault</span>
                   </div>
                 </div>
               </div>
@@ -1650,7 +1707,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
               <button
                 onClick={async () => {
-                  await fetch('/api/user/settings/delete-account', { method: 'POST' });
+                  const res = await fetch('/api/user/settings/delete-account', { method: 'POST' });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    setIsConfirmDeleteAccountOpen(false);
+                    setStatusNotice(data?.error || 'Sign in required to delete account workspace.');
+                    setTimeout(() => setStatusNotice(null), 3500);
+                    return;
+                  }
                   if (onClearAllChats) onClearAllChats();
                   setIsConfirmDeleteAccountOpen(false);
                   onClose();

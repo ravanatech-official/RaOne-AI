@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Check, Sparkles, Zap, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Check, Sparkles, Zap, ShieldCheck, AlertTriangle } from 'lucide-react';
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -17,12 +17,28 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [isUpgrading, setIsUpgrading] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [creditsBalance, setCreditsBalance] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setErrorMessage(null);
+    fetch('/api/user/plan')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (typeof data?.creditsBalance === 'number') {
+          setCreditsBalance(data.creditsBalance);
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSelectPlan = async (plan: 'free' | 'plus' | 'ultimate') => {
     if (plan === currentPlan) return;
     setIsUpgrading(true);
+    setErrorMessage(null);
 
     try {
       const response = await fetch('/api/user/plan', {
@@ -31,17 +47,24 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
         body: JSON.stringify({ plan, billingCycle }),
       });
 
-      const data = await response.json();
-      if (data.success) {
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.success) {
         onPlanChanged(plan);
+        if (typeof data.creditsBalance === 'number') {
+          setCreditsBalance(data.creditsBalance);
+        }
         setSuccessMessage(`Successfully switched to ${plan.toUpperCase()} plan!`);
         setTimeout(() => {
           setSuccessMessage(null);
           onClose();
         }, 1500);
+      } else {
+        setErrorMessage(
+          data?.error || 'Paid tier upgrades require verified authentication and billing checkout.'
+        );
       }
-    } catch (err) {
-      console.error('Plan upgrade error:', err);
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Unable to reach billing service.');
     } finally {
       setIsUpgrading(false);
     }
@@ -53,7 +76,14 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-[#262626] flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Upgrade your plan</h2>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Upgrade your plan</h2>
+              {creditsBalance !== null && (
+                <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                  {creditsBalance} credits available
+                </span>
+              )}
+            </div>
             <p className="text-xs text-[#8e8e8e] mt-0.5">
               Unlock higher limits, sovereign models, and expanded synthesis capabilities.
             </p>
@@ -66,11 +96,17 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
           </button>
         </div>
 
-        {/* Success toast banner (if any) */}
+        {/* Success / Error toast banners */}
         {successMessage && (
           <div className="mx-5 mt-2.5 p-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-medium flex items-center gap-2 animate-in fade-in shrink-0">
             <Check className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>{successMessage}</span>
+          </div>
+        )}
+        {errorMessage && (
+          <div className="mx-5 mt-2.5 p-2.5 rounded-lg bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-medium flex items-center gap-2 animate-in fade-in shrink-0">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <span>{errorMessage}</span>
           </div>
         )}
 

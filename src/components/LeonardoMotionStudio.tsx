@@ -202,10 +202,12 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
           model: selectedModel,
         }),
       });
-      const data = await res.json();
-      if (data.success && data.enhancedPrompt) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.enhancedPrompt) {
         setPrompt(data.enhancedPrompt);
         showToast('Video prompt enhanced.');
+      } else {
+        showToast(data?.error || 'Prompt enhancement unavailable.');
       }
     } catch {
       showToast('Enhancement failed.');
@@ -267,11 +269,13 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       });
-      const data = await res.json();
-      if (data.success && data.item) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.item) {
         setVideoFeed((prev) => prev.map((v) => (v.id === id ? data.item : v)));
         if (selectedVideo?.id === id) setSelectedVideo(data.item);
         showToast(`${label} complete.`);
+      } else {
+        showToast(data?.error || `${label} requires an external FFmpeg/GPU worker.`);
       }
     } catch {
       showToast(`${label} failed.`);

@@ -130,10 +130,12 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, style: selectedStyle }),
       });
-      const data = await res.json();
-      if (data.enhancedPrompt) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.enhancedPrompt) {
         setPrompt(data.enhancedPrompt);
         showToast('Prompt enhanced.');
+      } else {
+        showToast(data?.error || 'Prompt enhancement failed.');
       }
     } catch {
       showToast('Failed to enhance prompt.');
@@ -277,8 +279,8 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
         setGalleryItems((prev) =>
           prev.map((item) =>
             item.id === id
@@ -294,6 +296,8 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
           );
         }
         showToast('Upscaled to 4K resolution.');
+      } else {
+        showToast(data?.error || '4x upscale requires an external GPU worker.');
       }
     } catch {
       showToast('Upscale failed.');

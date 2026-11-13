@@ -75,18 +75,18 @@ export function synthesizeFullProject(
     },
     {
       step: 4,
-      phase: 'Verification & Diagnostics',
-      title: 'DOM Event Hooks & Runtime Validation',
+      phase: 'Sandboxed Assembly',
+      title: 'Isolated Preview Bundle & Schema Binding',
       status: 'complete' as const,
-      details: `Verified syntax, responsive viewports (Mobile/Tablet/Desktop), localStorage synchronization, and keyboard accessibility. 0 errors, 0 warnings.`,
+      details: `Packaged HTML/CSS/JS bundle, responsive viewport rules, and localStorage persistence bindings (no automated test suite executed).`,
       timestamp: now,
     },
     {
       step: 5,
-      phase: 'Production Launch',
-      title: 'Sandbox Container Deployment',
+      phase: 'Preview Ready',
+      title: 'Isolated Preview Frame Deployment',
       status: 'complete' as const,
-      details: `Application packaged into autonomous sandbox runtime. Live execution verified and operational.`,
+      details: `Loaded into an opaque origin-isolated preview iframe for interactive inspection.`,
       timestamp: now,
     },
   ];
@@ -97,8 +97,8 @@ export function synthesizeFullProject(
     description: prompt,
     category: resolveCategory(prompt, category),
     icon: resolveCategoryIcon(prompt, category),
-    tag: 'Verified Product',
-    author: 'RaOne Senior SWE Agent',
+    tag: 'Template Synthesized',
+    author: 'RaOne Code Studio',
     createdAt: now,
     updatedAt: now,
     code,
@@ -457,12 +457,10 @@ This document specifies the software architecture for **${title}**, engineered b
 - Immutable update pipelines for state transitions.
 - Client-side data sanitation on all user inputs.
 
-## 4. Verification Checklist
-- [x] Zero external backend dependencies for core UI loop.
-- [x] Mobile & tablet responsive breakpoints.
-- [x] Export to JSON / CSV / Image functional.
-- [x] Keyboard shortcuts registered (Escape, Enter, Quick Filter).
-- [x] Verified in Chromium, WebKit, and Gecko runtimes.
+## 4. Preview & Verification Scope
+- [x] Single-file isolated preview bundle generated.
+- [ ] Automated cross-browser & unit tests (run locally after export).
+- [ ] Production deployment verification pending user review.
 `;
 }
 

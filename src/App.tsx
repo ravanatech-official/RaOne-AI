@@ -3,45 +3,73 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, Suspense } from 'react';
 import { Sidebar } from './components/Sidebar.tsx';
 import { ChatHeader } from './components/ChatHeader.tsx';
 import { ChatMessageItem } from './components/ChatMessageItem.tsx';
 import { ChatInputDock } from './components/ChatInputDock.tsx';
 import { OutputDrawer } from './components/OutputDrawer.tsx';
-import { SettingsModal } from './components/SettingsModal.tsx';
 import { VoiceModal } from './components/VoiceModal.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { AIStudioHubModal } from './components/AIStudioHubModal.tsx';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal.tsx';
-import { UpgradeModal } from './components/UpgradeModal.tsx';
-import { GoogleAIStudioWorkbench } from './components/GoogleAIStudioWorkbench.tsx';
-import { LeonardoVisionStudio } from './components/LeonardoVisionStudio.tsx';
-import { LeonardoMotionStudio } from './components/LeonardoMotionStudio.tsx';
-import { SunoAudioStudio } from './components/SunoAudioStudio.tsx';
-import { DocumentAIStudio } from './components/DocumentAIStudio.tsx';
-import { LibraryWindow } from './components/LibraryWindow.tsx';
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage, ProjectItem } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
-import { ImageIcon, Code, Brain, Lightbulb } from 'lucide-react';
 
-const STORAGE_KEY = 'raone_conversations_v2';
+const SettingsModal = React.lazy(() =>
+  import('./components/SettingsModal.tsx').then((m) => ({ default: m.SettingsModal }))
+);
+const UpgradeModal = React.lazy(() =>
+  import('./components/UpgradeModal.tsx').then((m) => ({ default: m.UpgradeModal }))
+);
+const GoogleAIStudioWorkbench = React.lazy(() =>
+  import('./components/GoogleAIStudioWorkbench.tsx').then((m) => ({
+    default: m.GoogleAIStudioWorkbench,
+  }))
+);
+const LeonardoVisionStudio = React.lazy(() =>
+  import('./components/LeonardoVisionStudio.tsx').then((m) => ({
+    default: m.LeonardoVisionStudio,
+  }))
+);
+const LeonardoMotionStudio = React.lazy(() =>
+  import('./components/LeonardoMotionStudio.tsx').then((m) => ({
+    default: m.LeonardoMotionStudio,
+  }))
+);
+const SunoAudioStudio = React.lazy(() =>
+  import('./components/SunoAudioStudio.tsx').then((m) => ({ default: m.SunoAudioStudio }))
+);
+const DocumentAIStudio = React.lazy(() =>
+  import('./components/DocumentAIStudio.tsx').then((m) => ({ default: m.DocumentAIStudio }))
+);
+const LibraryWindow = React.lazy(() =>
+  import('./components/LibraryWindow.tsx').then((m) => ({ default: m.LibraryWindow }))
+);
+
+function getConversationsStorageKey(uid?: string | null): string {
+  return `raone_conversations_v2_${uid || 'guest'}`;
+}
+
+function readCachedConversations(uid?: string | null): Conversation[] {
+  try {
+    const saved = localStorage.getItem(getConversationsStorageKey(uid));
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (e) {
+    console.warn('LocalStorage reading error:', e);
+  }
+  return [];
+}
 
 export default function App() {
-  // Real conversations persisted in LocalStorage & Backend (Zero hardcoded mock data)
-  const [conversations, setConversations] = useState<Conversation[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      console.warn('LocalStorage reading error:', e);
-    }
-    return [];
-  });
+  // Real conversations persisted per-tenant in LocalStorage & Backend (Zero hardcoded mock data)
+  const [conversations, setConversations] = useState<Conversation[]>(() =>
+    readCachedConversations('guest')
+  );
 
   const [activeId, setActiveId] = useState<string>(() => {
     return conversations[0]?.id || 'new';
@@ -154,20 +182,34 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [isAuthModalOpen, isSettingsOpen, isShortcutsOpen, isStudioHubOpen, isVoiceModalOpen, isUpgradeModalOpen, isGoogleAIStudioOpen]);
 
-  // Load user subscription plan & persisted provider/model settings from backend API
+  const activeUid = currentUser?.uid || null;
+
+  // Hydrate tenant workspace data from backend whenever the authenticated user changes
   useEffect(() => {
+    let cancelled = false;
+    const tenantCached = readCachedConversations(activeUid);
+    setConversations(tenantCached);
+    setActiveId(tenantCached[0]?.id || 'new');
+    setActiveProjectId(null);
+
+    if (!activeUid) {
+      setCurrentPlan('free');
+      setProjects([]);
+    }
+
     fetch('/api/user/plan')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data?.plan && ['free', 'plus', 'ultimate'].includes(data.plan)) {
+        if (!cancelled && data?.plan && ['free', 'plus', 'ultimate'].includes(data.plan)) {
           setCurrentPlan(data.plan);
         }
       })
       .catch((err) => console.warn('Plan fetch note:', err));
 
     fetch('/api/user/settings')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
+        if (cancelled || !data) return;
         if (data?.activeProvider && ['auto', 'gemini', 'groq'].includes(data.activeProvider)) {
           setActiveProvider(data.activeProvider);
         }
@@ -178,23 +220,19 @@ export default function App() {
       .catch((err) => console.warn('Settings hydration note:', err));
 
     fetch('/api/projects')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (Array.isArray(data)) {
+        if (!cancelled && Array.isArray(data)) {
           setProjects(data);
         }
       })
       .catch((err) => console.warn('Projects hydration note:', err));
-  }, []);
 
-  // Load persisted conversations from backend API on initial mount
-  useEffect(() => {
     fetch('/api/conversations')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
+        if (!cancelled && Array.isArray(data) && data.length > 0) {
           setConversations((prev) => {
-            // Merge backend data with local if needed
             if (prev.length === 0) {
               setActiveId(data[0].id);
               return data;
@@ -204,16 +242,20 @@ export default function App() {
         }
       })
       .catch((err) => console.warn('Backend conversations sync note:', err));
-  }, []);
 
-  // Sync to localStorage
+    return () => {
+      cancelled = true;
+    };
+  }, [activeUid]);
+
+  // Sync to UID-scoped localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+      localStorage.setItem(getConversationsStorageKey(activeUid), JSON.stringify(conversations));
     } catch (err) {
       console.warn('LocalStorage save error:', err);
     }
-  }, [conversations]);
+  }, [conversations, activeUid]);
 
   // Auth subscription
   useEffect(() => {
@@ -867,15 +909,17 @@ export default function App() {
 
       {/* Main Chat Workspace or Library Window */}
       {isLibraryOpen ? (
-        <LibraryWindow
-          isSidebarOpen={isSidebarOpen}
-          onOpenSidebar={() => setIsSidebarOpen(true)}
-          onOpenVisionStudio={() => setIsVisionStudioOpen(true)}
-          onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
-          onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
-          onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
-          onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
-        />
+        <Suspense fallback={null}>
+          <LibraryWindow
+            isSidebarOpen={isSidebarOpen}
+            onOpenSidebar={() => setIsSidebarOpen(true)}
+            onOpenVisionStudio={() => setIsVisionStudioOpen(true)}
+            onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
+            onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
+            onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
+            onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
+          />
+        </Suspense>
       ) : (
       <div className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden relative bg-[#000000]">
         {/* Top Header */}
@@ -1031,25 +1075,29 @@ export default function App() {
       />
 
       {/* Settings Modal (100% ChatGPT Settings Center) */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        selectedModel={selectedModel}
-        onSelectModel={setSelectedModel}
-        activeProvider={activeProvider}
-        onSelectProvider={setActiveProvider}
-        isContinuousWakeListening={voice.isContinuousWakeListening}
-        onToggleContinuousWake={voice.toggleContinuousWakeListening}
-        currentPlan={currentPlan}
-        onOpenUpgrade={() => {
-          setIsSettingsOpen(false);
-          setIsUpgradeModalOpen(true);
-        }}
-        onClearAllChats={() => {
-          setConversations([]);
-          setActiveId('new');
-        }}
-      />
+      <Suspense fallback={null}>
+        {isSettingsOpen && (
+          <SettingsModal
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            selectedModel={selectedModel}
+            onSelectModel={setSelectedModel}
+            activeProvider={activeProvider}
+            onSelectProvider={setActiveProvider}
+            isContinuousWakeListening={voice.isContinuousWakeListening}
+            onToggleContinuousWake={voice.toggleContinuousWakeListening}
+            currentPlan={currentPlan}
+            onOpenUpgrade={() => {
+              setIsSettingsOpen(false);
+              setIsUpgradeModalOpen(true);
+            }}
+            onClearAllChats={() => {
+              setConversations([]);
+              setActiveId('new');
+            }}
+          />
+        )}
+      </Suspense>
 
       {/* Keyboard Shortcuts Helper Modal (Accessible with ? or from UI) */}
       <KeyboardShortcutsModal
@@ -1094,43 +1142,57 @@ export default function App() {
         }}
       />
 
-      {/* Subscription Plans Modal (Free, Plus, Ultimate) */}
-      <UpgradeModal
-        isOpen={isUpgradeModalOpen}
-        onClose={() => setIsUpgradeModalOpen(false)}
-        currentPlan={currentPlan}
-        onPlanChanged={(newPlan) => setCurrentPlan(newPlan)}
-      />
+      <Suspense fallback={null}>
+        {/* Subscription Plans Modal (Free, Plus, Ultimate) */}
+        {isUpgradeModalOpen && (
+          <UpgradeModal
+            isOpen={isUpgradeModalOpen}
+            onClose={() => setIsUpgradeModalOpen(false)}
+            currentPlan={currentPlan}
+            onPlanChanged={(newPlan) => setCurrentPlan(newPlan)}
+          />
+        )}
 
-      {/* Google AI Studio Developer Workbench & Model Playground */}
-      <GoogleAIStudioWorkbench
-        isOpen={isGoogleAIStudioOpen}
-        onClose={() => setIsGoogleAIStudioOpen(false)}
-      />
+        {/* Google AI Studio Developer Workbench & Model Playground */}
+        {isGoogleAIStudioOpen && (
+          <GoogleAIStudioWorkbench
+            isOpen={isGoogleAIStudioOpen}
+            onClose={() => setIsGoogleAIStudioOpen(false)}
+          />
+        )}
 
-      {/* Leonardo AI Vision Studio (Silicon Valley Grade T2I Engine) */}
-      <LeonardoVisionStudio
-        isOpen={isVisionStudioOpen}
-        onClose={() => setIsVisionStudioOpen(false)}
-      />
+        {/* Leonardo AI Vision Studio (Silicon Valley Grade T2I Engine) */}
+        {isVisionStudioOpen && (
+          <LeonardoVisionStudio
+            isOpen={isVisionStudioOpen}
+            onClose={() => setIsVisionStudioOpen(false)}
+          />
+        )}
 
-      {/* RaOne Cinema Studio (Leonardo AI Motion & Video Diffusion Engine) */}
-      <LeonardoMotionStudio
-        isOpen={isMotionStudioOpen}
-        onClose={() => setIsMotionStudioOpen(false)}
-      />
+        {/* RaOne Cinema Studio (Leonardo AI Motion & Video Diffusion Engine) */}
+        {isMotionStudioOpen && (
+          <LeonardoMotionStudio
+            isOpen={isMotionStudioOpen}
+            onClose={() => setIsMotionStudioOpen(false)}
+          />
+        )}
 
-      {/* RaOne Suno Audio Studio (AI Music & Vocals Synthesis) */}
-      <SunoAudioStudio
-        isOpen={isAudioStudioOpen}
-        onClose={() => setIsAudioStudioOpen(false)}
-      />
+        {/* RaOne Suno Audio Studio (AI Music & Vocals Synthesis) */}
+        {isAudioStudioOpen && (
+          <SunoAudioStudio
+            isOpen={isAudioStudioOpen}
+            onClose={() => setIsAudioStudioOpen(false)}
+          />
+        )}
 
-      {/* RaOne DocuStudio (NotebookLM + Gamma App + Microsoft Copilot) */}
-      <DocumentAIStudio
-        isOpen={isDocumentStudioOpen}
-        onClose={() => setIsDocumentStudioOpen(false)}
-      />
+        {/* RaOne DocuStudio (NotebookLM + Gamma App + Microsoft Copilot) */}
+        {isDocumentStudioOpen && (
+          <DocumentAIStudio
+            isOpen={isDocumentStudioOpen}
+            onClose={() => setIsDocumentStudioOpen(false)}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

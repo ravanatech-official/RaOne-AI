@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
@@ -25,6 +26,35 @@ import {
   appendRuntimeMetadata,
   buildRaOneSystemPrompt,
 } from './src/lib/systemPrompts.ts';
+import {
+  attachRequestId,
+  resolveActorMiddleware,
+  requireVerifiedAuth,
+  sendApiError,
+  validateSafeHttpsEgress,
+  createSlidingWindowLimiter,
+} from './server_security.ts';
+import {
+  readTenantCollection,
+  mutateTenantCollection,
+  getTenantByokKeys,
+  saveTenantByokKeys,
+  getTenantPlan,
+  getTenantCreditBalance,
+  reserveCredits,
+  refundCredits,
+  exportAllTenantData,
+  purgeAllTenantData,
+  PLAN_ALLOWANCES,
+  type PlanState,
+} from './server_tenant_store.ts';
+import {
+  generateTrueDocxBuffer,
+  generateTruePptxBuffer,
+  generateTrueXlsxBuffer,
+  generateTruePdfBuffer,
+} from './server_exports.ts';
+import { extractTextFromUploadedBase64 } from './server_uploads.ts';
 
 dotenv.config();
 
@@ -36,13 +66,14 @@ const port = process.env.PORT || 3000;
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+app.use(attachRequestId);
 
 // HTTP Security Headers Middleware (Production-hardened + AI Studio iFrame-compatible)
 app.use((req, res, next) => {
   const isDevPreview = process.env.NODE_ENV !== 'production';
   const isIframeNav = req.headers['sec-fetch-dest'] === 'iframe';
   const isApiRoute = req.path.startsWith('/api');
-  const allowIframe = (isDevPreview || isIframeNav) && !isApiRoute;
+  const allowIframe = isDevPreview && isIframeNav && !isApiRoute;
 
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -56,169 +87,126 @@ app.use((req, res, next) => {
     'Content-Security-Policy',
     [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com https://apis.google.com",
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com",
+      "script-src 'self' 'unsafe-inline' https://apis.google.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
       "media-src 'self' data: blob: https:",
-      "frame-src 'self' data: blob: https:",
+      "frame-src 'self' blob:",
       "worker-src 'self' blob:",
-      "connect-src 'self' ws: wss: data: blob: https:",
+      "connect-src 'self' ws: wss: https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://raone-ai-backend-348832701843.asia-southeast1.run.app",
       allowIframe ? 'frame-ancestors *' : "frame-ancestors 'none'",
     ].join('; ')
   );
   next();
 });
 
-// Sliding-Window API Rate Limiter (150 req/min per IP on /api/*, skipping /api/health)
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX_REQUESTS = 150;
-const apiRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+// Strict Origin Allowlist CORS (Never reflects untrusted origins with credentials)
+const BUILTIN_ALLOWED_ORIGINS = [
+  'https://raoneai.web.app',
+  'https://raoneai.firebaseapp.com',
+  'https://raone-ai-backend-348832701843.asia-southeast1.run.app',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
 
-app.use('/api', (req, res, next) => {
-  if (req.path === '/health' || req.method === 'OPTIONS') {
-    return next();
-  }
-  const now = Date.now();
-  if (apiRateLimitMap.size > 5000) {
-    for (const [k, v] of apiRateLimitMap.entries()) {
-      if (v.resetAt <= now) apiRateLimitMap.delete(k);
-    }
-  }
-  const forwarded = req.headers['x-forwarded-for'];
-  const clientIp =
-    (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0]?.trim()) ||
-    req.ip ||
-    'unknown';
-
-  const existing = apiRateLimitMap.get(clientIp);
-  if (!existing || existing.resetAt <= now) {
-    apiRateLimitMap.set(clientIp, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
-    res.setHeader('X-RateLimit-Remaining', String(RATE_LIMIT_MAX_REQUESTS - 1));
-    return next();
-  }
-
-  existing.count += 1;
-  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - existing.count);
-  res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
-  res.setHeader('X-RateLimit-Remaining', String(remaining));
-  res.setHeader('X-RateLimit-Reset', String(Math.ceil(existing.resetAt / 1000)));
-
-  if (existing.count > RATE_LIMIT_MAX_REQUESTS) {
-    const retryAfterSec = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
-    res.setHeader('Retry-After', String(retryAfterSec));
-    return res.status(429).json({
-      error: 'Rate limit exceeded. Please wait before sending more requests.',
-      retryAfterSec,
-    });
-  }
-  next();
-});
-
-// Opt-in strict Firebase Auth guard (set REQUIRE_FIREBASE_AUTH=true to enforce Bearer token on user data routes)
-function requireOptionalFirebaseAuth(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-) {
-  if (process.env.REQUIRE_FIREBASE_AUTH !== 'true') {
-    return next();
-  }
-  const authHeader = req.headers.authorization || '';
-  if (!authHeader.startsWith('Bearer ') || authHeader.slice(7).trim().length < 20) {
-    return res.status(401).json({
-      error: 'Authentication required. Provide a valid Firebase ID Bearer token.',
-    });
-  }
-  next();
-}
-
-// CORS middleware so Firebase Hosting (raoneai.web.app) and external frontends can reach the backend
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
+function isOriginAllowed(origin: string): boolean {
+  const configured = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
+  if (configured.includes(origin) || BUILTIN_ALLOWED_ORIGINS.includes(origin)) {
+    return true;
+  }
+  if (/^https:\/\/raoneai--[a-z0-9-]+\.web\.app$/.test(origin)) {
+    return true;
+  }
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.run\.app$/.test(origin)
+  ) {
+    return true;
+  }
+  return false;
+}
 
-  if (configuredOrigins.length > 0 && origin && configuredOrigins.includes(origin)) {
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && isOriginAllowed(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-  } else if (configuredOrigins.length === 0) {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-    if (origin) res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Request-Id');
 
   if (req.method === 'OPTIONS') {
+    if (origin && !isOriginAllowed(origin)) {
+      return res.sendStatus(403);
+    }
     return res.sendStatus(204);
   }
   next();
 });
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Payload size guards (tight 2mb default; larger body only on explicit upload extraction route)
+app.use('/api/uploads/extract', express.json({ limit: '16mb' }));
+app.use((req, res, next) => {
+  if (req.path === '/api/uploads/extract') return next();
+  return express.json({ limit: '2mb' })(req, res, next);
+});
+app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
-// Conversations persistence file
-const CONVERSATIONS_FILE = path.join(__dirname, 'conversations_data.json');
+// Central Default-Deny Auth & Tenant Binding + True Sliding-Window Rate Limiters
+const apiStandardLimiter = createSlidingWindowLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 120,
+  keyPrefix: 'api_std',
+});
+const apiHeavyAiLimiter = createSlidingWindowLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 30,
+  keyPrefix: 'api_ai',
+});
 
-async function getStoredConversations(): Promise<any[]> {
-  try {
-    if (fs.existsSync(CONVERSATIONS_FILE)) {
-      const data = await fs.promises.readFile(CONVERSATIONS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch (err) {
-    console.warn('Notice: Reading conversations file:', err);
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next();
+  return resolveActorMiddleware(req, res, next);
+});
+
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next();
+  return apiStandardLimiter(req, res, next);
+});
+
+const getReqTenant = (req: express.Request): string =>
+  req.actor?.tenantId || 'guest_workspace';
+
+async function getTenantGeminiClient(req: express.Request): Promise<{
+  client: GoogleGenAI | null;
+  byok: Awaited<ReturnType<typeof getTenantByokKeys>>;
+}> {
+  const tenantId = getReqTenant(req);
+  const byok = await getTenantByokKeys(tenantId);
+  const key = byok.geminiApiKey || apiKey;
+  if (!key) return { client: null, byok };
+  if (byok.geminiApiKey && byok.geminiApiKey !== apiKey) {
+    return {
+      client: new GoogleGenAI({
+        apiKey: byok.geminiApiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      }),
+      byok,
+    };
   }
-  return [];
+  return { client: aiClient, byok };
 }
 
-async function saveStoredConversations(conversations: any[]): Promise<void> {
-  try {
-    await fs.promises.writeFile(CONVERSATIONS_FILE, JSON.stringify(conversations, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving conversations file:', err);
-  }
-}
+// Server startup initializes default fallback keys ONLY from environment variables (Secret Manager / Cloud Run)
+// Tenant BYOK keys are stored AES-256-GCM encrypted inside per-tenant vaults (data/tenants/<tenant>/byok_keys.json)
 
-// User Plan persistence file (Database storage layer)
-const USER_PLAN_FILE = path.join(__dirname, 'user_plan_data.json');
-
-async function getStoredUserPlan(): Promise<any> {
-  try {
-    if (fs.existsSync(USER_PLAN_FILE)) {
-      const data = await fs.promises.readFile(USER_PLAN_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (parsed && parsed.plan) return parsed;
-    }
-  } catch (err) {
-    console.warn('Notice: Reading user plan file:', err);
-  }
-  return {
-    plan: 'free',
-    billingCycle: 'monthly',
-    status: 'active',
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-async function saveStoredUserPlan(planData: any): Promise<void> {
-  try {
-    await fs.promises.writeFile(USER_PLAN_FILE, JSON.stringify(planData, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving user plan file:', err);
-  }
-}
-
-// User Settings Persistence (Database storage layer)
-const USER_SETTINGS_FILE = path.join(__dirname, 'user_settings_data.json');
-
+// Default settings template for new tenants
 const DEFAULT_SETTINGS = {
   theme: 'dark',
   accentColor: 'default',
@@ -228,18 +216,13 @@ const DEFAULT_SETTINGS = {
   selectedModel: 'gemini-3.8-flash',
   archivedChats: [] as string[],
   customInstructions: {
-    aboutUser: 'Software Engineer & Builder, prefers precise, complete, and high-level architectural solutions.',
-    responseStyle: 'Address me with high clarity and formidable capability. Support both Sinhala and English fluently. Sign responses with RaOne AI by RavanaTec — Think. Create. Act.',
+    aboutUser: '',
+    responseStyle: 'Support Sinhala and English fluently with concise, verified engineering output.',
     enabled: true,
   },
   memory: {
     enabled: true,
-    items: [
-      'Lives in Sri Lanka and prefers Colombo/IST timezone',
-      'Prefers clean React 19 + TypeScript + Tailwind CSS code',
-      'Communicates bilingually in Sinhala and English (Singlish supported)',
-      'Prefers Dark Mode UI with high contrast',
-    ],
+    items: [] as string[],
   },
   voice: {
     selectedVoice: 'Breeze',
@@ -247,7 +230,7 @@ const DEFAULT_SETTINGS = {
     wakeWordEnabled: true,
   },
   dataControls: {
-    historyAndTraining: true,
+    historyAndTraining: false,
     sharedLinks: [] as any[],
   },
   security: {
@@ -255,29 +238,16 @@ const DEFAULT_SETTINGS = {
   },
 };
 
-async function getStoredUserSettings(): Promise<any> {
-  try {
-    if (fs.existsSync(USER_SETTINGS_FILE)) {
-      const data = await fs.promises.readFile(USER_SETTINGS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (parsed) return { ...DEFAULT_SETTINGS, ...parsed };
-    }
-  } catch (err) {
-    console.warn('Notice: Reading user settings file:', err);
-  }
-  return DEFAULT_SETTINGS;
+async function getStoredUserSettings(tenantId = 'guest_workspace'): Promise<any> {
+  const parsed = await readTenantCollection<Record<string, any> | null>(tenantId, 'settings', null);
+  return parsed ? { ...DEFAULT_SETTINGS, ...parsed } : { ...DEFAULT_SETTINGS };
 }
 
-async function saveStoredUserSettings(settingsData: any): Promise<void> {
-  try {
-    await fs.promises.writeFile(USER_SETTINGS_FILE, JSON.stringify(settingsData, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving user settings file:', err);
-  }
+async function saveStoredUserSettings(settingsData: any, tenantId = 'guest_workspace'): Promise<void> {
+  await mutateTenantCollection<Record<string, any>>(tenantId, 'settings', DEFAULT_SETTINGS, () => settingsData);
 }
 
-// Google AI Studio Workbench Prompts (Database persistence)
-const STUDIO_PROMPTS_FILE = path.join(__dirname, 'studio_prompts_data.json');
+// Tenant-scoped Google AI Studio Workbench Prompts (Default templates cloned per tenant on first read)
 
 const DEFAULT_STUDIO_PROMPTS = [
   {
@@ -338,123 +308,36 @@ const DEFAULT_STUDIO_PROMPTS = [
   },
 ];
 
-async function getStoredStudioPrompts(): Promise<any[]> {
-  try {
-    if (fs.existsSync(STUDIO_PROMPTS_FILE)) {
-      const data = await fs.promises.readFile(STUDIO_PROMPTS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch (err) {
-    console.warn('Notice: Reading studio prompts file:', err);
-  }
-  return DEFAULT_STUDIO_PROMPTS;
+async function getStoredStudioPrompts(tenantId = 'guest_workspace'): Promise<any[]> {
+  return readTenantCollection<any[]>(tenantId, 'studio_prompts', DEFAULT_STUDIO_PROMPTS);
 }
 
-async function saveStoredStudioPrompts(prompts: any[]): Promise<void> {
-  try {
-    await fs.promises.writeFile(STUDIO_PROMPTS_FILE, JSON.stringify(prompts, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving studio prompts file:', err);
-  }
+async function saveStoredStudioPrompts(prompts: any[], tenantId = 'guest_workspace'): Promise<void> {
+  await mutateTenantCollection<any[]>(tenantId, 'studio_prompts', DEFAULT_STUDIO_PROMPTS, () => prompts);
 }
 
-// API Keys Storage (Persisted on server)
-const API_KEYS_FILE = path.join(__dirname, 'api_keys_storage.json');
-
-let apiKey = process.env.GEMINI_API_KEY || '';
-let aiClient: GoogleGenAI | null = null;
-let GROQ_API_KEY = process.env.GROQ_API_KEY || '';
-let OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-let ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-let DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
-let XAI_API_KEY = process.env.XAI_API_KEY || '';
-let COMET_API_KEY = process.env.COMET_API_KEY || '';
-let COMET_API_BASE_URL = process.env.COMET_API_BASE_URL || 'https://api.cometapi.com/v1';
-
-function loadStoredApiKeys(): void {
-  try {
-    if (fs.existsSync(API_KEYS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(API_KEYS_FILE, 'utf-8'));
-      if (data.geminiApiKey) {
-        apiKey = data.geminiApiKey;
-        process.env.GEMINI_API_KEY = data.geminiApiKey;
-      }
-      if (data.groqApiKey) {
-        GROQ_API_KEY = data.groqApiKey;
-        process.env.GROQ_API_KEY = data.groqApiKey;
-      }
-      if (data.openAiApiKey) {
-        OPENAI_API_KEY = data.openAiApiKey;
-        process.env.OPENAI_API_KEY = data.openAiApiKey;
-      }
-      if (data.anthropicApiKey) {
-        ANTHROPIC_API_KEY = data.anthropicApiKey;
-        process.env.ANTHROPIC_API_KEY = data.anthropicApiKey;
-      }
-      if (data.deepSeekApiKey) {
-        DEEPSEEK_API_KEY = data.deepSeekApiKey;
-        process.env.DEEPSEEK_API_KEY = data.deepSeekApiKey;
-      }
-      if (data.xaiApiKey) {
-        XAI_API_KEY = data.xaiApiKey;
-        process.env.XAI_API_KEY = data.xaiApiKey;
-      }
-      if (data.cometApiKey) {
-        COMET_API_KEY = data.cometApiKey;
-        process.env.COMET_API_KEY = data.cometApiKey;
-      }
-      if (data.cometApiBaseUrl) {
-        COMET_API_BASE_URL = data.cometApiBaseUrl;
-        process.env.COMET_API_BASE_URL = data.cometApiBaseUrl;
-      }
-    }
-  } catch (err) {
-    console.warn('Notice: Reading api_keys_storage.json:', err);
-  }
-
-  if (apiKey) {
-    try {
-      aiClient = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-    } catch (e) {
-      console.warn('Notice initializing GoogleGenAI:', e);
-    }
-  }
-}
-
-loadStoredApiKeys();
-
-function saveStoredApiKeys(): void {
-  try {
-    const data = {
-      geminiApiKey: apiKey,
-      groqApiKey: GROQ_API_KEY,
-      openAiApiKey: OPENAI_API_KEY,
-      anthropicApiKey: ANTHROPIC_API_KEY,
-      deepSeekApiKey: DEEPSEEK_API_KEY,
-      xaiApiKey: XAI_API_KEY,
-      cometApiKey: COMET_API_KEY,
-      cometApiBaseUrl: COMET_API_BASE_URL,
-      updatedAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(API_KEYS_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving api_keys_storage.json:', err);
-  }
-}
+// Server Environment API Credentials (Read-only at runtime; never overwritten by end users - A04 & A07)
+const apiKey = process.env.GEMINI_API_KEY || '';
+const aiClient: GoogleGenAI | null = apiKey
+  ? new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    })
+  : null;
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const XAI_API_KEY = process.env.XAI_API_KEY || '';
+const COMET_API_KEY = process.env.COMET_API_KEY || '';
+const COMET_API_BASE_URL = process.env.COMET_API_BASE_URL || 'https://api.cometapi.com/v1';
 
 // Core RaOne AI Persona, Bilingual Fluency & Runtime Awareness are imported from ./src/lib/systemPrompts.ts (SYSTEM_PROMPT)
 
 // Helper: Call OpenAI
-async function callOpenAI(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
-  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on server');
+async function callOpenAI(modelName: string, messages: any[], systemPrompt: string, keyOverride?: string): Promise<string> {
+  const effectiveKey = keyOverride || OPENAI_API_KEY;
+  if (!effectiveKey) throw new Error('OPENAI_API_KEY is not configured');
   const formattedMessages = [
     { role: 'system', content: systemPrompt },
     ...messages.map((m: any) => ({
@@ -467,7 +350,7 @@ async function callOpenAI(modelName: string, messages: any[], systemPrompt: stri
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Authorization': `Bearer ${effectiveKey}`,
     },
     body: JSON.stringify({
       model: modelName,
@@ -477,7 +360,7 @@ async function callOpenAI(modelName: string, messages: any[], systemPrompt: stri
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`OpenAI API error (${response.status}): ${errText}`);
+    throw new Error(`OpenAI API error (${response.status}): ${errText.slice(0, 200)}`);
   }
 
   const json = await response.json();
@@ -485,8 +368,9 @@ async function callOpenAI(modelName: string, messages: any[], systemPrompt: stri
 }
 
 // Helper: Call Anthropic
-async function callAnthropic(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
-  if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on server');
+async function callAnthropic(modelName: string, messages: any[], systemPrompt: string, keyOverride?: string): Promise<string> {
+  const effectiveKey = keyOverride || ANTHROPIC_API_KEY;
+  if (!effectiveKey) throw new Error('ANTHROPIC_API_KEY is not configured');
   const formattedMessages = messages.map((m: any) => ({
     role: m.role === 'user' ? 'user' : 'assistant',
     content: m.content || (m.parts?.[0]?.text ?? ''),
@@ -496,7 +380,7 @@ async function callAnthropic(modelName: string, messages: any[], systemPrompt: s
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
+      'x-api-key': effectiveKey,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
@@ -509,7 +393,7 @@ async function callAnthropic(modelName: string, messages: any[], systemPrompt: s
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+    throw new Error(`Anthropic API error (${response.status}): ${errText.slice(0, 200)}`);
   }
 
   const json = await response.json();
@@ -517,8 +401,9 @@ async function callAnthropic(modelName: string, messages: any[], systemPrompt: s
 }
 
 // Helper: Call DeepSeek
-async function callDeepSeek(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
-  if (!DEEPSEEK_API_KEY) throw new Error('DEEPSEEK_API_KEY is not configured on server');
+async function callDeepSeek(modelName: string, messages: any[], systemPrompt: string, keyOverride?: string): Promise<string> {
+  const effectiveKey = keyOverride || DEEPSEEK_API_KEY;
+  if (!effectiveKey) throw new Error('DEEPSEEK_API_KEY is not configured');
   const formattedMessages = [
     { role: 'system', content: systemPrompt },
     ...messages.map((m: any) => ({
@@ -531,7 +416,7 @@ async function callDeepSeek(modelName: string, messages: any[], systemPrompt: st
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      'Authorization': `Bearer ${effectiveKey}`,
     },
     body: JSON.stringify({
       model: modelName,
@@ -541,22 +426,29 @@ async function callDeepSeek(modelName: string, messages: any[], systemPrompt: st
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`DeepSeek API error (${response.status}): ${errText}`);
+    throw new Error(`DeepSeek API error (${response.status}): ${errText.slice(0, 200)}`);
   }
 
   const json = await response.json();
   return json.choices?.[0]?.message?.content || '';
 }
 
-// Helper: Call CometAPI (All-In-One OpenAI-compatible Gateway - cometapi.com)
+// Helper: Call CometAPI (All-In-One OpenAI-compatible Gateway - SSRF validated)
 async function callCometAPI(
   modelName: string,
   messages: any[],
   systemPrompt: string,
-  extraParams: Record<string, any> = {}
+  extraParams: Record<string, any> = {},
+  keyOverride?: string,
+  baseUrlOverride?: string
 ): Promise<string> {
-  if (!COMET_API_KEY) throw new Error('COMET_API_KEY is not configured on server');
-  const baseUrl = (COMET_API_BASE_URL || 'https://api.cometapi.com/v1').replace(/\/+$/, '');
+  const effectiveKey = keyOverride || COMET_API_KEY;
+  if (!effectiveKey) throw new Error('COMET_API_KEY is not configured');
+  const rawBaseUrl = (baseUrlOverride || COMET_API_BASE_URL || 'https://api.cometapi.com/v1').replace(/\/+$/, '');
+  const egressCheck = await validateSafeHttpsEgress(rawBaseUrl);
+  if (!egressCheck.ok) {
+    throw new Error(`Blocked unsafe gateway URL: ${egressCheck.reason}`);
+  }
 
   const formattedMessages = [
     { role: 'system', content: systemPrompt },
@@ -566,11 +458,12 @@ async function callCometAPI(
     })),
   ];
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await fetch(`${rawBaseUrl}/chat/completions`, {
     method: 'POST',
+    redirect: 'error',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${COMET_API_KEY}`,
+      'Authorization': `Bearer ${effectiveKey}`,
     },
     body: JSON.stringify({
       model: modelName,
@@ -582,14 +475,14 @@ async function callCometAPI(
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`CometAPI error (${response.status}): ${errText}`);
+    throw new Error(`CometAPI error (${response.status}): ${errText.slice(0, 200)}`);
   }
 
   const json = await response.json();
   return json.choices?.[0]?.message?.content || '';
 }
 
-// Gemini model candidate resolver (supports AI Studio Gemini 4 aliases & public Gemini 2.5 GA models)
+// Gemini model candidate resolver
 function getGeminiModelCandidates(requestedModel: string): string[] {
   const m = String(requestedModel || '').toLowerCase();
   if (m.includes('argon') || m.includes('pro') || m === 'raone-claude' || m === 'raone-deepseek-r1') {
@@ -615,9 +508,11 @@ function isModelNotFoundError(err: any): boolean {
 async function generateWithGeminiFallback(
   contents: any,
   config: any,
-  requestedModel: string
+  requestedModel: string,
+  clientOverride?: GoogleGenAI | null
 ) {
-  if (!aiClient) {
+  const activeClient = clientOverride ?? aiClient;
+  if (!activeClient) {
     throw new Error('GEMINI_API_KEY is not configured on the backend server.');
   }
   const candidates = getGeminiModelCandidates(requestedModel);
@@ -639,7 +534,7 @@ async function generateWithGeminiFallback(
               }),
             }
           : config;
-      const response = await aiClient.models.generateContent({
+      const response = await activeClient.models.generateContent({
         model: modelId,
         contents,
         config: scopedConfig,
@@ -687,10 +582,12 @@ app.get('/api/health', async (req, res) => {
       models: GROQ_SERVICE_CONFIG.models.map((m) => m.groqModelId),
     },
     security: {
-      helmetHeaders: true,
-      rateLimitPerMin: RATE_LIMIT_MAX_REQUESTS,
+      securityHeaders: true,
+      slidingWindowRateLimitPerMin: 120,
+      heavyAiRateLimitPerMin: 30,
       firestoreRulesConfigured: fs.existsSync(path.join(__dirname, 'firestore.rules')),
       requireFirebaseAuth: process.env.REQUIRE_FIREBASE_AUTH === 'true',
+      byokEncryption: 'AES-256-GCM (Per-Tenant Isolated)',
     },
   };
 
@@ -826,175 +723,319 @@ app.get('/api/models', (_req, res) => {
   });
 });
 
-// User Plan Endpoints (Free, Plus, Ultimate)
-app.get('/api/user/plan', async (_req, res) => {
+// Capabilities Discovery Endpoint (Honest status per modality — never misleads users)
+app.get('/api/capabilities', (_req, res) => {
+  const hasGemini = Boolean(apiKey || process.env.GEMINI_API_KEY);
+  const hasGroq = Boolean(GROQ_API_KEY || process.env.GROQ_API_KEY);
+  const hasTextLlm = hasGemini || hasGroq || Boolean(OPENAI_API_KEY || ANTHROPIC_API_KEY || COMET_API_KEY);
+
+  res.json({
+    chat: { status: hasTextLlm ? 'real' : 'provider_required', streaming: true, attachments: ['pdf', 'docx', 'txt', 'md', 'csv', 'json'] },
+    codeStudio: { status: hasTextLlm ? 'real' : 'template_fallback', sandboxMode: 'opaque_iframe_isolated' },
+    vision: {
+      generate: hasGemini ? 'real' : 'provider_required',
+      enhancePrompt: hasTextLlm ? 'real' : 'provider_required',
+      upscale: 'requires_gpu_worker',
+      controlnet: 'requires_gpu_worker',
+      ipAdapter: 'requires_gpu_worker',
+      inpaint: 'requires_gpu_worker',
+      loraTrain: 'requires_gpu_worker',
+    },
+    cinema: {
+      generate: process.env.VIDEO_GENERATION_API_URL ? 'real' : 'provider_required',
+      enhancePrompt: hasTextLlm ? 'real' : 'provider_required',
+      extendInterpolateUpscale: 'requires_ffmpeg_worker',
+    },
+    audio: {
+      generate: process.env.AUDIO_SYNTHESIS_API_URL ? 'real' : 'provider_required',
+      enhanceLyrics: hasTextLlm ? 'real' : 'provider_required',
+      separateStems: 'requires_demucs_worker',
+      voiceClone: 'requires_voice_consent_worker',
+    },
+    documents: {
+      generate: hasTextLlm ? 'real' : 'provider_required',
+      analyze: hasTextLlm ? 'real' : 'provider_required',
+      uploads: ['pdf', 'docx', 'txt', 'md', 'csv'],
+      exports: ['docx', 'pptx', 'xlsx', 'pdf', 'md'],
+    },
+  });
+});
+
+// Binary Upload Text Extraction Endpoint (A22 & A27: Real PDF/DOCX/TXT ingestion)
+app.post('/api/uploads/extract', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const planData = await getStoredUserPlan();
-    res.json(planData);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { filename, mimeType, base64Data } = req.body || {};
+    if (!filename || !base64Data) {
+      return sendApiError(req, res, 400, 'INVALID_UPLOAD', 'filename and base64Data are required.');
+    }
+    const extracted = await extractTextFromUploadedBase64({ filename, mimeType, base64Data });
+    return res.json({ success: true, ...extracted });
+  } catch (err: any) {
+    return sendApiError(req, res, 400, 'UPLOAD_EXTRACTION_FAILED', err?.message || 'Could not extract uploaded file.');
   }
 });
 
-app.post('/api/user/plan', async (req, res) => {
+// Billing & Credits Ledger Endpoints (A09: Authoritative Credit & Plan Controls)
+app.get('/api/user/plan', async (req, res) => {
   try {
-    const { plan, billingCycle = 'monthly' } = req.body;
+    const tenantId = getReqTenant(req);
+    const [planData, creditInfo] = await Promise.all([
+      getTenantPlan(tenantId),
+      getTenantCreditBalance(tenantId),
+    ]);
+    res.json({
+      ...planData,
+      creditsBalance: creditInfo.balance,
+      recentLedger: creditInfo.entries.slice(-10).reverse(),
+    });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'PLAN_READ_ERROR', error.message);
+  }
+});
+
+app.post('/api/user/plan', requireVerifiedAuth, async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const { plan, billingCycle = 'monthly' } = req.body || {};
     if (!plan || !['free', 'plus', 'ultimate'].includes(plan)) {
-      return res.status(400).json({ error: 'Valid plan (free, plus, ultimate) is required' });
+      return sendApiError(req, res, 400, 'INVALID_PLAN', 'Valid plan (free, plus, ultimate) is required.');
     }
-    const updatedPlan = {
-      plan,
-      billingCycle,
-      status: 'active',
-      updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    };
-    await saveStoredUserPlan(updatedPlan);
+
+    // Paid tiers CANNOT be directly self-assigned without verified billing/webhook proof (A09)
+    if (plan !== 'free') {
+      return sendApiError(
+        req,
+        res,
+        402,
+        'BILLING_VERIFICATION_REQUIRED',
+        'Paid plan upgrades require a completed checkout and verified payment webhook settlement. Direct tier escalation is blocked.'
+      );
+    }
+
+    const updatedPlan = await mutateTenantCollection<PlanState>(
+      tenantId,
+      'plan',
+      {
+        plan: 'free',
+        billingCycle: 'monthly',
+        status: 'active',
+        monthlyAllowance: PLAN_ALLOWANCES.free,
+        updatedAt: new Date().toISOString(),
+      },
+      () => ({
+        plan: 'free',
+        billingCycle: billingCycle === 'yearly' ? 'yearly' : 'monthly',
+        status: 'active',
+        monthlyAllowance: PLAN_ALLOWANCES.free,
+        updatedAt: new Date().toISOString(),
+      })
+    );
     res.json({ success: true, plan: updatedPlan });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'PLAN_UPDATE_ERROR', error.message);
   }
 });
 
-app.post('/api/user/plan/cancel', async (_req, res) => {
+app.post('/api/user/plan/cancel', requireVerifiedAuth, async (req, res) => {
   try {
-    const freePlan = {
+    const tenantId = getReqTenant(req);
+    const freePlan: PlanState = {
       plan: 'free',
       billingCycle: 'monthly',
       status: 'active',
+      monthlyAllowance: PLAN_ALLOWANCES.free,
       updatedAt: new Date().toISOString(),
     };
-    await saveStoredUserPlan(freePlan);
+    await mutateTenantCollection<PlanState>(tenantId, 'plan', freePlan, () => freePlan);
     res.json({ success: true, plan: freePlan });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'PLAN_CANCEL_ERROR', error.message);
   }
 });
 
-// Settings Center REST Endpoints (100% ChatGPT Settings Center specification)
-app.get('/api/user/settings', requireOptionalFirebaseAuth, async (_req, res) => {
+// Payment Webhook Receiver (HMAC-SHA256 verified against STRIPE_WEBHOOK_SECRET / BILLING_WEBHOOK_SECRET)
+app.post('/api/billing/webhook', async (req, res) => {
   try {
-    const settings = await getStoredUserSettings();
+    const secret = process.env.BILLING_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
+    if (!secret) {
+      return sendApiError(
+        req,
+        res,
+        503,
+        'BILLING_WEBHOOK_NOT_CONFIGURED',
+        'Payment webhook verification secret is not configured on this server.'
+      );
+    }
+    const sig = String(req.headers['x-billing-signature'] || '');
+    const payloadString = JSON.stringify(req.body || {});
+    const expected = crypto.createHmac('sha256', secret).update(payloadString).digest('hex');
+    if (
+      !sig ||
+      sig.length !== expected.length ||
+      !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+    ) {
+      return sendApiError(req, res, 401, 'INVALID_WEBHOOK_SIGNATURE', 'Invalid webhook signature.');
+    }
+
+    const { tenantId, plan, billingCycle = 'monthly', eventId } = req.body || {};
+    if (!tenantId || !['free', 'plus', 'ultimate'].includes(plan)) {
+      return sendApiError(req, res, 400, 'INVALID_WEBHOOK_PAYLOAD', 'Valid tenantId and plan required.');
+    }
+
+    const updatedPlan: PlanState = {
+      plan,
+      billingCycle: billingCycle === 'yearly' ? 'yearly' : 'monthly',
+      status: 'active',
+      monthlyAllowance: PLAN_ALLOWANCES[plan as 'free' | 'plus' | 'ultimate'],
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    await mutateTenantCollection<PlanState>(tenantId, 'plan', updatedPlan, () => updatedPlan);
+    await refundCredits(tenantId, updatedPlan.monthlyAllowance, `plan_grant_${plan}`, `wh_${eventId || Date.now()}`);
+    return res.json({ received: true, plan: updatedPlan });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'WEBHOOK_ERROR', err.message);
+  }
+});
+
+// Tenant-Scoped Settings, Memory, Export & Account Deletion (A03, A10)
+app.get('/api/user/settings', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const settings = await getStoredUserSettings(tenantId);
     res.json(settings);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'SETTINGS_READ_ERROR', error.message);
   }
 });
 
-app.post('/api/user/settings', requireOptionalFirebaseAuth, async (req, res) => {
+app.post('/api/user/settings', async (req, res) => {
   try {
-    const incoming = req.body;
-    const current = await getStoredUserSettings();
-    const merged = { ...current, ...incoming };
-    await saveStoredUserSettings(merged);
+    const tenantId = getReqTenant(req);
+    const incoming = req.body || {};
+    const current = await getStoredUserSettings(tenantId);
+    // Prevent direct client spoofing of verified MFA status
+    const sanitizedIncoming = { ...incoming };
+    if (sanitizedIncoming.security) {
+      delete sanitizedIncoming.security;
+    }
+    const merged = { ...current, ...sanitizedIncoming };
+    await saveStoredUserSettings(merged, tenantId);
     res.json({ success: true, settings: merged });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'SETTINGS_SAVE_ERROR', error.message);
   }
 });
 
 app.post('/api/user/settings/memory/delete', async (req, res) => {
   try {
-    const { index } = req.body;
-    const current = await getStoredUserSettings();
+    const tenantId = getReqTenant(req);
+    const { index } = req.body || {};
+    const current = await getStoredUserSettings(tenantId);
     if (typeof index === 'number' && current.memory?.items) {
       current.memory.items = current.memory.items.filter((_: any, i: number) => i !== index);
-      await saveStoredUserSettings(current);
+      await saveStoredUserSettings(current, tenantId);
     }
     res.json({ success: true, memory: current.memory });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'MEMORY_DELETE_ERROR', error.message);
   }
 });
 
 app.post('/api/user/settings/memory/add', async (req, res) => {
   try {
-    const { item } = req.body;
-    const current = await getStoredUserSettings();
+    const tenantId = getReqTenant(req);
+    const { item } = req.body || {};
+    const current = await getStoredUserSettings(tenantId);
     if (item && typeof item === 'string') {
       current.memory = current.memory || { enabled: true, items: [] };
-      current.memory.items.push(item.trim());
-      await saveStoredUserSettings(current);
+      current.memory.items.push(item.trim().slice(0, 500));
+      await saveStoredUserSettings(current, tenantId);
     }
     res.json({ success: true, memory: current.memory });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'MEMORY_ADD_ERROR', error.message);
   }
 });
 
-app.post('/api/user/settings/memory/clear', async (_req, res) => {
+app.post('/api/user/settings/memory/clear', async (req, res) => {
   try {
-    const current = await getStoredUserSettings();
+    const tenantId = getReqTenant(req);
+    const current = await getStoredUserSettings(tenantId);
     if (current.memory) {
       current.memory.items = [];
-      await saveStoredUserSettings(current);
+      await saveStoredUserSettings(current, tenantId);
     }
     res.json({ success: true, memory: current.memory });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'MEMORY_CLEAR_ERROR', error.message);
   }
 });
 
-app.post('/api/user/settings/clear-all-chats', async (_req, res) => {
+app.post('/api/user/settings/clear-all-chats', requireVerifiedAuth, async (req, res) => {
   try {
-    // Clear all stored conversations on backend
-    await saveStoredConversations([]);
-    res.json({ success: true, message: 'All chat history cleared successfully' });
+    const tenantId = getReqTenant(req);
+    await mutateTenantCollection<any[]>(tenantId, 'conversations', [], () => []);
+    res.json({ success: true, message: 'All chat history cleared for your account.' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'CLEAR_CHATS_ERROR', error.message);
   }
 });
 
-app.get('/api/user/settings/export-data', async (_req, res) => {
+app.get('/api/user/settings/export-data', requireVerifiedAuth, async (req, res) => {
   try {
-    const conversations = await getStoredConversations();
-    const settings = await getStoredUserSettings();
-    const plan = await getStoredUserPlan();
-    const exportPayload = {
-      exportDate: new Date().toISOString(),
-      user: {
-        name: 'Shanthapriya Silva',
-        email: 'info.ravanatech@gmail.com',
-        plan: plan.plan,
-      },
-      settings,
-      conversationsCount: conversations.length,
-      conversations,
-    };
+    const tenantId = getReqTenant(req);
+    const exportPayload = await exportAllTenantData(tenantId, req.actor?.email || null);
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', 'attachment; filename="chatgpt-raone-data-export.json"');
+    res.setHeader('Content-Disposition', 'attachment; filename="raone-complete-data-export.json"');
     res.send(JSON.stringify(exportPayload, null, 2));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'EXPORT_DATA_ERROR', error.message);
   }
 });
 
-app.post('/api/user/settings/delete-account', async (_req, res) => {
+app.post('/api/user/settings/delete-account', requireVerifiedAuth, async (req, res) => {
   try {
-    // Reset all storage to factory defaults
-    await saveStoredConversations([]);
-    await saveStoredUserSettings(DEFAULT_SETTINGS);
-    await saveStoredUserPlan({
-      plan: 'free',
-      billingCycle: 'monthly',
-      status: 'active',
-      updatedAt: new Date().toISOString(),
-    });
-    res.json({ success: true, message: 'Account and associated data reset successfully' });
+    const tenantId = getReqTenant(req);
+    await purgeAllTenantData(tenantId);
+    res.json({ success: true, message: 'All workspace data for your account has been permanently deleted.' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'DELETE_ACCOUNT_ERROR', error.message);
+  }
+});
+
+// Unified Server-Side Library Folders & Assets Endpoints (Cross-device sync)
+app.get('/api/library/folders', async (req, res) => {
+  try {
+    const folders = await readTenantCollection<any[]>(getReqTenant(req), 'library_folders', []);
+    res.json({ success: true, folders });
+  } catch (err: any) {
+    sendApiError(req, res, 500, 'LIBRARY_FOLDERS_READ_ERROR', err.message);
+  }
+});
+
+app.post('/api/library/folders', async (req, res) => {
+  try {
+    const folders = Array.isArray(req.body?.folders) ? req.body.folders : null;
+    if (!folders) {
+      return sendApiError(req, res, 400, 'INVALID_FOLDERS', 'folders array is required.');
+    }
+    const saved = await mutateTenantCollection<any[]>(getReqTenant(req), 'library_folders', [], () => folders);
+    res.json({ success: true, folders: saved });
+  } catch (err: any) {
+    sendApiError(req, res, 500, 'LIBRARY_FOLDERS_SAVE_ERROR', err.message);
   }
 });
 
 // ==========================================
 // Google AI Studio Developer Workbench APIs
 // ==========================================
-app.get('/api/studio/prompts', async (_req, res) => {
+app.get('/api/studio/prompts', async (req, res) => {
   try {
-    const list = await getStoredStudioPrompts();
+    const list = await getStoredStudioPrompts(getReqTenant(req));
     res.json(list);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'STUDIO_PROMPTS_READ_ERROR', error.message);
   }
 });
 
@@ -1002,36 +1043,36 @@ app.post('/api/studio/prompts', async (req, res) => {
   try {
     const incomingPrompt = req.body;
     if (!incomingPrompt || !incomingPrompt.title) {
-      return res.status(400).json({ error: 'Prompt title is required' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt title is required');
     }
-    const prompts = await getStoredStudioPrompts();
-    const existingIndex = prompts.findIndex((p: any) => p.id === incomingPrompt.id);
+    const tenantId = getReqTenant(req);
     const updatedItem = {
       ...incomingPrompt,
       id: incomingPrompt.id || `prompt-${Date.now()}`,
       updatedAt: new Date().toISOString(),
     };
-    if (existingIndex >= 0) {
-      prompts[existingIndex] = updatedItem;
-    } else {
-      prompts.unshift(updatedItem);
-    }
-    await saveStoredStudioPrompts(prompts);
+    await mutateTenantCollection<any[]>(tenantId, 'studio_prompts', DEFAULT_STUDIO_PROMPTS, (prompts) => {
+      const next = [...prompts];
+      const existingIndex = next.findIndex((p: any) => p.id === updatedItem.id);
+      if (existingIndex >= 0) next[existingIndex] = updatedItem;
+      else next.unshift(updatedItem);
+      return next;
+    });
     res.json({ success: true, prompt: updatedItem });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'STUDIO_PROMPTS_SAVE_ERROR', error.message);
   }
 });
 
 app.delete('/api/studio/prompts/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const prompts = await getStoredStudioPrompts();
-    const filtered = prompts.filter((p: any) => p.id !== id);
-    await saveStoredStudioPrompts(filtered);
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'studio_prompts', DEFAULT_STUDIO_PROMPTS, (prompts) =>
+      prompts.filter((p: any) => p.id !== id)
+    );
     res.json({ success: true, deletedId: id });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'STUDIO_PROMPTS_DELETE_ERROR', error.message);
   }
 });
 
@@ -1133,7 +1174,10 @@ app.post('/api/studio/run', async (req, res) => {
       ? `${SYSTEM_PROMPT}\n\n[WORKBENCH CUSTOM SYSTEM INSTRUCTION]\n${systemInstruction}`
       : SYSTEM_PROMPT;
 
-    if (aiClient) {
+    const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
+    const effectiveGroqKey = byok.groqApiKey || GROQ_API_KEY;
+
+    if (tenantGeminiClient) {
       try {
         const workbenchConfig = {
           ...config,
@@ -1148,7 +1192,7 @@ app.post('/api/studio/run', async (req, res) => {
             }
           ),
         };
-        const resp = await aiClient.models.generateContent({
+        const resp = await tenantGeminiClient.models.generateContent({
           model: mappedModel,
           contents: preparedContents,
           config: workbenchConfig,
@@ -1162,7 +1206,7 @@ app.post('/api/studio/run', async (req, res) => {
       }
     }
 
-    if (!responseText && GROQ_API_KEY) {
+    if (!responseText && effectiveGroqKey) {
       try {
         const studioMessages = preparedContents.map((c: any) => ({
           role: c.role === 'user' ? 'user' : 'assistant',
@@ -1176,7 +1220,7 @@ app.post('/api/studio/run', async (req, res) => {
           .join('\n\n');
 
         const groqOut = await callGroqChat(
-          GROQ_API_KEY,
+          effectiveGroqKey,
           isGroqModelId(model) ? model : 'raone-llama3-70b',
           studioMessages,
           studioSysPrompt,
@@ -1193,11 +1237,14 @@ app.post('/api/studio/run', async (req, res) => {
     }
 
     if (!responseText) {
-      const lastTurnText = preparedContents[preparedContents.length - 1]?.parts?.[0]?.text || 'Workbench Query';
-      responseText = generateIntelligentResponse(lastTurnText, mappedModel, preparedContents);
-      providerUsed = 'fallback';
-      inputTokens = Math.ceil(JSON.stringify(preparedContents).length / 4);
-      outputTokens = Math.ceil(responseText.length / 4);
+      return sendApiError(
+        req,
+        res,
+        503,
+        'WORKBENCH_PROVIDER_UNAVAILABLE',
+        'No live Gemini or Groq API provider responded. Configure a valid key in Settings or server environment.',
+        true
+      );
     }
 
     const latencyMs = Date.now() - startTime;
@@ -1212,15 +1259,13 @@ app.post('/api/studio/run', async (req, res) => {
     });
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
-    res.status(500).json({ error: error.message, latencyMs });
+    res.status(500).json({ error: error.message, code: 'WORKBENCH_RUN_ERROR', request_id: req.requestId, latencyMs });
   }
 });
 
 // ==========================================
-// Google AI Studio Apps & Gallery Endpoints
+// Google AI Studio Apps & Gallery Endpoints (Tenant-Scoped - A03)
 // ==========================================
-const STUDIO_APPS_FILE = path.join(__dirname, 'studio_apps_data.json');
-
 const DEFAULT_GALLERY_APPS = [
   {
     id: 'app-google-maps',
@@ -1229,7 +1274,7 @@ const DEFAULT_GALLERY_APPS = [
     category: 'Google Maps',
     icon: 'map-pin',
     tag: 'Maps Grounding',
-    author: 'Google AI Studio & RaOne',
+    author: 'RaOne Templates',
     createdAt: new Date().toISOString(),
     code: synthesizeRealApplication('Google Maps Live Explorer with route planning and place search', 'Google Maps', 'Google Maps Live Explorer'),
   },
@@ -1240,7 +1285,7 @@ const DEFAULT_GALLERY_APPS = [
     category: 'Create a game',
     icon: 'gamepad',
     tag: 'Web Game',
-    author: 'Google AI Studio & RaOne',
+    author: 'RaOne Templates',
     createdAt: new Date().toISOString(),
     code: synthesizeRealApplication('Retro Cyberpunk Space Shooter 2D Arcade Game', 'Create a game', 'Neon Cyberpunk Space Arcade'),
   },
@@ -1251,7 +1296,7 @@ const DEFAULT_GALLERY_APPS = [
     category: 'Three.js 3D scenes',
     icon: 'box',
     tag: '3D WebGL',
-    author: 'Google AI Studio & RaOne',
+    author: 'RaOne Templates',
     createdAt: new Date().toISOString(),
     code: synthesizeRealApplication('Three.js 3D Orbital Solar Simulation with planetary controls', 'Three.js 3D scenes', 'Three.js 3D Solar Orbit'),
   },
@@ -1262,7 +1307,7 @@ const DEFAULT_GALLERY_APPS = [
     category: 'Build an Android app',
     icon: 'smartphone',
     tag: 'Mobile App',
-    author: 'Google AI Studio & RaOne',
+    author: 'RaOne Templates',
     createdAt: new Date().toISOString(),
     code: synthesizeRealApplication('Android Material You Finance & Budget Tracker', 'Build an Android app', 'Material You Finance Vault'),
   },
@@ -1273,39 +1318,22 @@ const DEFAULT_GALLERY_APPS = [
     category: 'Finance',
     icon: 'sparkles',
     tag: 'Live APIs',
-    author: 'Google AI Studio & RaOne',
+    author: 'RaOne Templates',
     createdAt: new Date().toISOString(),
     code: synthesizeRealApplication('Live cryptocurrency dashboard with price charts and currency converter', 'Finance', 'Crypto Market Intelligence'),
   }
 ];
 
-async function getStoredStudioApps(): Promise<any[]> {
-  try {
-    if (fs.existsSync(STUDIO_APPS_FILE)) {
-      const data = await fs.promises.readFile(STUDIO_APPS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch (err) {
-    console.warn('Notice: Reading studio apps file:', err);
-  }
-  return DEFAULT_GALLERY_APPS;
+async function getStoredStudioApps(tenantId = 'guest_workspace'): Promise<any[]> {
+  return readTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS);
 }
 
-async function saveStoredStudioApps(apps: any[]): Promise<void> {
+app.get('/api/studio/apps', async (req, res) => {
   try {
-    await fs.promises.writeFile(STUDIO_APPS_FILE, JSON.stringify(apps, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving studio apps file:', err);
-  }
-}
-
-app.get('/api/studio/apps', async (_req, res) => {
-  try {
-    const list = await getStoredStudioApps();
+    const list = await getStoredStudioApps(getReqTenant(req));
     res.json(list);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'STUDIO_APPS_READ_ERROR', error.message);
   }
 });
 
@@ -1313,37 +1341,37 @@ app.post('/api/studio/apps', async (req, res) => {
   try {
     const incomingApp = req.body;
     if (!incomingApp || !incomingApp.title) {
-      return res.status(400).json({ error: 'App title is required' });
+      return sendApiError(req, res, 400, 'INVALID_APP', 'App title is required');
     }
-    const apps = await getStoredStudioApps();
-    const existingIndex = apps.findIndex((a: any) => a.id === incomingApp.id);
+    const tenantId = getReqTenant(req);
     const updatedApp = {
       ...incomingApp,
       id: incomingApp.id || `app-${Date.now()}`,
       createdAt: incomingApp.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    if (existingIndex >= 0) {
-      apps[existingIndex] = updatedApp;
-    } else {
-      apps.unshift(updatedApp);
-    }
-    await saveStoredStudioApps(apps);
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const existingIndex = next.findIndex((a: any) => a.id === updatedApp.id);
+      if (existingIndex >= 0) next[existingIndex] = updatedApp;
+      else next.unshift(updatedApp);
+      return next;
+    });
     res.json({ success: true, app: updatedApp });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'STUDIO_APPS_SAVE_ERROR', error.message);
   }
 });
 
 app.delete('/api/studio/apps/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const apps = await getStoredStudioApps();
-    const filtered = apps.filter((a: any) => a.id !== id);
-    await saveStoredStudioApps(filtered);
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'studio_apps', DEFAULT_GALLERY_APPS, (apps) =>
+      apps.filter((a: any) => a.id !== id)
+    );
     res.json({ success: true, deletedId: id });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'STUDIO_APPS_DELETE_ERROR', error.message);
   }
 });
 
@@ -1354,43 +1382,37 @@ app.get('/api/studio/gallery', async (_req, res) => {
   });
 });
 
-// AI App Builder Engine Endpoint — Senior Software Engineer Autonomous Agent
-app.post('/api/studio/build-app', async (req, res) => {
+// AI App Builder Engine Endpoint — Never mutates global keys (A04) & truthful build telemetry (A25)
+app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, mode = 'default', category = 'general', geminiApiKey, apiKey: bodyApiKey } = req.body;
+    const { prompt, category = 'general', geminiApiKey, apiKey: bodyApiKey } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'App description prompt is required' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'App description prompt is required');
     }
 
-    // Dynamic API key configuration from UI
-    const providedKey = geminiApiKey || bodyApiKey;
-    if (providedKey && typeof providedKey === 'string' && providedKey.trim().length > 10) {
-      const cleanKey = providedKey.trim();
-      apiKey = cleanKey;
-      process.env.GEMINI_API_KEY = cleanKey;
-      saveStoredApiKeys();
-      aiClient = new GoogleGenAI({
-        apiKey: cleanKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      });
-    }
+    const tenantId = getReqTenant(req);
+    const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
+    // Optional per-request BYOK override kept strictly request-scoped (never mutates server process.env!)
+    const providedKey = typeof (geminiApiKey || bodyApiKey) === 'string' ? (geminiApiKey || bodyApiKey).trim() : '';
+    const scopedGeminiClient =
+      providedKey.length > 10
+        ? new GoogleGenAI({ apiKey: providedKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+        : tenantGeminiClient;
+    const effectiveGroqKey = byok.groqApiKey || GROQ_API_KEY;
 
     const appTitle = prompt.slice(0, 42) + (prompt.length > 42 ? '...' : '');
     let generatedProject: SynthesizedProject | null = null;
 
     const buildInstruction = `You are the RaOne Senior Software Engineer Autonomous Coding Agent.
-Your task is to synthesize a 100% COMPLETE, production-ready, beautiful, interactive single-file HTML web application based on this user prompt:
+Your task is to synthesize a complete, interactive single-file HTML web application based on this user prompt:
 "${prompt}"
 
-CRITICAL SENIOR SWE REQUIREMENTS:
+REQUIREMENTS:
 1. Output ONLY a valid single HTML document starting with <!DOCTYPE html>. No markdown explanation, no preamble, no backticks.
 2. Include Tailwind CSS via https://cdn.tailwindcss.com and Google Fonts (Plus Jakarta Sans and JetBrains Mono).
 3. If charts are needed, include Chart.js (https://cdn.jsdelivr.net/npm/chart.js).
 4. If maps or routing are requested, include Leaflet (https://unpkg.com/leaflet@1.9.4/dist/leaflet.js & leaflet.css) and OpenStreetMap / OSRM.
-5. Every single button, form, input, search bar, and interactive control MUST have working JavaScript event handlers and reactive state.
-6. Local storage persistence: save and load user items and state so data persists between reloads.
-7. Zero placeholders, zero demo mocks, zero "TODO" comments. Every feature must work out of the box.
-8. Modern sleek dark mode UI (#0b0c10 base) with glowing accents and clean glassmorphism.`;
+5. Every button, form, and interactive control should have working JavaScript event handlers and localStorage state persistence.`;
 
     const extractHtmlPayload = (raw: string) => {
       let cleaned = (raw || '').trim();
@@ -1405,6 +1427,7 @@ CRITICAL SENIOR SWE REQUIREMENTS:
 
     const createLiveProjectFromHtml = (htmlCode: string, modelLabel: string, tagLabel: string): SynthesizedProject => {
       const now = new Date().toISOString();
+      const bundleHash = crypto.createHash('sha256').update(htmlCode).digest('hex').slice(0, 12);
       return {
         id: `app-${Date.now()}`,
         title: appTitle,
@@ -1412,82 +1435,66 @@ CRITICAL SENIOR SWE REQUIREMENTS:
         category,
         icon: 'sparkles',
         tag: tagLabel,
-        author: `RaOne Senior SWE Agent (${modelLabel})`,
+        author: `RaOne Code Studio (${modelLabel})`,
         createdAt: now,
         updatedAt: now,
         code: htmlCode,
         files: {
           'index.html': htmlCode,
-          'app.js': '// Extracted from inline script tag\n' + (htmlCode.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
-          'styles.css': '/* Tailwind CSS v4 CDN + Glassmorphic Tokens */',
-          'architecture.md': `# Architecture Blueprint: ${appTitle}\n\nGenerated autonomously by ${modelLabel}.\nSpecification: ${prompt}\n\n- Zero-mock verified.\n- LocalStorage state persistence active.\n- Responsive layout verified.`,
-          'schema.json': JSON.stringify({ database: 'raone_app_db', version: '1.0.0', prompt }, null, 2),
+          'app.js': '// Inline script extracted from index.html\n' + (htmlCode.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
+          'styles.css': '/* Tailwind CSS CDN + Custom Tokens */',
+          'architecture.md': `# Generated Bundle Summary: ${appTitle}\n\nSynthesized by ${modelLabel}.\nBundle SHA-256 prefix: ${bundleHash}\n\n- Single-file HTML generated by LLM.\n- Rendered inside an opaque, credential-free iframe sandbox (without allow-same-origin).`,
+          'schema.json': JSON.stringify({ bundleHash, prompt, previewMode: 'opaque_iframe_sandbox' }, null, 2),
         },
+        // Truthful execution stages (A25: never claim automated unit-test pass or production server deploy when only HTML was generated)
         agentSteps: [
           {
             step: 1,
-            phase: 'Architectural Analysis',
-            title: `${tagLabel.split(' ')[0]} Agent Domain Modeling`,
+            phase: 'Specification',
+            title: `${tagLabel.split(' ')[0]} Prompt Parsing`,
             status: 'complete',
-            details: 'Prompt parsed and architectural boundaries structured.',
+            details: 'Parsed user application requirements.',
             timestamp: now,
           },
           {
             step: 2,
-            phase: 'System Design',
-            title: 'UI Hierarchy & API Contracts',
+            phase: 'Code Synthesis',
+            title: `Single-File Bundle Generated (${modelLabel})`,
             status: 'complete',
-            details: 'Tailwind layout and reactive state machine formulated.',
+            details: `Synthesized ${htmlCode.length} bytes of HTML/JS/CSS (SHA-256: ${bundleHash}).`,
             timestamp: now,
           },
           {
             step: 3,
-            phase: 'Full-Stack Code Synthesis',
-            title: 'Complete Autonomous Implementation',
+            phase: 'Preview Sandbox',
+            title: 'Loaded in Isolated Preview Frame',
             status: 'complete',
-            details: `Generated complete single-file HTML bundle via ${modelLabel}.`,
-            timestamp: now,
-          },
-          {
-            step: 4,
-            phase: 'Verification & Diagnostics',
-            title: 'Runtime Validation',
-            status: 'complete',
-            details: 'DOM binding verified, 0 errors, 0 warnings.',
-            timestamp: now,
-          },
-          {
-            step: 5,
-            phase: 'Production Launch',
-            title: 'Sandbox Container Deployed',
-            status: 'complete',
-            details: 'App running in live isolated preview sandbox.',
+            details: 'Rendered inside opaque-origin sandbox (scripts permitted, parent origin blocked). Automated test suite was not executed.',
             timestamp: now,
           },
         ],
       };
     };
 
-    // If Gemini client is active, attempt live generation with Senior SWE Persona
-    if (aiClient) {
+    if (scopedGeminiClient) {
       const candidateModels = ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-2.5-flash'];
       for (const modelName of candidateModels) {
         try {
-          const resp = await aiClient.models.generateContent({
+          const resp = await scopedGeminiClient.models.generateContent({
             model: modelName,
             contents: [{ role: 'user', parts: [{ text: buildInstruction }] }],
             config: {
               systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
                 provider: 'Google Gemini API',
                 model: modelName,
-                subsystem: 'RaOne Autonomous App Builder',
+                subsystem: 'RaOne App Builder',
               }),
             },
           });
 
           const text = extractHtmlPayload(resp.text || '');
           if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-            generatedProject = createLiveProjectFromHtml(text, modelName, 'Gemini Verified');
+            generatedProject = createLiveProjectFromHtml(text, modelName, 'LLM Generated');
             break;
           }
         } catch (genErr: any) {
@@ -1496,34 +1503,32 @@ CRITICAL SENIOR SWE REQUIREMENTS:
       }
     }
 
-    // Groq LPU Autonomous App Synthesis fallback when Gemini isn't available or fails
-    if (!generatedProject && GROQ_API_KEY) {
+    if (!generatedProject && effectiveGroqKey) {
       try {
         const groqBuild = await callGroqChat(
-          GROQ_API_KEY,
+          effectiveGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: buildInstruction }],
-          `${SYSTEM_PROMPT}\n\n[APP BUILDER DIRECTIVE]\nYou are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY a complete, valid, working single-file HTML document starting with <!DOCTYPE html>. Zero markdown prose.`,
+          `${SYSTEM_PROMPT}\n\n[APP BUILDER DIRECTIVE]\nOutput ONLY a valid single-file HTML document starting with <!DOCTYPE html>. Zero markdown prose.`,
           8192
         );
         const text = extractHtmlPayload(groqBuild.text || '');
         if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-          generatedProject = createLiveProjectFromHtml(text, groqBuild.modelUsed, 'Groq Verified');
+          generatedProject = createLiveProjectFromHtml(text, groqBuild.modelUsed, 'Groq Generated');
         }
       } catch (groqBuildErr: any) {
         console.warn('Groq app builder notice:', groqBuildErr?.message || groqBuildErr);
       }
     }
 
-    // High-Fidelity Sovereign Senior SWE Synthesizer (Zero-mock complete project)
     if (!generatedProject) {
-      console.log('Engaging Sovereign Senior SWE Synthesizer for:', prompt);
       generatedProject = synthesizeFullProject(prompt, category, appTitle);
     }
 
-    const apps = await getStoredStudioApps();
-    apps.unshift(generatedProject);
-    await saveStoredStudioApps(apps);
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => [
+      generatedProject!,
+      ...apps,
+    ]);
 
     res.json({
       success: true,
@@ -1531,23 +1536,26 @@ CRITICAL SENIOR SWE REQUIREMENTS:
     });
   } catch (error: any) {
     console.error('Build app error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'BUILD_APP_ERROR', error.message);
   }
 });
 
-// App Refinement Endpoint — Senior SWE Agent iterative code refactoring
-app.post('/api/studio/refine-app', async (req, res) => {
+// App Refinement Endpoint
+app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { app: currentApp, refinementPrompt } = req.body;
+    const { app: currentApp, refinementPrompt } = req.body || {};
     if (!currentApp || !refinementPrompt) {
-      return res.status(400).json({ error: 'Current app object and refinementPrompt are required.' });
+      return sendApiError(req, res, 400, 'INVALID_REFINE_REQUEST', 'Current app object and refinementPrompt are required.');
     }
+
+    const tenantId = getReqTenant(req);
+    const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
+    const effectiveGroqKey = byok.groqApiKey || GROQ_API_KEY;
 
     let updatedProject: SynthesizedProject | null = null;
     const existingHtml = currentApp.code || currentApp.files?.['index.html'] || '';
     const refineInstruction = existingHtml
-      ? `You are the RaOne Senior Software Engineer Autonomous Agent.
-You are given an existing working application and a user refactoring instruction.
+      ? `You are refining an existing single-file HTML web application.
 Existing Code:
 \`\`\`html
 ${existingHtml}
@@ -1556,10 +1564,7 @@ ${existingHtml}
 Refactoring Directive:
 "${refinementPrompt}"
 
-CRITICAL INSTRUCTIONS:
-1. Apply the user's refactoring directive precisely while PRESERVING ALL existing working functionality.
-2. Output ONLY the updated, complete, single-file HTML code starting with <!DOCTYPE html>. No markdown explanations, no preambles.
-3. Verify that all event handlers, scripts, and styling remain 100% intact and working.`
+Output ONLY the updated, complete, single-file HTML code starting with <!DOCTYPE html>.`
       : '';
 
     const extractRefinedHtml = (raw: string) => {
@@ -1582,33 +1587,32 @@ CRITICAL INSTRUCTIONS:
         files: {
           ...(currentApp.files || {}),
           'index.html': htmlText,
-          'app.js': '// Refactored logic\n' + (htmlText.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
+          'app.js': '// Extracted script\n' + (htmlText.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
         },
         agentSteps: [
           ...(currentApp.agentSteps || []),
           {
-            step: (currentApp.agentSteps?.length || 5) + 1,
-            phase: 'Agent Refactoring',
-            title: `Refactor (${agentLabel}): ${refinementPrompt.slice(0, 28)}...`,
+            step: (currentApp.agentSteps?.length || 3) + 1,
+            phase: 'Iteration',
+            title: `Refined via ${agentLabel}: ${refinementPrompt.slice(0, 28)}...`,
             status: 'complete',
-            details: `Applied senior software engineer refactoring: "${refinementPrompt}".`,
+            details: `Applied prompt update: "${refinementPrompt}". Rendered in isolated preview sandbox.`,
             timestamp: now,
           },
         ],
       };
     };
 
-    // Check if Gemini can perform live refactoring
-    if (aiClient && refineInstruction) {
+    if (tenantGeminiClient && refineInstruction) {
       try {
-        const resp = await aiClient.models.generateContent({
+        const resp = await tenantGeminiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: refineInstruction }] }],
           config: {
             systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
               provider: 'Google Gemini API',
               model: 'gemini-4-hydrogen',
-              subsystem: 'RaOne Autonomous App Refiner',
+              subsystem: 'RaOne App Refiner',
             }),
           },
         });
@@ -1622,14 +1626,13 @@ CRITICAL INSTRUCTIONS:
       }
     }
 
-    // Groq LPU refactoring fallback
-    if (!updatedProject && GROQ_API_KEY && refineInstruction) {
+    if (!updatedProject && effectiveGroqKey && refineInstruction) {
       try {
         const groqRefine = await callGroqChat(
-          GROQ_API_KEY,
+          effectiveGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: refineInstruction }],
-          `${SYSTEM_PROMPT}\n\n[APP REFACTORING DIRECTIVE]\nYou are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY the complete updated HTML starting with <!DOCTYPE html>. Zero markdown explanations.`,
+          `${SYSTEM_PROMPT}\n\nOutput ONLY the complete updated HTML starting with <!DOCTYPE html>.`,
           8192
         );
         const text = extractRefinedHtml(groqRefine.text || '');
@@ -1645,15 +1648,13 @@ CRITICAL INSTRUCTIONS:
       updatedProject = refineSynthesizedProject(currentApp, refinementPrompt);
     }
 
-    // Update in storage
-    const apps = await getStoredStudioApps();
-    const idx = apps.findIndex((a: any) => a.id === updatedProject.id);
-    if (idx >= 0) {
-      apps[idx] = updatedProject;
-    } else {
-      apps.unshift(updatedProject);
-    }
-    await saveStoredStudioApps(apps);
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === updatedProject!.id);
+      if (idx >= 0) next[idx] = updatedProject!;
+      else next.unshift(updatedProject!);
+      return next;
+    });
 
     res.json({
       success: true,
@@ -1661,17 +1662,19 @@ CRITICAL INSTRUCTIONS:
     });
   } catch (error: any) {
     console.error('Refine app error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'REFINE_APP_ERROR', error.message);
   }
 });
 
-// Conversations Persistence Endpoints (Saved on backend, no fake chats in code)
-app.get('/api/conversations', async (_req, res) => {
+// ==========================================
+// Conversations Persistence Endpoints (Strictly Tenant-Scoped - A02 & A03)
+// ==========================================
+app.get('/api/conversations', async (req, res) => {
   try {
-    const list = await getStoredConversations();
+    const list = await readTenantCollection<any[]>(getReqTenant(req), 'conversations', []);
     res.json(list);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'CONVERSATIONS_READ_ERROR', error.message);
   }
 });
 
@@ -1679,164 +1682,150 @@ app.post('/api/conversations', async (req, res) => {
   try {
     const conversation = req.body;
     if (!conversation?.id) {
-      return res.status(400).json({ error: 'Conversation id is required' });
+      return sendApiError(req, res, 400, 'INVALID_CONVERSATION', 'Conversation id is required');
     }
-    // Zero-Persistence Enforcement: Temporary/Private chats are NEVER saved to server storage or disk
     if (conversation.isTemporary || conversation.id === 'temporary') {
       return res.json({ success: true, conversation, isTemporary: true, persisted: false });
     }
-    const list = await getStoredConversations();
-    const existingIndex = list.findIndex((c: any) => c.id === conversation.id);
-    if (existingIndex >= 0) {
-      list[existingIndex] = {
-        ...list[existingIndex],
-        ...conversation,
-        updatedAt: new Date().toISOString(),
-      };
-    } else {
-      list.unshift({
-        ...conversation,
-        createdAt: conversation.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-    }
-    await saveStoredConversations(list);
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'conversations', [], (list) => {
+      const next = [...list];
+      const existingIndex = next.findIndex((c: any) => c.id === conversation.id);
+      if (existingIndex >= 0) {
+        next[existingIndex] = {
+          ...next[existingIndex],
+          ...conversation,
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        next.unshift({
+          ...conversation,
+          createdAt: conversation.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      return next;
+    });
     res.json({ success: true, conversation });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'CONVERSATIONS_SAVE_ERROR', error.message);
   }
 });
 
 app.delete('/api/conversations/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    let list = await getStoredConversations();
-    list = list.filter((c: any) => c.id !== id);
-    await saveStoredConversations(list);
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'conversations', [], (list) =>
+      list.filter((c: any) => c.id !== id)
+    );
     res.json({ success: true, id });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'CONVERSATIONS_DELETE_ERROR', error.message);
   }
 });
 
 app.post('/api/conversations/:id/rename', async (req, res) => {
   try {
     const { id } = req.params;
-    const { title } = req.body;
-    const list = await getStoredConversations();
-    const item = list.find((c: any) => c.id === id);
-    if (item && title) {
-      item.title = title;
-      item.updatedAt = new Date().toISOString();
-      await saveStoredConversations(list);
-    }
-    res.json({ success: true, item });
+    const { title } = req.body || {};
+    let updatedItem: any = null;
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'conversations', [], (list) =>
+      list.map((c: any) => {
+        if (c.id === id && title) {
+          updatedItem = { ...c, title, updatedAt: new Date().toISOString() };
+          return updatedItem;
+        }
+        return c;
+      })
+    );
+    res.json({ success: true, item: updatedItem });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'CONVERSATIONS_RENAME_ERROR', error.message);
   }
 });
 
 app.post('/api/conversations/:id/pin', async (req, res) => {
   try {
     const { id } = req.params;
-    const list = await getStoredConversations();
-    const item = list.find((c: any) => c.id === id);
-    if (item) {
-      item.section = item.section === 'pinned' ? 'recents' : 'pinned';
-      item.updatedAt = new Date().toISOString();
-      await saveStoredConversations(list);
-    }
-    res.json({ success: true, item });
+    let updatedItem: any = null;
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'conversations', [], (list) =>
+      list.map((c: any) => {
+        if (c.id === id) {
+          updatedItem = {
+            ...c,
+            section: c.section === 'pinned' ? 'recents' : 'pinned',
+            updatedAt: new Date().toISOString(),
+          };
+          return updatedItem;
+        }
+        return c;
+      })
+    );
+    res.json({ success: true, item: updatedItem });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'CONVERSATIONS_PIN_ERROR', error.message);
   }
 });
 
 // ==========================================
-// Projects Persistence & Workspace APIs
+// Projects Persistence & Workspace APIs (Strictly Tenant-Scoped - A03)
 // ==========================================
-const PROJECTS_FILE = path.join(__dirname, 'projects_data.json');
-
-async function getStoredProjects(): Promise<any[]> {
+app.get('/api/projects', async (req, res) => {
   try {
-    if (fs.existsSync(PROJECTS_FILE)) {
-      const data = await fs.promises.readFile(PROJECTS_FILE, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch (err) {
-    console.warn('Notice: Reading projects file:', err);
-  }
-  return [];
-}
-
-async function saveStoredProjects(projects: any[]): Promise<void> {
-  try {
-    await fs.promises.writeFile(PROJECTS_FILE, JSON.stringify(projects, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving projects file:', err);
-  }
-}
-
-app.get('/api/projects', requireOptionalFirebaseAuth, async (_req, res) => {
-  try {
-    const projects = await getStoredProjects();
+    const projects = await readTenantCollection<any[]>(getReqTenant(req), 'projects', []);
     res.json(projects);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'PROJECTS_READ_ERROR', error.message);
   }
 });
 
-app.post('/api/projects', requireOptionalFirebaseAuth, async (req, res) => {
+app.post('/api/projects', async (req, res) => {
   try {
     const { id, name, description = '', instructions = '' } = req.body || {};
     const cleanName = String(name || '').trim();
     if (!cleanName) {
-      return res.status(400).json({ error: 'Project name is required' });
+      return sendApiError(req, res, 400, 'INVALID_PROJECT', 'Project name is required');
     }
-    const projects = await getStoredProjects();
     const now = new Date().toISOString();
-    const existingIndex = id ? projects.findIndex((p: any) => p.id === id) : -1;
-
-    const projectRecord =
-      existingIndex >= 0
-        ? {
-            ...projects[existingIndex],
-            name: cleanName,
-            description: String(description || ''),
-            instructions: String(instructions || ''),
-            updatedAt: now,
-          }
-        : {
-            id: id || `proj-${Date.now()}`,
-            name: cleanName,
-            description: String(description || ''),
-            instructions: String(instructions || ''),
-            createdAt: now,
-            updatedAt: now,
-          };
-
-    if (existingIndex >= 0) {
-      projects[existingIndex] = projectRecord;
-    } else {
-      projects.unshift(projectRecord);
-    }
-    await saveStoredProjects(projects);
+    let projectRecord: any = null;
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'projects', [], (projects) => {
+      const next = [...projects];
+      const existingIndex = id ? next.findIndex((p: any) => p.id === id) : -1;
+      projectRecord =
+        existingIndex >= 0
+          ? {
+              ...next[existingIndex],
+              name: cleanName,
+              description: String(description || ''),
+              instructions: String(instructions || ''),
+              updatedAt: now,
+            }
+          : {
+              id: id || `proj-${Date.now()}`,
+              name: cleanName,
+              description: String(description || ''),
+              instructions: String(instructions || ''),
+              createdAt: now,
+              updatedAt: now,
+            };
+      if (existingIndex >= 0) next[existingIndex] = projectRecord;
+      else next.unshift(projectRecord);
+      return next;
+    });
     res.json({ success: true, project: projectRecord });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'PROJECTS_SAVE_ERROR', error.message);
   }
 });
 
-app.delete('/api/projects/:id', requireOptionalFirebaseAuth, async (req, res) => {
+app.delete('/api/projects/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const projects = await getStoredProjects();
-    const filtered = projects.filter((p: any) => p.id !== id);
-    await saveStoredProjects(filtered);
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'projects', [], (projects) =>
+      projects.filter((p: any) => p.id !== id)
+    );
     res.json({ success: true, deletedId: id });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'PROJECTS_DELETE_ERROR', error.message);
   }
 });
 
@@ -1846,48 +1835,48 @@ app.delete('/api/projects/:id', requireOptionalFirebaseAuth, async (req, res) =>
 const PLATFORM_POLICIES = {
   brand: 'RaOne AI by RavanaTec',
   productName: 'RaOne AI Studio',
-  effectiveDate: '2026-01-01',
+  effectiveDate: '2026-11-14',
   contactEmail: 'info.ravanatech@gmail.com',
   privacyPolicy: {
     title: 'Privacy Policy',
     summary:
-      'RaOne AI Studio collects only workspace data you explicitly create (conversations, projects, studio artifacts, and preferences) to deliver core AI functionality.',
+      'RaOne AI Studio isolates workspace records per verified Firebase UID tenant and handles BYOK provider secrets with server-side AES-256-GCM encryption.',
     clauses: [
-      'Data Minimization: API keys are stored encrypted/isolated server-side and are never returned in client responses.',
-      'Temporary Chat Zero-Persistence: Chats marked Temporary execute in memory only and are never written to disk or databases.',
-      'User Control & Portability: Users can export all data as JSON (/api/user/settings/export-data) or clear/delete their workspace data at any time.',
-      'Third-Party Inference Providers: Prompts sent to Google Gemini or Groq Cloud LPU are transmitted over TLS 1.3 solely for inference.',
+      'Tenant Isolation & Encryption: User workspaces are stored in tenant-isolated stores. Personal provider keys (BYOK) are encrypted at rest with AES-256-GCM and never returned to the client.',
+      'Temporary Chat Behavior: Chats marked Temporary are withheld from server workspace persistence; inference payloads are still transmitted to the active external LLM provider over TLS.',
+      'User Control & Portability: Signed-in users can export all owned categories as JSON (/api/user/settings/export-data) or purge their server tenant workspace (/api/user/settings/delete-account).',
+      'Third-Party Inference Providers & Subprocessors: Depending on selected model and configuration, prompts may be routed to Google Gemini API, Groq Cloud LPU, OpenAI, Anthropic, DeepSeek, or approved gateway endpoints over TLS.',
     ],
   },
   termsOfService: {
     title: 'Terms of Service',
     summary:
-      'By using RaOne AI Studio, you agree to use AI code, media, and document generation responsibly and in compliance with applicable laws.',
+      'By using RaOne AI Studio, you agree to use AI code, media, and document tools responsibly and in compliance with applicable laws.',
     clauses: [
-      'Ownership: You retain full ownership of code, prompts, documents, and creative assets generated in your workspace.',
-      'Acceptable Use: Automated abuse, credential harvesting, malware generation, and unauthorized scraping are prohibited.',
-      'AI Verification: Generated outputs should be reviewed before high-stakes production, legal, medical, or financial deployment.',
-      'Service Tiers: Free, Plus, and Ultimate plans define model routing priority and quota limits.',
+      'Ownership: You retain full rights to code, prompts, and documents you author or export from your workspace.',
+      'Capability Honesty: Features requiring optional GPU/FFmpeg/voice workers report explicit service availability rather than substituting unlabeled sample assets.',
+      'AI Verification: Generated outputs and single-file HTML previews should be reviewed before production deployment.',
+      'Billing & Credits: Paid tiers are updated strictly from verified billing webhook events and backed by an append-only credit ledger.',
     ],
   },
   aiSafetyPolicy: {
-    title: 'AI Safety, Runtime Honesty & Zero-Hallucination Policy',
+    title: 'AI Safety, Runtime Honesty & Provenance Policy',
     summary:
-      'RaOne AI enforces strict runtime self-identification and prohibits fabricated model names, fake web searches, or unverified claims.',
+      'RaOne AI enforces strict runtime model disclosure and explicit capability states without fabricated citations.',
     clauses: [
-      'Runtime Truthfulness: Every LLM call receives exact active provider and model ID metadata.',
-      'No Fabricated Grounding: Unless Google Search or Maps grounding is explicitly enabled and active, the assistant states clearly when live web access is unavailable.',
+      'Runtime Truthfulness: Every active LLM call receives the verified provider and model ID metadata.',
+      'Source-Bound Grounding: Document analysis and chat answers cite user-provided uploaded content or active Google Search/Maps grounding chunks when enabled.',
       'Bilingual Precision: Supports Sinhala (Unicode), Singlish, and English accurately without altering technical identifiers.',
     ],
   },
   securityPolicy: {
     title: 'Security & Data Protection Policy',
     summary:
-      'Defense-in-depth protections across frontend hosting, Cloud Run API gateway, and Firestore RBAC.',
+      'Defense-in-depth protections across Firebase Hosting, Cloud Run API gateway, isolated preview iframes, and Firestore rules.',
     clauses: [
-      'Transport & Headers: Enforced HTTPS/HSTS, X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Referrer-Policy, and Content-Security-Policy.',
-      'Abuse Protection: Sliding-window API rate limiting (150 requests/minute per IP) across /api/* endpoints.',
-      'Database Isolation: Owner-scoped Firebase Firestore security rules (firestore.rules) with default-deny catch-all.',
+      'Transport & Headers: Enforced HSTS, X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Referrer-Policy, strict CORS allowlists, and Content-Security-Policy.',
+      'Identity & Egress Defense: Cryptographic RS256 Firebase JWT verification and HTTPS allowlist SSRF protection on custom provider tests.',
+      'Rate Limiting & Quotas: True sliding-window rate limits per verified UID or IP across /api/* endpoints plus credit reservation guards.',
     ],
   },
 };
@@ -2552,22 +2541,39 @@ Here is the direct analysis and deliverable from RaOne AI:
 RaOne AI by RavanaTec — Think. Create. Act.`;
 }
 
-// Endpoint to inspect and update API keys dynamically from the UI
-app.get('/api/keys', (_req, res) => {
-  res.json({
-    geminiConfigured: Boolean(apiKey || process.env.GEMINI_API_KEY),
-    groqConfigured: Boolean(GROQ_API_KEY || process.env.GROQ_API_KEY),
-    openAiConfigured: Boolean(OPENAI_API_KEY || process.env.OPENAI_API_KEY),
-    anthropicConfigured: Boolean(ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY),
-    deepSeekConfigured: Boolean(DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY),
-    xaiConfigured: Boolean(XAI_API_KEY || process.env.XAI_API_KEY),
-    cometApiConfigured: Boolean(COMET_API_KEY || process.env.COMET_API_KEY),
-    cometApiBaseUrl: COMET_API_BASE_URL || 'https://api.cometapi.com/v1',
-  });
+// Endpoint to inspect and update per-tenant encrypted BYOK API keys (never mutates server globals or exposes plaintext secrets - A04, A07)
+app.get('/api/keys', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const byok = await getTenantByokKeys(tenantId);
+    res.json({
+      authenticated: Boolean(req.actor?.isAuthenticated),
+      geminiConfigured: Boolean(byok.geminiApiKey || apiKey),
+      groqConfigured: Boolean(byok.groqApiKey || GROQ_API_KEY),
+      openAiConfigured: Boolean(byok.openAiApiKey || OPENAI_API_KEY),
+      anthropicConfigured: Boolean(byok.anthropicApiKey || ANTHROPIC_API_KEY),
+      deepSeekConfigured: Boolean(byok.deepSeekApiKey || DEEPSEEK_API_KEY),
+      xaiConfigured: Boolean(byok.xaiApiKey || XAI_API_KEY),
+      cometApiConfigured: Boolean(byok.cometApiKey || COMET_API_KEY),
+      cometApiBaseUrl: byok.cometApiBaseUrl || COMET_API_BASE_URL || 'https://api.cometapi.com/v1',
+      tenantHasCustomKeys: Boolean(
+        byok.geminiApiKey ||
+          byok.groqApiKey ||
+          byok.openAiApiKey ||
+          byok.anthropicApiKey ||
+          byok.deepSeekApiKey ||
+          byok.xaiApiKey ||
+          byok.cometApiKey
+      ),
+    });
+  } catch (err: any) {
+    sendApiError(req, res, 500, 'KEYS_READ_ERROR', err?.message || 'Failed to inspect API keys.');
+  }
 });
 
-app.post('/api/keys', async (req, res) => {
+app.post('/api/keys', requireVerifiedAuth, async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
     const {
       geminiApiKey,
       groqApiKey,
@@ -2577,67 +2583,74 @@ app.post('/api/keys', async (req, res) => {
       xaiApiKey,
       cometApiKey,
       cometApiBaseUrl,
-    } = req.body;
-    if (geminiApiKey !== undefined) {
-      process.env.GEMINI_API_KEY = geminiApiKey;
-      apiKey = geminiApiKey;
-      aiClient = geminiApiKey
-        ? new GoogleGenAI({
-            apiKey: geminiApiKey,
-            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-          })
-        : null;
+    } = req.body || {};
+
+    if (cometApiBaseUrl !== undefined && String(cometApiBaseUrl).trim()) {
+      const egressCheck = await validateSafeHttpsEgress(String(cometApiBaseUrl).trim());
+      if (!egressCheck.ok) {
+        return sendApiError(req, res, 400, 'UNSAFE_GATEWAY_URL', egressCheck.reason || 'Unsafe HTTPS gateway URL.');
+      }
     }
-    if (groqApiKey !== undefined) {
-      process.env.GROQ_API_KEY = groqApiKey;
-      GROQ_API_KEY = groqApiKey;
-    }
-    if (openAiApiKey !== undefined) {
-      process.env.OPENAI_API_KEY = openAiApiKey;
-      OPENAI_API_KEY = openAiApiKey;
-    }
-    if (anthropicApiKey !== undefined) {
-      process.env.ANTHROPIC_API_KEY = anthropicApiKey;
-      ANTHROPIC_API_KEY = anthropicApiKey;
-    }
-    if (deepSeekApiKey !== undefined) {
-      process.env.DEEPSEEK_API_KEY = deepSeekApiKey;
-      DEEPSEEK_API_KEY = deepSeekApiKey;
-    }
-    if (xaiApiKey !== undefined) {
-      process.env.XAI_API_KEY = xaiApiKey;
-      XAI_API_KEY = xaiApiKey;
-    }
-    if (cometApiKey !== undefined) {
-      process.env.COMET_API_KEY = cometApiKey;
-      COMET_API_KEY = cometApiKey;
-    }
-    if (cometApiBaseUrl !== undefined) {
-      process.env.COMET_API_BASE_URL = cometApiBaseUrl;
-      COMET_API_BASE_URL = cometApiBaseUrl;
-    }
-    saveStoredApiKeys();
-    res.json({ success: true, message: 'API keys updated and persisted successfully on server.' });
+
+    await saveTenantByokKeys(tenantId, {
+      ...(geminiApiKey !== undefined ? { geminiApiKey: String(geminiApiKey).trim() } : {}),
+      ...(groqApiKey !== undefined ? { groqApiKey: String(groqApiKey).trim() } : {}),
+      ...(openAiApiKey !== undefined ? { openAiApiKey: String(openAiApiKey).trim() } : {}),
+      ...(anthropicApiKey !== undefined ? { anthropicApiKey: String(anthropicApiKey).trim() } : {}),
+      ...(deepSeekApiKey !== undefined ? { deepSeekApiKey: String(deepSeekApiKey).trim() } : {}),
+      ...(xaiApiKey !== undefined ? { xaiApiKey: String(xaiApiKey).trim() } : {}),
+      ...(cometApiKey !== undefined ? { cometApiKey: String(cometApiKey).trim() } : {}),
+      ...(cometApiBaseUrl !== undefined ? { cometApiBaseUrl: String(cometApiBaseUrl).trim() } : {}),
+    });
+
+    res.json({
+      success: true,
+      message: 'API keys encrypted with AES-256-GCM and saved privately for your account.',
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendApiError(req, res, 500, 'KEYS_SAVE_ERROR', err?.message || 'Failed to persist API keys.');
   }
 });
 
-// CometAPI Test Endpoint
+// CometAPI Test Endpoint (SSRF-hardened; never sends server key to custom external hosts)
 app.post('/api/comet/test', async (req, res) => {
   try {
-    const { cometApiKey, cometApiBaseUrl } = req.body;
-    const testKey = cometApiKey || COMET_API_KEY;
-    const testBaseUrl = (cometApiBaseUrl || COMET_API_BASE_URL || 'https://api.cometapi.com/v1').replace(/\/+$/, '');
+    const tenantId = getReqTenant(req);
+    const byok = await getTenantByokKeys(tenantId);
+    const { cometApiKey, cometApiBaseUrl } = req.body || {};
+
+    const defaultUrl = 'https://api.cometapi.com/v1';
+    const testBaseUrl = String(cometApiBaseUrl || byok.cometApiBaseUrl || COMET_API_BASE_URL || defaultUrl)
+      .trim()
+      .replace(/\/+$/, '');
+
+    const egressCheck = await validateSafeHttpsEgress(testBaseUrl);
+    if (!egressCheck.ok) {
+      return sendApiError(req, res, 400, 'UNSAFE_GATEWAY_URL', egressCheck.reason || 'Blocked unsafe URL.');
+    }
+
+    const parsedUrl = new URL(testBaseUrl);
+    const userSuppliedKey = String(cometApiKey || byok.cometApiKey || '').trim();
+    const isDefaultHost = parsedUrl.hostname === 'api.cometapi.com';
+    const testKey = userSuppliedKey || (isDefaultHost ? COMET_API_KEY : '');
 
     if (!testKey) {
-      return res.status(400).json({ error: 'Please enter a CometAPI API Key to test.' });
+      return sendApiError(
+        req,
+        res,
+        400,
+        'API_KEY_REQUIRED',
+        isDefaultHost
+          ? 'Please enter a CometAPI API Key to test.'
+          : 'A custom gateway URL requires specifying your own CometAPI key.'
+      );
     }
 
     const testStartTime = Date.now();
-    // Test with lightweight completion request
     const response = await fetch(`${testBaseUrl}/chat/completions`, {
       method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(10000),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${testKey}`,
@@ -2652,8 +2665,9 @@ app.post('/api/comet/test', async (req, res) => {
     const latencyMs = Date.now() - testStartTime;
 
     if (!response.ok) {
-      // Fallback test via /models
       const modelsResp = await fetch(`${testBaseUrl}/models`, {
+        redirect: 'error',
+        signal: AbortSignal.timeout(10000),
         headers: { Authorization: `Bearer ${testKey}` },
       });
       if (modelsResp.ok) {
@@ -2681,30 +2695,46 @@ app.post('/api/comet/test', async (req, res) => {
       baseUrl: testBaseUrl,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to connect to CometAPI' });
+    return sendApiError(req, res, 502, 'COMET_TEST_FAILED', err?.message || 'Failed to connect to CometAPI');
   }
 });
 
 // Groq Service Test Endpoint
 app.post('/api/groq/test', async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
+    const byok = await getTenantByokKeys(tenantId);
     const { groqApiKey } = req.body || {};
-    const testKey = groqApiKey || GROQ_API_KEY;
+    const testKey = String(groqApiKey || byok.groqApiKey || GROQ_API_KEY || '').trim();
     if (!testKey) {
-      return res.status(400).json({ error: 'Please enter a Groq API Key (gsk_...) to test.' });
+      return sendApiError(req, res, 400, 'API_KEY_REQUIRED', 'Please enter a Groq API Key (gsk_...) to test.');
     }
     const result = await testGroqConnection(testKey);
     return res.json(result);
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message || 'Failed to connect to Groq Cloud API' });
+    return sendApiError(req, res, 502, 'GROQ_TEST_FAILED', err?.message || 'Failed to connect to Groq Cloud API');
   }
 });
 
 // 1. Chat & Multi-Model Engine with Google Search & Maps Grounding
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
   let effectiveProvider: AIProviderMode = 'auto';
+  const tenantId = getReqTenant(req);
+  let activeGroqKey = GROQ_API_KEY;
   try {
-    const storedSettings = await getStoredUserSettings();
+    const [storedSettings, tenantCtx] = await Promise.all([
+      getStoredUserSettings(tenantId),
+      getTenantGeminiClient(req),
+    ]);
+    const tenantClient = tenantCtx.client;
+    const byok = tenantCtx.byok;
+    const activeOpenAiKey = byok.openAiApiKey || OPENAI_API_KEY;
+    const activeAnthropicKey = byok.anthropicApiKey || ANTHROPIC_API_KEY;
+    const activeDeepSeekKey = byok.deepSeekApiKey || DEEPSEEK_API_KEY;
+    const activeCometKey = byok.cometApiKey || COMET_API_KEY;
+    const activeCometBase = byok.cometApiBaseUrl || COMET_API_BASE_URL;
+    activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+
     const {
       messages = [],
       mode = 'think',
@@ -2716,20 +2746,27 @@ app.post('/api/chat', async (req, res) => {
       enableMaps = false,
       userLocation = null,
       isTemporary = false,
-    } = req.body;
+    } = req.body || {};
     effectiveProvider = (provider || storedSettings.activeProvider || 'auto') as AIProviderMode;
 
     const fullSystemInstruction = buildRaOneSystemPrompt({ mode, isTemporary, context });
 
-    // Provider 0: CometAPI Dedicated Mode or CometAPI Fallback for External Models
-    if (model === 'comet-all-in-one' && COMET_API_KEY) {
+    // Provider 0: CometAPI Dedicated Mode
+    if (model === 'comet-all-in-one' && activeCometKey) {
       try {
         const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
           provider: 'CometAPI Gateway',
           model: 'gpt-4o',
           isTemporary,
         });
-        const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+        const text = await callCometAPI(
+          'gpt-4o',
+          [...messages, { role: 'user', content: prompt }],
+          sysWithMeta,
+          {},
+          activeCometKey,
+          activeCometBase
+        );
         return res.json({
           text,
           mode,
@@ -2742,16 +2779,16 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // Provider 1: OpenAI (GPT-4o) if requested and configured (or via CometAPI)
+    // Provider 1: OpenAI (GPT-4o)
     if (model === 'raone-gpt4o') {
-      if (OPENAI_API_KEY) {
+      if (activeOpenAiKey) {
         try {
           const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
             provider: 'OpenAI API',
             model: 'gpt-4o',
             isTemporary,
           });
-          const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+          const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta, activeOpenAiKey);
           return res.json({
             text,
             mode,
@@ -2762,14 +2799,14 @@ app.post('/api/chat', async (req, res) => {
         } catch (openAiErr: any) {
           console.warn('OpenAI proxy warning:', openAiErr.message);
         }
-      } else if (COMET_API_KEY) {
+      } else if (activeCometKey) {
         try {
           const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
             provider: 'CometAPI Gateway',
             model: 'gpt-4o',
             isTemporary,
           });
-          const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+          const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta, {}, activeCometKey, activeCometBase);
           return res.json({
             text,
             mode,
@@ -2783,16 +2820,16 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // Provider 2: Anthropic (Claude 3.5 Sonnet) if requested and configured (or via CometAPI)
+    // Provider 2: Anthropic (Claude 3.5 Sonnet)
     if (model === 'raone-claude') {
-      if (ANTHROPIC_API_KEY) {
+      if (activeAnthropicKey) {
         try {
           const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
             provider: 'Anthropic API',
             model: 'claude-3-5-sonnet-20241022',
             isTemporary,
           });
-          const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+          const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta, activeAnthropicKey);
           return res.json({
             text,
             mode,
@@ -2803,14 +2840,14 @@ app.post('/api/chat', async (req, res) => {
         } catch (claudeErr: any) {
           console.warn('Anthropic proxy warning:', claudeErr.message);
         }
-      } else if (COMET_API_KEY) {
+      } else if (activeCometKey) {
         try {
           const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
             provider: 'CometAPI Gateway',
             model: 'claude-3-5-sonnet-20241022',
             isTemporary,
           });
-          const text = await callCometAPI('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+          const text = await callCometAPI('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta, {}, activeCometKey, activeCometBase);
           return res.json({
             text,
             mode,
@@ -2824,16 +2861,16 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // Provider 3: DeepSeek (R1 Reasoner) if requested and configured (or via CometAPI)
+    // Provider 3: DeepSeek (R1 Reasoner)
     if (model === 'raone-deepseek-r1') {
-      if (DEEPSEEK_API_KEY) {
+      if (activeDeepSeekKey) {
         try {
           const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
             provider: 'DeepSeek API',
             model: 'deepseek-reasoner',
             isTemporary,
           });
-          const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+          const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta, activeDeepSeekKey);
           return res.json({
             text,
             mode,
@@ -2844,14 +2881,14 @@ app.post('/api/chat', async (req, res) => {
         } catch (deepseekErr: any) {
           console.warn('DeepSeek proxy warning:', deepseekErr.message);
         }
-      } else if (COMET_API_KEY) {
+      } else if (activeCometKey) {
         try {
           const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
             provider: 'CometAPI Gateway',
             model: 'deepseek-reasoner',
             isTemporary,
           });
-          const text = await callCometAPI('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+          const text = await callCometAPI('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta, {}, activeCometKey, activeCometBase);
           return res.json({
             text,
             mode,
@@ -2865,18 +2902,14 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // Provider 4: Groq (Meta Llama 3.3 70B / Llama 4 Scout / Llama 3.1 8B) via Groq Service or explicit provider toggle
+    // Provider 4: Groq
     if (effectiveProvider === 'groq' || isGroqModelId(model)) {
-      if (!GROQ_API_KEY) {
-        return res.status(503).json({
-          error: 'GROQ_API_KEY is not configured on the backend server. Add your gsk_... key in Settings or Cloud Run.',
-          source: 'error',
-          brand: 'RaOne AI by RavanaTec',
-        });
+      if (!activeGroqKey) {
+        return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'GROQ_API_KEY is not configured. Add your gsk_... key in Settings.');
       }
       const chatStart = Date.now();
       const groqOut = await callGroqChat(
-        GROQ_API_KEY,
+        activeGroqKey,
         isGroqModelId(model) ? model : 'raone-llama3-70b',
         [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
         fullSystemInstruction
@@ -2898,7 +2931,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // CometAPI fallback for Gemini models if Gemini API key is missing
-    if (!aiClient && effectiveProvider === 'auto' && COMET_API_KEY) {
+    if (!tenantClient && effectiveProvider === 'auto' && activeCometKey) {
       try {
         const cometTargetModel = model.includes('argon') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
         const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
@@ -2906,7 +2939,7 @@ app.post('/api/chat', async (req, res) => {
           model: cometTargetModel,
           isTemporary,
         });
-        const text = await callCometAPI(cometTargetModel, [...messages, { role: 'user', content: prompt }], sysWithMeta);
+        const text = await callCometAPI(cometTargetModel, [...messages, { role: 'user', content: prompt }], sysWithMeta, {}, activeCometKey, activeCometBase);
         return res.json({
           text,
           mode,
@@ -2919,11 +2952,11 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // Automatic Groq fallback when provider mode is auto, GEMINI_API_KEY is not set, and GROQ_API_KEY is configured
-    if (!aiClient && effectiveProvider === 'auto' && GROQ_API_KEY) {
+    // Automatic Groq fallback
+    if (!tenantClient && effectiveProvider === 'auto' && activeGroqKey) {
       const chatStart = Date.now();
       const groqOut = await callGroqChat(
-        GROQ_API_KEY,
+        activeGroqKey,
         'raone-llama3-70b',
         [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
         fullSystemInstruction
@@ -2944,18 +2977,18 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    if (!aiClient) {
-      return res.status(503).json({
-        error:
-          effectiveProvider === 'gemini'
-            ? 'Gemini provider is selected, but GEMINI_API_KEY is not configured on the backend server. Switch provider to Groq or add a Gemini key in Settings.'
-            : 'GEMINI_API_KEY (or GROQ_API_KEY) is not configured on the backend server. Set a valid API key in Settings or Cloud Run.',
-        source: 'error',
-        brand: 'RaOne AI by RavanaTec',
-      });
+    if (!tenantClient) {
+      return sendApiError(
+        req,
+        res,
+        503,
+        'PROVIDER_NOT_CONFIGURED',
+        effectiveProvider === 'gemini'
+          ? 'Gemini provider is selected, but GEMINI_API_KEY is not configured. Switch provider to Groq or add a Gemini key in Settings.'
+          : 'GEMINI_API_KEY (or GROQ_API_KEY) is not configured on the backend server. Set a valid API key in Settings or Cloud Run.'
+      );
     }
 
-    // Format chat history
     let contents: any[] = [];
     if (Array.isArray(messages) && messages.length > 0) {
       contents = messages.map((m: { role: string; content: string }) => ({
@@ -2978,7 +3011,6 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Tools setup: Google Search or Google Maps grounding
     const tools: any[] = [];
     let toolConfig: any = undefined;
 
@@ -3012,17 +3044,14 @@ app.post('/api/chat', async (req, res) => {
     const { response, modelUsed } = await generateWithGeminiFallback(
       contents,
       generateConfig,
-      model
+      model,
+      tenantClient
     );
     const latencyMs = Date.now() - startTime;
 
     const replyText = response.text || '';
     if (!replyText) {
-      return res.status(502).json({
-        error: 'Gemini returned an empty response.',
-        source: 'error',
-        brand: 'RaOne AI by RavanaTec',
-      });
+      return sendApiError(req, res, 502, 'EMPTY_PROVIDER_RESPONSE', 'Gemini returned an empty response.');
     }
 
     const groundingSources: any[] = [];
@@ -3067,13 +3096,13 @@ app.post('/api/chat', async (req, res) => {
     });
   } catch (error: any) {
     console.error('RaOne Chat Error:', error);
-    if (effectiveProvider === 'auto' && GROQ_API_KEY && isGeminiFallbackEligibleError(error)) {
+    if (effectiveProvider === 'auto' && activeGroqKey && isGeminiFallbackEligibleError(error)) {
       try {
-        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body;
+        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body || {};
         const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
         const chatStart = Date.now();
         const groqOut = await callGroqChat(
-          GROQ_API_KEY,
+          activeGroqKey,
           'raone-llama3-70b',
           [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
           sysPrompt
@@ -3098,30 +3127,57 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const status = typeof error?.status === 'number' && error.status >= 400 && error.status < 600 ? error.status : 502;
-    return res.status(status).json({
-      error: error?.message || 'Gemini API request failed.',
-      source: 'error',
-      brand: 'RaOne AI by RavanaTec',
-    });
+    return sendApiError(req, res, status, 'CHAT_PROVIDER_ERROR', error?.message || 'AI request failed.');
   }
 });
 
-// 1b. Real-Time SSE Streaming Chat Endpoint (Live word-by-word Gemini output + verification telemetry)
-app.post('/api/chat/stream', async (req, res) => {
+// 1b. Real-Time SSE Streaming Chat Endpoint (With disconnect abort, timeout, and clean pre-stream failover - A24)
+app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
+  let clientClosed = false;
+  let hasStartedStream = false;
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => abortController.abort(), 120000);
+
+  req.on('close', () => {
+    clientClosed = true;
+    abortController.abort();
+    clearTimeout(timeoutHandle);
+  });
+
   const sendEvent = (payload: Record<string, any>) => {
+    if (clientClosed || res.writableEnded || res.destroyed) return;
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const endStream = () => {
+    clearTimeout(timeoutHandle);
+    if (!res.writableEnded) res.end();
   };
 
   const startTime = Date.now();
   let effectiveProvider: AIProviderMode = 'auto';
+  const tenantId = getReqTenant(req);
+  let activeGroqKey = GROQ_API_KEY;
 
   try {
-    const storedSettings = await getStoredUserSettings();
+    const [storedSettings, tenantCtx] = await Promise.all([
+      getStoredUserSettings(tenantId),
+      getTenantGeminiClient(req),
+    ]);
+    const tenantClient = tenantCtx.client;
+    const byok = tenantCtx.byok;
+    const activeOpenAiKey = byok.openAiApiKey || OPENAI_API_KEY;
+    const activeAnthropicKey = byok.anthropicApiKey || ANTHROPIC_API_KEY;
+    const activeDeepSeekKey = byok.deepSeekApiKey || DEEPSEEK_API_KEY;
+    const activeCometKey = byok.cometApiKey || COMET_API_KEY;
+    const activeCometBase = byok.cometApiBaseUrl || COMET_API_BASE_URL;
+    activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+
     const {
       messages = [],
       mode = 'think',
@@ -3133,13 +3189,14 @@ app.post('/api/chat/stream', async (req, res) => {
       enableMaps = false,
       userLocation = null,
       isTemporary = false,
-    } = req.body;
+    } = req.body || {};
     effectiveProvider = (provider || storedSettings.activeProvider || 'auto') as AIProviderMode;
 
     const fullSystemInstruction = buildRaOneSystemPrompt({ mode, isTemporary, context });
 
-    // External providers (non-streaming gateway wrapped into SSE)
     const externalResult = async (source: string, label: string, text: string) => {
+      if (clientClosed) return endStream();
+      hasStartedStream = true;
       sendEvent({ type: 'start', source, model: label });
       sendEvent({ type: 'chunk', text });
       sendEvent({
@@ -3153,80 +3210,70 @@ app.post('/api/chat/stream', async (req, res) => {
         groundingSources: [],
         mapsSources: [],
       });
-      res.end();
+      return endStream();
     };
 
     if (effectiveProvider === 'groq' || isGroqModelId(model)) {
-      if (!GROQ_API_KEY) {
+      if (!activeGroqKey) {
         sendEvent({
           type: 'error',
-          error: 'GROQ_API_KEY is not configured on the backend server. Add your gsk_... key in Settings or Cloud Run.',
+          code: 'PROVIDER_NOT_CONFIGURED',
+          error: 'GROQ_API_KEY is not configured. Add your gsk_... key in Settings.',
         });
-        return res.end();
+        return endStream();
       }
+      hasStartedStream = true;
       const formattedMessages = formatGroqMessages(messages, prompt, fullSystemInstruction);
       await streamGroqChatToSSE(
-        GROQ_API_KEY,
+        activeGroqKey,
         isGroqModelId(model) ? model : 'raone-llama3-70b',
         formattedMessages,
         sendEvent,
-        startTime
+        startTime,
+        true,
+        abortController.signal
       );
-      return res.end();
+      return endStream();
     }
 
-    if (model === 'comet-all-in-one' && COMET_API_KEY) {
-      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
-        provider: 'CometAPI Gateway',
-        model: 'gpt-4o',
-        isTemporary,
-      });
-      const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+    if (model === 'comet-all-in-one' && activeCometKey) {
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, { provider: 'CometAPI Gateway', model: 'gpt-4o', isTemporary });
+      const text = await callCometAPI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta, {}, activeCometKey, activeCometBase);
       return await externalResult('cometapi', 'comet-all-in-one', text);
     }
-    if (model === 'raone-gpt4o' && OPENAI_API_KEY) {
-      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
-        provider: 'OpenAI API',
-        model: 'gpt-4o',
-        isTemporary,
-      });
-      const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+    if (model === 'raone-gpt4o' && activeOpenAiKey) {
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, { provider: 'OpenAI API', model: 'gpt-4o', isTemporary });
+      const text = await callOpenAI('gpt-4o', [...messages, { role: 'user', content: prompt }], sysWithMeta, activeOpenAiKey);
       return await externalResult('openai', 'gpt-4o', text);
     }
-    if (model === 'raone-claude' && ANTHROPIC_API_KEY) {
-      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
-        provider: 'Anthropic API',
-        model: 'claude-3-5-sonnet-20241022',
-        isTemporary,
-      });
-      const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+    if (model === 'raone-claude' && activeAnthropicKey) {
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, { provider: 'Anthropic API', model: 'claude-3-5-sonnet-20241022', isTemporary });
+      const text = await callAnthropic('claude-3-5-sonnet-20241022', [...messages, { role: 'user', content: prompt }], sysWithMeta, activeAnthropicKey);
       return await externalResult('anthropic', 'claude-3-5-sonnet', text);
     }
-    if (model === 'raone-deepseek-r1' && DEEPSEEK_API_KEY) {
-      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, {
-        provider: 'DeepSeek API',
-        model: 'deepseek-reasoner',
-        isTemporary,
-      });
-      const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta);
+    if (model === 'raone-deepseek-r1' && activeDeepSeekKey) {
+      const sysWithMeta = appendRuntimeMetadata(fullSystemInstruction, { provider: 'DeepSeek API', model: 'deepseek-reasoner', isTemporary });
+      const text = await callDeepSeek('deepseek-reasoner', [...messages, { role: 'user', content: prompt }], sysWithMeta, activeDeepSeekKey);
       return await externalResult('deepseek', 'deepseek-reasoner', text);
     }
 
-    if (!aiClient && effectiveProvider === 'auto' && GROQ_API_KEY) {
+    if (!tenantClient && effectiveProvider === 'auto' && activeGroqKey) {
+      hasStartedStream = true;
       const formattedMessages = formatGroqMessages(messages, prompt, fullSystemInstruction);
-      await streamGroqChatToSSE(GROQ_API_KEY, 'raone-llama3-70b', formattedMessages, sendEvent, startTime);
-      return res.end();
+      await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
+      return endStream();
     }
 
-    if (!aiClient) {
+    if (!tenantClient) {
       sendEvent({
         type: 'error',
+        code: 'PROVIDER_NOT_CONFIGURED',
         error:
           effectiveProvider === 'gemini'
             ? 'Gemini provider is selected, but GEMINI_API_KEY is not configured. Switch provider to Groq or add a Gemini key in Settings.'
             : 'GEMINI_API_KEY (or GROQ_API_KEY) is not configured on the backend server. Set a valid API key.',
       });
-      return res.end();
+      return endStream();
     }
 
     let contents: any[] = [];
@@ -3269,6 +3316,7 @@ app.post('/api/chat/stream', async (req, res) => {
     let lastError: any = null;
 
     for (const candidateModel of candidates) {
+      if (clientClosed) return endStream();
       try {
         const candidateConfig = {
           ...generateConfig,
@@ -3280,12 +3328,13 @@ app.post('/api/chat/stream', async (req, res) => {
             isTemporary,
           }),
         };
-        const stream = await aiClient.models.generateContentStream({
+        const stream = await tenantClient.models.generateContentStream({
           model: candidateModel,
           contents,
           config: candidateConfig,
         });
 
+        hasStartedStream = true;
         sendEvent({ type: 'start', source: 'gemini', model: candidateModel });
 
         let modelVersion: string | undefined;
@@ -3295,6 +3344,7 @@ app.post('/api/chat/stream', async (req, res) => {
         const mapsSources: any[] = [];
 
         for await (const chunk of stream) {
+          if (clientClosed || abortController.signal.aborted) break;
           const c = chunk as any;
           if (c.text) {
             sendEvent({ type: 'chunk', text: c.text });
@@ -3321,22 +3371,24 @@ app.post('/api/chat/stream', async (req, res) => {
           }
         }
 
-        sendEvent({
-          type: 'done',
-          source: 'gemini',
-          verifiedModel: candidateModel,
-          modelVersion: modelVersion || candidateModel,
-          responseId: responseId || null,
-          usage,
-          latencyMs: Date.now() - startTime,
-          groundingSources,
-          mapsSources,
-        });
+        if (!clientClosed) {
+          sendEvent({
+            type: 'done',
+            source: 'gemini',
+            verifiedModel: candidateModel,
+            modelVersion: modelVersion || candidateModel,
+            responseId: responseId || null,
+            usage,
+            latencyMs: Date.now() - startTime,
+            groundingSources,
+            mapsSources,
+          });
+        }
         streamedOk = true;
         break;
       } catch (err: any) {
         lastError = err;
-        if (isModelNotFoundError(err)) {
+        if (!hasStartedStream && isModelNotFoundError(err)) {
           console.warn(`Stream model ${candidateModel} unavailable, trying next candidate...`);
           continue;
         }
@@ -3344,19 +3396,23 @@ app.post('/api/chat/stream', async (req, res) => {
       }
     }
 
-    if (!streamedOk) {
+    if (!streamedOk && !clientClosed) {
       throw lastError || new Error('All Gemini model candidates failed.');
     }
-    return res.end();
+    return endStream();
   } catch (error: any) {
+    if (clientClosed || error?.name === 'AbortError') {
+      return endStream();
+    }
     console.error('RaOne Stream Chat Error:', error);
-    if (effectiveProvider === 'auto' && GROQ_API_KEY && isGeminiFallbackEligibleError(error)) {
+    // Only fail over to Groq BEFORE streaming any tokens to avoid corrupting a partial message (A24)
+    if (!hasStartedStream && effectiveProvider === 'auto' && activeGroqKey && isGeminiFallbackEligibleError(error)) {
       try {
-        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body;
+        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body || {};
         const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
         const formattedMessages = formatGroqMessages(messages, prompt, sysPrompt);
-        await streamGroqChatToSSE(GROQ_API_KEY, 'raone-llama3-70b', formattedMessages, sendEvent, startTime);
-        return res.end();
+        await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
+        return endStream();
       } catch (groqFallbackErr: any) {
         console.error('Groq stream failover error:', groqFallbackErr);
       }
@@ -3364,350 +3420,262 @@ app.post('/api/chat/stream', async (req, res) => {
 
     sendEvent({
       type: 'error',
-      error: error?.message || 'Gemini streaming request failed.',
+      code: 'STREAM_PROVIDER_ERROR',
+      error: error?.message || 'Streaming request failed.',
     });
-    return res.end();
+    return endStream();
   }
 });
 
-// 2. High-Quality Image Generation & Editing (gemini-nano-banana-2.1)
-app.post('/api/ai/image', async (req, res) => {
+// 2. High-Quality Image Generation & Editing (Requires configured Gemini key - no silent logo fallback)
+app.post('/api/ai/image', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, aspectRatio = '1:1', imageSize = '1K', base64Image = null } = req.body;
-
+    const { prompt, aspectRatio = '1:1', imageSize = '1K', base64Image = null } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for image generation.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for image generation.');
     }
 
-    if (!aiClient) {
-      return res.status(200).json({
-        imageUrl: '/assets/aistudio/RaOne_Logo_c8b49006.png',
-        prompt,
-        aspectRatio,
-        info: 'Running in simulated preview mode.',
-      });
+    const { client: tenantClient } = await getTenantGeminiClient(req);
+    if (!tenantClient) {
+      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini API key is not configured for image generation.');
     }
 
-    try {
-      const parts: any[] = [];
-      if (base64Image) {
-        // Image editing / reference
-        parts.push({
-          inlineData: {
-            data: base64Image.replace(/^data:image\/\w+;base64,/, ''),
-            mimeType: 'image/png',
-          },
-        });
-        parts.push({ text: `Modify or edit this image: ${prompt}` });
-      } else {
-        parts.push({ text: prompt });
-      }
-
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-nano-banana-2.1',
-        contents: { parts },
-        config: {
-          imageConfig: {
-            aspectRatio: aspectRatio as any,
-            imageSize: imageSize as any,
-          },
+    const parts: any[] = [];
+    if (base64Image) {
+      parts.push({
+        inlineData: {
+          data: String(base64Image).replace(/^data:image\/\w+;base64,/, ''),
+          mimeType: 'image/png',
         },
       });
-
-      let imageUrl = '';
-      for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-        if (part.inlineData?.data) {
-          const mime = part.inlineData.mimeType ?? 'image/png';
-          imageUrl = `data:${mime};base64,${part.inlineData.data}`;
-          break;
-        }
-      }
-
-      if (imageUrl) {
-        return res.json({ imageUrl, prompt, aspectRatio, imageSize });
-      }
-    } catch (imgError: any) {
-      console.warn('Image generation fallback triggered:', imgError.message);
+      parts.push({ text: `Modify or edit this image: ${prompt}` });
+    } else {
+      parts.push({ text: prompt });
     }
 
-    // Graceful fallback to the official RaOne Core emblem
-    return res.json({
-      imageUrl: '/assets/aistudio/RaOne_Logo_c8b49006.png',
-      prompt,
-      aspectRatio,
-      imageSize,
-      notice: 'Synthesized with RaOne Core visual matrix.',
+    const response = await tenantClient.models.generateContent({
+      model: 'gemini-nano-banana-2.1',
+      contents: { parts },
+      config: {
+        imageConfig: {
+          aspectRatio: aspectRatio as any,
+          imageSize: imageSize as any,
+        },
+      },
     });
+
+    let imageUrl = '';
+    for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+      if (part.inlineData?.data) {
+        const mime = part.inlineData.mimeType ?? 'image/png';
+        imageUrl = `data:${mime};base64,${part.inlineData.data}`;
+        break;
+      }
+    }
+
+    if (!imageUrl) {
+      return sendApiError(req, res, 502, 'IMAGE_GENERATION_EMPTY', 'Upstream image model returned no image output.');
+    }
+
+    return res.json({ imageUrl, prompt, aspectRatio, imageSize });
   } catch (error: any) {
     console.error('Image API error:', error);
-    return res.status(500).json({ error: error.message });
+    return sendApiError(req, res, 503, 'IMAGE_PROVIDER_UNAVAILABLE', error?.message || 'Image generation failed.');
   }
 });
 
-// 3. Music Generation (lyria-3-clip-preview & lyria-3-pro-preview)
-app.post('/api/ai/music', async (req, res) => {
+// 3. Music Generation (Requires live Lyria audio stream - no hardcoded lyrics fallback)
+app.post('/api/ai/music', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, model = 'lyria-3-clip-preview' } = req.body;
+    const { prompt, model = 'lyria-3-clip-preview' } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for music generation.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for music generation.');
+    }
+
+    const { client: tenantClient } = await getTenantGeminiClient(req);
+    if (!tenantClient) {
+      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini Lyria API key is not configured on the backend.');
     }
 
     const targetModel = model === 'lyria-3-pro-preview' ? 'lyria-3-pro-preview' : 'lyria-3-clip-preview';
+    const stream = await tenantClient.models.generateContentStream({
+      model: targetModel,
+      contents: prompt,
+    });
 
-    if (aiClient) {
-      try {
-        const stream = await aiClient.models.generateContentStream({
-          model: targetModel,
-          contents: prompt,
-        });
+    const audioChunks: Buffer[] = [];
+    let lyrics = '';
+    let mimeType = 'audio/mpeg';
 
-        const audioChunks: Buffer[] = [];
-        let lyrics = '';
-        let mimeType = 'audio/mpeg';
-
-        for await (const chunk of stream) {
-          const parts = chunk.candidates?.[0]?.content?.parts;
-          if (!parts) continue;
-          for (const part of parts) {
-            if (part.inlineData?.data) {
-              if (audioChunks.length === 0 && part.inlineData.mimeType) {
-                mimeType = part.inlineData.mimeType;
-              }
-              audioChunks.push(Buffer.from(part.inlineData.data, 'base64'));
-            }
-            if (part.text) {
-              lyrics += part.text;
-            }
+    for await (const chunk of stream) {
+      const parts = chunk.candidates?.[0]?.content?.parts;
+      if (!parts) continue;
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          if (audioChunks.length === 0 && part.inlineData.mimeType) {
+            mimeType = part.inlineData.mimeType;
           }
+          audioChunks.push(Buffer.from(part.inlineData.data, 'base64'));
         }
-
-        if (audioChunks.length > 0) {
-          const audioBase64 = Buffer.concat(audioChunks).toString('base64');
-          return res.json({
-            audioDataUrl: `data:${mimeType};base64,${audioBase64}`,
-            lyrics,
-            model: targetModel,
-            prompt,
-          });
+        if (part.text) {
+          lyrics += part.text;
         }
-      } catch (musicError: any) {
-        console.warn('Lyria music error:', musicError.message);
       }
     }
 
-    // Return structured response with rich generated lyrics and notice
+    if (audioChunks.length === 0) {
+      return sendApiError(req, res, 503, 'MUSIC_PROVIDER_UNAVAILABLE', 'Lyria music generation returned no audio stream.');
+    }
+
+    const audioBase64 = Buffer.concat(audioChunks).toString('base64');
     return res.json({
-      audioDataUrl: null,
-      lyrics: `[RaOne Acoustic Matrix · ${targetModel === 'lyria-3-pro-preview' ? 'Full Track' : '30s Clip'}]
-Tempo: 128 BPM | Key: D Minor | Theme: Ancient Cosmic Resonances
-
-[Verse 1]
-From the heights of Sigiriya, the ten winds blow,
-Circuits pulse with gold and cyber glow.
-Through the quantum skies, the Vimana roars,
-RaOne awakens at the cosmic doors.
-
-[Chorus]
-Think. Create. Act. One AI for Your World!
-Flags of RavanaTec in the stars unfurled.
-Hear the ten voices unite as one,
-Under the golden Sri Lankan sun!`,
+      audioDataUrl: `data:${mimeType};base64,${audioBase64}`,
+      lyrics,
       model: targetModel,
       prompt,
-      notice: 'Lyria model ready. Active on Blaze Plan.',
     });
   } catch (error: any) {
     console.error('Music API error:', error);
-    return res.status(500).json({ error: error.message });
+    return sendApiError(req, res, 503, 'MUSIC_PROVIDER_UNAVAILABLE', error?.message || 'Music generation failed.');
   }
 });
 
-// 4. Video Generation (gemini-omni-1.2-flash via Interactions API)
-app.post('/api/ai/video', async (req, res) => {
+// 4. Video Generation (Requires live Gemini Omni Interactions API - no simulated storyboard)
+app.post('/api/ai/video', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, aspectRatio = '16:9', duration = '10s', base64Image = null } = req.body;
+    const { prompt, aspectRatio = '16:9', duration = '10s', base64Image = null } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for video generation.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for video generation.');
     }
 
-    if (aiClient) {
-      try {
-        let input: any = prompt;
-        if (base64Image) {
-          input = [
-            {
-              type: 'image',
-              mime_type: 'image/png',
-              data: base64Image.replace(/^data:image\/\w+;base64,/, ''),
-            },
-            {
-              type: 'text',
-              text: prompt,
-            },
-          ];
-        }
+    const { client: tenantClient } = await getTenantGeminiClient(req);
+    if (!tenantClient) {
+      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini Video API key is not configured on the backend.');
+    }
 
-        const interaction = await aiClient.interactions.create(
-          {
-            model: 'gemini-omni-1.2-flash',
-            input,
-            background: false,
-            store: false,
-            stream: false,
-            response_format: {
-              type: 'video',
-              aspect_ratio: aspectRatio,
-              duration,
-              resolution: '720p',
-            },
-          },
-          { timeout: 300000 }
-        );
+    let input: any = prompt;
+    if (base64Image) {
+      input = [
+        {
+          type: 'image',
+          mime_type: 'image/png',
+          data: String(base64Image).replace(/^data:image\/\w+;base64,/, ''),
+        },
+        { type: 'text', text: prompt },
+      ];
+    }
 
-        const videoPart = interaction.output_video;
-        if (videoPart && videoPart.data) {
-          return res.json({
-            videoDataUrl: `data:${videoPart.mime_type || 'video/mp4'};base64,${videoPart.data}`,
-            prompt,
-            aspectRatio,
-            duration,
-          });
-        }
-      } catch (videoErr: any) {
-        console.warn('Interactions video generation notice:', videoErr.message);
-      }
+    const interaction = await tenantClient.interactions.create(
+      {
+        model: 'gemini-omni-1.2-flash',
+        input,
+        background: false,
+        store: false,
+        stream: false,
+        response_format: {
+          type: 'video',
+          aspect_ratio: aspectRatio,
+          duration,
+          resolution: '720p',
+        },
+      },
+      { timeout: 300000 }
+    );
+
+    const videoPart = interaction.output_video;
+    if (!videoPart || !videoPart.data) {
+      return sendApiError(req, res, 503, 'VIDEO_PROVIDER_UNAVAILABLE', 'Video provider returned no video output.');
     }
 
     return res.json({
-      videoDataUrl: null,
+      videoDataUrl: `data:${videoPart.mime_type || 'video/mp4'};base64,${videoPart.data}`,
       prompt,
       aspectRatio,
       duration,
-      status: 'simulated',
-      storyboard: [
-        'Frame 01 (0.0s): High-angle orbital view of Sigiriya monolith engulfed in neon cyan data conduits.',
-        'Frame 02 (3.5s): Close-up on the central RaOne geometric emblem glowing with Solar Amber energy.',
-        'Frame 03 (7.0s): Particle vectors accelerate in ten circular axes signifying the ten faculties of Ravana.',
-        'Frame 04 (10.0s): Seamless convergence into "RaOne AI by RavanaTec — Think. Create. Act."',
-      ],
-      notice: 'gemini-omni-1.2-flash video engine registered.',
     });
   } catch (error: any) {
     console.error('Video API error:', error);
-    return res.status(500).json({ error: error.message });
+    return sendApiError(req, res, 503, 'VIDEO_PROVIDER_UNAVAILABLE', error?.message || 'Video generation failed.');
   }
 });
 
-// 5. Audio Transcription (gemini-3.5-transcribe)
-app.post('/api/ai/transcribe', async (req, res) => {
+// 5. Audio Transcription (Requires live Gemini transcription - no hardcoded transcript)
+app.post('/api/ai/transcribe', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { audioBase64, mimeType = 'audio/webm' } = req.body;
-
+    const { audioBase64, mimeType = 'audio/webm' } = req.body || {};
     if (!audioBase64) {
-      return res.status(400).json({ error: 'Audio data is required for transcription.' });
+      return sendApiError(req, res, 400, 'INVALID_AUDIO', 'Audio data is required for transcription.');
     }
 
-    if (aiClient) {
-      try {
-        const cleanBase64 = audioBase64.replace(/^data:audio\/\w+;base64,/, '');
-        const response = await aiClient.models.generateContent({
+    const { client: tenantClient } = await getTenantGeminiClient(req);
+    if (!tenantClient) {
+      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini API key is not configured for audio transcription.');
+    }
+
+    const cleanBase64 = String(audioBase64).replace(/^data:audio\/\w+;base64,/, '');
+    const response = await tenantClient.models.generateContent({
+      model: 'gemini-3.5-transcribe',
+      contents: {
+        parts: [
+          { inlineData: { mimeType, data: cleanBase64 } },
+          { text: 'Transcribe this audio verbatim in its original language (Sinhala, English, or Singlish).' },
+        ],
+      },
+      config: {
+        systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+          provider: 'Google Gemini API',
           model: 'gemini-3.5-transcribe',
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: cleanBase64,
-                },
-              },
-              { text: 'Transcribe this audio verbatim in its original language (Sinhala, English, or Singlish).' },
-            ],
-          },
-          config: {
-            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
-              provider: 'Google Gemini API',
-              model: 'gemini-3.5-transcribe',
-              subsystem: 'Audio Transcription Engine',
-            }),
-          },
-        });
+          subsystem: 'Audio Transcription Engine',
+        }),
+      },
+    });
 
-        const transcript = response.text || '';
-        return res.json({ transcript });
-      } catch (transcribeError: any) {
-        console.warn('Audio transcribe notice:', transcribeError.message);
-      }
+    const transcript = (response.text || '').trim();
+    if (!transcript) {
+      return sendApiError(req, res, 502, 'TRANSCRIPTION_EMPTY', 'Upstream transcription model returned empty text.');
     }
 
-    return res.json({
-      transcript: 'Hey RaOne, analyze the architecture and deploy the sovereign AI pipeline.',
-      notice: 'gemini-3.5-transcribe operational.',
-    });
+    return res.json({ transcript });
   } catch (error: any) {
     console.error('Transcription API error:', error);
-    return res.status(500).json({ error: error.message });
+    return sendApiError(req, res, 503, 'TRANSCRIPTION_PROVIDER_UNAVAILABLE', error?.message || 'Audio transcription failed.');
   }
 });
 
 // ==========================================
-// 🎨 RAONE VISION STUDIO (LEONARDO AI CLONE)
-// Silicon Valley-Grade T2I Latent Diffusion System
+// 🎨 RAONE VISION STUDIO (Per-Tenant Persistent Store & Real AI / Worker Boundaries - A03, A09, A12, A13)
 // ==========================================
-const IMAGE_GENERATIONS_FILE = path.join(__dirname, 'image_generations_data.json');
-
-function getStoredImageGenerations(): any[] {
+app.get(['/api/vision/history', '/api/vision/gallery'], async (req, res) => {
   try {
-    if (fs.existsSync(IMAGE_GENERATIONS_FILE)) {
-      const data = fs.readFileSync(IMAGE_GENERATIONS_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading image generations file:', err);
-  }
-  return [];
-}
-
-function saveStoredImageGenerations(generations: any[]): void {
-  try {
-    fs.writeFileSync(IMAGE_GENERATIONS_FILE, JSON.stringify(generations, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving image generations file:', err);
-  }
-}
-
-// 1. Get Generation Feed / History & Gallery
-app.get(['/api/vision/history', '/api/vision/gallery'], (_req, res) => {
-  try {
-    const list = getStoredImageGenerations();
+    const list = await readTenantCollection<any[]>(getReqTenant(req), 'vision_images', []);
     return res.json({ success: true, count: list.length, items: list });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'VISION_HISTORY_ERROR', err.message);
   }
 });
 
-// 2. Enhance Prompt (Midjourney / Leonardo Style Expansion)
-app.post('/api/vision/enhance-prompt', async (req, res) => {
+app.post('/api/vision/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, style = 'Cinematic Photoreal' } = req.body;
+    const { prompt, style = 'Cinematic Photoreal' } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required.');
     }
 
-    const enhanceVisionInstruction = `You are an elite Silicon Valley prompt engineer specialized in Midjourney v6.1, Flux 1.1 Pro, and Leonardo AI prompt syntax.
-Transform the following basic user prompt into a magnificent, hyper-detailed, award-winning visual prompt optimized for Latent Diffusion Models (LDM).
-Include camera lenses (e.g., Hasselblad, 85mm f/1.4), volumetric cinematic lighting, texture details, color grading, and aesthetic tokens matching style "${style}".
-Respond ONLY with the final prompt text. Do not include markdown quotes, introductory or concluding text.
+    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+
+    const enhanceVisionInstruction = `You are an elite prompt engineer specialized in latent diffusion prompt syntax.
+Transform the following basic user prompt into a hyper-detailed visual prompt matching style "${style}".
+Include camera lenses, volumetric cinematic lighting, texture details, and color grading.
+Respond ONLY with the final prompt text.
 
 User prompt: ${prompt}`;
 
-    if (aiClient) {
+    if (tenantClient) {
       try {
-        const response = await aiClient.models.generateContent({
+        const response = await tenantClient.models.generateContent({
           model: 'gemini-4-hydrogen',
-          contents: {
-            role: 'user',
-            parts: [{ text: enhanceVisionInstruction }],
-          },
+          contents: { role: 'user', parts: [{ text: enhanceVisionInstruction }] },
           config: {
             systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
               provider: 'Google Gemini API',
@@ -3716,7 +3684,6 @@ User prompt: ${prompt}`;
             }),
           },
         });
-
         const enhanced = (response.text || '').trim();
         if (enhanced) {
           return res.json({ success: true, enhancedPrompt: enhanced });
@@ -3726,10 +3693,10 @@ User prompt: ${prompt}`;
       }
     }
 
-    if (GROQ_API_KEY) {
+    if (activeGroqKey) {
       try {
         const groqVision = await callGroqChat(
-          GROQ_API_KEY,
+          activeGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: enhanceVisionInstruction }],
           `${SYSTEM_PROMPT}\n\n[VISION PROMPT ENHANCER]\nOutput ONLY the enhanced image prompt string.`,
@@ -3744,89 +3711,78 @@ User prompt: ${prompt}`;
       }
     }
 
-    // Fallback enhancement formula
-    const fallbackEnhanced = `${prompt}, hyperrealistic 8k resolution, shot on Hasselblad H6D-100c, 85mm f/1.4 lens, cinematic golden hour lighting, ray-traced ambient occlusion, intricate textures, photorealistic depth of field, masterpiece award-winning composition`;
-    return res.json({ success: true, enhancedPrompt: fallbackEnhanced });
+    return sendApiError(req, res, 503, 'VISION_ENHANCE_UNAVAILABLE', 'No AI text provider is currently available to enhance the prompt.');
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'VISION_ENHANCE_ERROR', err.message);
   }
 });
 
-// 3. Generate New Image (T2I Synthesis with Imagen 3 / Gemini Nano Banana or High-Fidelity Neural Assets)
-app.post('/api/vision/generate', async (req, res) => {
+app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
+  const tenantId = getReqTenant(req);
+  const {
+    prompt,
+    negativePrompt = '',
+    model = 'Flux 1.1 Pro (LDM)',
+    style = 'Cinematic Photoreal',
+    aspectRatio = '16:9',
+    dimensions = '1344x768',
+    cfgScale = 7.5,
+    steps = 40,
+    seed = Math.floor(Math.random() * 99999999) + 10000000,
+    alchemy = true,
+    photoReal = true,
+    promptMagic = true,
+    count = 1,
+  } = req.body || {};
+
+  if (!prompt) {
+    return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for image generation.');
+  }
+
+  const { client: tenantClient } = await getTenantGeminiClient(req);
+  if (!tenantClient) {
+    return sendApiError(
+      req,
+      res,
+      503,
+      'VISION_PROVIDER_UNAVAILABLE',
+      'Image synthesis requires an active Gemini API key configured on the backend or in your personal settings.'
+    );
+  }
+
+  const numToGenerate = Math.min(Math.max(1, Number(count) || 1), 4);
+  const creditCost = numToGenerate * 2;
+  const reservation = await reserveCredits(tenantId, creditCost, 'vision_generate', req.requestId || `vis_${Date.now()}`);
+  if (!reservation.ok) {
+    return sendApiError(
+      req,
+      res,
+      402,
+      'INSUFFICIENT_CREDITS',
+      `Insufficient credits for image generation (required: ${creditCost}, remaining: ${reservation.balance}).`
+    );
+  }
+
   try {
-    const {
-      prompt,
-      negativePrompt = '',
-      model = 'Flux 1.1 Pro (LDM)',
-      style = 'Cinematic Photoreal',
-      aspectRatio = '16:9',
-      dimensions = '1344x768',
-      cfgScale = 7.5,
-      steps = 40,
-      seed = Math.floor(Math.random() * 99999999) + 10000000,
-      alchemy = true,
-      photoReal = true,
-      promptMagic = true,
-      count = 1,
-    } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for image generation.' });
-    }
-
-    const availableAssets = [
-      '/assets/aistudio/image_1daadf28.png',
-      '/assets/aistudio/image_2ce97639.png',
-      '/assets/aistudio/image_765d5dbe.png',
-      '/assets/aistudio/image_7d3b1a1b.png',
-      '/assets/aistudio/image_8410a432.png',
-      '/assets/aistudio/image_a905476a.png',
-      '/assets/aistudio/image_bc3521a6.png',
-      '/assets/aistudio/image_c02dda07.png',
-      '/assets/aistudio/image_fd7eb130.png',
-    ];
-
     const generatedItems: any[] = [];
-    const numToGenerate = Math.min(Math.max(1, Number(count) || 1), 4);
+    const apiAspect = ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '16:9';
 
     for (let i = 0; i < numToGenerate; i++) {
       const currentSeed = Number(seed) + i;
-      let finalImageUrl = '';
+      const imageResponse = await tenantClient.models.generateImages({
+        model: 'gemini-nano-banana-2.1',
+        prompt: `${prompt}${style ? `, style: ${style}` : ''}`,
+        config: {
+          numberOfImages: 1,
+          outputMimeType: 'image/jpeg',
+          aspectRatio: apiAspect as any,
+        },
+      });
 
-      if (aiClient) {
-        try {
-          const apiAspect = ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(aspectRatio)
-            ? aspectRatio
-            : '16:9';
+      const base64Data = imageResponse.generatedImages?.[0]?.image?.imageBytes;
+      if (!base64Data) continue;
 
-          const imageResponse = await aiClient.models.generateImages({
-            model: 'gemini-nano-banana-2.1',
-            prompt: `${prompt}${style ? `, style: ${style}` : ''}`,
-            config: {
-              numberOfImages: 1,
-              outputMimeType: 'image/jpeg',
-              aspectRatio: apiAspect as any,
-            },
-          });
-
-          const base64Data = imageResponse.generatedImages?.[0]?.image?.imageBytes;
-          if (base64Data) {
-            finalImageUrl = `data:image/jpeg;base64,${base64Data}`;
-          }
-        } catch (apiErr: any) {
-          console.warn(`Vision AI synthesis notice for slot ${i}:`, apiErr.message);
-        }
-      }
-
-      if (!finalImageUrl) {
-        const hash = Math.abs(
-          (prompt + currentSeed + i).split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
-        );
-        finalImageUrl = availableAssets[hash % availableAssets.length];
-      }
-
-      const item = {
+      generatedItems.push({
         id: `gen-${Date.now()}-${Math.random().toString(36).substring(2, 7)}-${i}`,
         prompt,
         negativePrompt,
@@ -3837,343 +3793,136 @@ app.post('/api/vision/generate', async (req, res) => {
         cfgScale: Number(cfgScale),
         steps: Number(steps),
         seed: currentSeed,
-        imageUrl: finalImageUrl,
+        imageUrl: `data:image/jpeg;base64,${base64Data}`,
         createdAt: new Date().toISOString(),
         isFavorite: false,
         alchemy: Boolean(alchemy),
         photoReal: Boolean(photoReal),
         promptMagic: Boolean(promptMagic),
         upscaled: false,
-      };
-
-      generatedItems.push(item);
+      });
     }
 
-    // Persist new records to database
-    const existing = getStoredImageGenerations();
-    const updated = [...generatedItems, ...existing];
-    saveStoredImageGenerations(updated);
+    if (generatedItems.length === 0) {
+      await refundCredits(tenantId, creditCost, 'vision_generate_empty', req.requestId || `vis_ref_${Date.now()}`);
+      return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', 'Upstream image model produced no output. Credits refunded.');
+    }
+
+    const updated = await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (existing) => [
+      ...generatedItems,
+      ...existing,
+    ]);
 
     return res.json({
       success: true,
       items: generatedItems,
       totalCount: updated.length,
+      creditsBalance: reservation.balance,
     });
   } catch (err: any) {
+    await refundCredits(tenantId, creditCost, 'vision_generate_failed', req.requestId || `vis_err_${Date.now()}`);
     console.error('Vision Generation Error:', err);
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', err?.message || 'Image synthesis failed. Credits refunded.');
   }
 });
 
-// 4. Toggle Favorite
-app.post('/api/vision/favorite', (req, res) => {
+app.post('/api/vision/favorite', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredImageGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Image not found.' });
-    }
-
-    list[index].isFavorite = !list[index].isFavorite;
-    saveStoredImageGenerations(list);
-    return res.json({ success: true, item: list[index] });
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    const tenantId = getReqTenant(req);
+    let updatedItem: any = null;
+    await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (list) =>
+      list.map((item) => {
+        if (item.id === id) {
+          updatedItem = { ...item, isFavorite: !item.isFavorite };
+          return updatedItem;
+        }
+        return item;
+      })
+    );
+    if (!updatedItem) return sendApiError(req, res, 404, 'IMAGE_NOT_FOUND', 'Image not found.');
+    return res.json({ success: true, item: updatedItem });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'VISION_FAVORITE_ERROR', err.message);
   }
 });
 
-// 5. Delete Generated Image
-app.post('/api/vision/delete', (req, res) => {
+app.post('/api/vision/delete', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredImageGenerations();
-    const filtered = list.filter((item) => item.id !== id);
-    saveStoredImageGenerations(filtered);
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    const filtered = await mutateTenantCollection<any[]>(getReqTenant(req), 'vision_images', [], (list) =>
+      list.filter((item) => item.id !== id)
+    );
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'VISION_DELETE_ERROR', err.message);
   }
 });
 
-// 6. Upscale Image (Ultra Clarity 4x)
+// Advanced GPU Diffusion Pipelines require a connected ComfyUI / Replicate / Fal GPU worker (Honest 501 - A13)
 app.post('/api/vision/upscale', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredImageGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Image not found.' });
-    }
-
-    list[index].upscaled = true;
-    const parts = (list[index].dimensions || '1024x1024').split('x');
-    if (parts.length === 2) {
-      list[index].dimensions = `${Number(parts[0]) * 2}x${Number(parts[1]) * 2} (4x Upscaled)`;
-    }
-    saveStoredImageGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+  if (!process.env.VISION_WORKER_URL) {
+    return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', '4x ESRGAN image upscaling requires a connected GPU worker (VISION_WORKER_URL).');
   }
+  return sendApiError(req, res, 501, 'WORKER_DISPATCH_UNIMPLEMENTED', 'GPU worker dispatch handler is not wired.');
 });
 
-// 7. ControlNet & OpenPose Synthesis (Pose Skeleton, Canny Line Art, MiDaS Depth)
-app.post('/api/vision/controlnet/generate', async (req, res) => {
-  try {
-    const {
-      prompt,
-      controlType = 'openpose',
-      controlWeight = 1.0,
-      referenceImage = null,
-      model = 'Flux 1.1 Pro (LDM)',
-    } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required.' });
-    }
-
-    const availableAssets = [
-      '/assets/aistudio/image_1daadf28.png',
-      '/assets/aistudio/image_2ce97639.png',
-      '/assets/aistudio/image_765d5dbe.png',
-      '/assets/aistudio/image_7d3b1a1b.png',
-      '/assets/aistudio/image_8410a432.png',
-      '/assets/aistudio/image_a905476a.png',
-    ];
-
-    const hash = Math.abs((prompt + controlType + controlWeight).split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0));
-    const selectedImage = availableAssets[hash % availableAssets.length];
-
-    const item = {
-      id: `cnet_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      prompt: `[ControlNet: ${controlType.toUpperCase()} (Weight: ${controlWeight})] ${prompt}`,
-      model,
-      style: `ControlNet ${controlType}`,
-      aspectRatio: '16:9',
-      dimensions: '1344x768',
-      cfgScale: 7.5,
-      steps: 45,
-      seed: Math.floor(Math.random() * 99999999) + 10000000,
-      imageUrl: selectedImage,
-      createdAt: new Date().toISOString(),
-      isFavorite: false,
-      alchemy: true,
-      photoReal: true,
-      promptMagic: true,
-      controlNetType: controlType,
-      controlWeight: Number(controlWeight),
-    };
-
-    const existing = getStoredImageGenerations();
-    saveStoredImageGenerations([item, ...existing]);
-
-    return res.json({ success: true, item });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+app.post('/api/vision/controlnet/generate', (req, res) => {
+  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'ControlNet / OpenPose conditioned diffusion requires an external GPU diffusion worker (VISION_WORKER_URL).');
 });
 
-// 8. IP-Adapter (Face Lock & Character Consistency)
-app.post('/api/vision/ip-adapter/generate', async (req, res) => {
-  try {
-    const {
-      prompt,
-      characterFaceUrl = null,
-      adapterWeight = 0.85,
-      model = 'Flux 1.1 Pro (LDM)',
-    } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required.' });
-    }
-
-    const curatedFacePortraits = [
-      '/assets/aistudio/image_765d5dbe.png',
-      '/assets/aistudio/image_7d3b1a1b.png',
-      '/assets/aistudio/image_8410a432.png',
-      '/assets/aistudio/image_1daadf28.png',
-    ];
-
-    const hash = Math.abs((prompt + adapterWeight).split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0));
-    const finalImage = characterFaceUrl || curatedFacePortraits[hash % curatedFacePortraits.length];
-
-    const item = {
-      id: `ip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      prompt: `[IP-Adapter Face Lock (Weight: ${adapterWeight})] ${prompt}`,
-      model,
-      style: 'Character Consistency (IP-Adapter)',
-      aspectRatio: '1:1',
-      dimensions: '1024x1024',
-      cfgScale: 8.0,
-      steps: 50,
-      seed: Math.floor(Math.random() * 99999999) + 10000000,
-      imageUrl: finalImage,
-      createdAt: new Date().toISOString(),
-      isFavorite: true,
-      alchemy: true,
-      photoReal: true,
-      promptMagic: true,
-      characterConsistency: true,
-      adapterWeight: Number(adapterWeight),
-    };
-
-    const existing = getStoredImageGenerations();
-    saveStoredImageGenerations([item, ...existing]);
-
-    return res.json({ success: true, item });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+app.post('/api/vision/ip-adapter/generate', (req, res) => {
+  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'IP-Adapter Face Lock conditioning requires an external GPU diffusion worker (VISION_WORKER_URL).');
 });
 
-// 9. Inpainting & Outpainting (Generative Fill on Canvas)
-app.post('/api/vision/inpaint', async (req, res) => {
-  try {
-    const {
-      prompt,
-      baseImageUrl,
-      maskData = null,
-      inpaintStrength = 0.75,
-    } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: 'Inpainting prompt is required.' });
-    }
-
-    const item = {
-      id: `inpaint_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      prompt: `[Generative Fill / Inpaint] ${prompt}`,
-      model: 'Flux 1.1 Inpaint Pro',
-      style: 'Generative Fill',
-      aspectRatio: '16:9',
-      dimensions: '1344x768',
-      cfgScale: 7.5,
-      steps: 40,
-      seed: Math.floor(Math.random() * 99999999) + 10000000,
-      imageUrl: baseImageUrl || '/assets/aistudio/image_2ce97639.png',
-      createdAt: new Date().toISOString(),
-      isFavorite: false,
-      inpaintStrength: Number(inpaintStrength),
-      hasMask: Boolean(maskData),
-    };
-
-    const existing = getStoredImageGenerations();
-    saveStoredImageGenerations([item, ...existing]);
-
-    return res.json({ success: true, item });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+app.post('/api/vision/inpaint', (req, res) => {
+  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'Mask-guided pixel inpainting requires an external GPU diffusion worker (VISION_WORKER_URL).');
 });
 
-// 10. LoRA Fine-Tune Trainer Pipeline
-app.post('/api/vision/lora/train', async (req, res) => {
-  try {
-    const {
-      loraName,
-      triggerWord,
-      baseModel = 'Flux 1.1 Pro (LDM)',
-      trainingSteps = 1500,
-      imagesCount = 12,
-    } = req.body;
-
-    if (!loraName || !triggerWord) {
-      return res.status(400).json({ error: 'LoRA Name and Trigger Word are required.' });
-    }
-
-    const newLora = {
-      id: `lora_${Date.now()}`,
-      name: loraName,
-      triggerWord,
-      baseModel,
-      trainingSteps: Number(trainingSteps),
-      imagesCount: Number(imagesCount),
-      status: 'Ready',
-      createdAt: new Date().toISOString(),
-    };
-
-    return res.json({
-      success: true,
-      lora: newLora,
-      message: `Custom LoRA "${loraName}" trained with trigger word <${triggerWord}> on ${baseModel}.`,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+app.post('/api/vision/lora/train', (req, res) => {
+  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'Custom LoRA fine-tuning requires an attached GPU training cluster (VISION_WORKER_URL).');
 });
 
 
 // ==========================================
-// 🎬 RAONE MOTION STUDIO (LEONARDO AI MOTION CLONE)
-// Silicon Valley-Grade T2V & Video Diffusion Engine
-// Models: Google Veo 2, OpenAI Sora, Runway Gen-3, Kling AI, Luma Dream Machine
+// 🎬 RAONE MOTION STUDIO (Per-Tenant Storage & Honest Provider/Worker Boundaries - A14)
 // ==========================================
-const VIDEO_GENERATIONS_FILE = path.join(__dirname, 'video_generations_data.json');
-
-function getStoredVideoGenerations(): any[] {
+app.get(['/api/motion/history', '/api/motion/gallery'], async (req, res) => {
   try {
-    if (fs.existsSync(VIDEO_GENERATIONS_FILE)) {
-      const data = fs.readFileSync(VIDEO_GENERATIONS_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading video generations file:', err);
-  }
-  return [];
-}
-
-function saveStoredVideoGenerations(generations: any[]): void {
-  try {
-    fs.writeFileSync(VIDEO_GENERATIONS_FILE, JSON.stringify(generations, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving video generations file:', err);
-  }
-}
-
-// 1. Get Video Feed / History & Gallery
-app.get(['/api/motion/history', '/api/motion/gallery'], (_req, res) => {
-  try {
-    const list = getStoredVideoGenerations();
+    const list = await readTenantCollection<any[]>(getReqTenant(req), 'motion_videos', []);
     return res.json({ success: true, count: list.length, items: list });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'MOTION_HISTORY_ERROR', err.message);
   }
 });
 
-// 2. Enhance Video Prompt (Cinematographic Camera Trajectory & Physics formula)
-app.post('/api/motion/enhance-prompt', async (req, res) => {
+app.post('/api/motion/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, cameraMotion = 'Fly Through Forward', model = 'Google Veo 2' } = req.body;
+    const { prompt, cameraMotion = 'Fly Through Forward', model = 'Google Veo 2' } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required.');
     }
 
-    const enhanceMotionInstruction = `You are a Hollywood visual director and Silicon Valley AI video diffusion prompt engineer for Sora, Veo 2, and Runway Gen-3.
-Transform the following basic user video prompt into an extraordinary cinematic video prompt.
+    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+
+    const enhanceMotionInstruction = `You are a video diffusion prompt engineer.
+Transform the following basic user video prompt into a cinematic video prompt.
 Include:
 - Camera movement: "${cameraMotion}"
-- Lighting & atmosphere: Volumetric, anamorphic cinematic color grading, photorealistic shutter speed (180-degree rule)
-- Motion dynamics: fluid fluid-dynamics or mechanical kinematics, zero unnatural morphing, high temporal consistency
+- Lighting & atmosphere: Volumetric cinematic lighting and shutter speed
 - Target model styling: "${model}"
-Output ONLY the enhanced prompt string. No quotes, no markdown, no conversational commentary.
+Output ONLY the enhanced prompt string.
 
 Prompt: ${prompt}`;
 
-    if (aiClient) {
+    if (tenantClient) {
       try {
-        const response = await aiClient.models.generateContent({
+        const response = await tenantClient.models.generateContent({
           model: 'gemini-4-hydrogen',
-          contents: {
-            role: 'user',
-            parts: [{ text: enhanceMotionInstruction }],
-          },
+          contents: { role: 'user', parts: [{ text: enhanceMotionInstruction }] },
           config: {
             systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
               provider: 'Google Gemini API',
@@ -4182,7 +3931,6 @@ Prompt: ${prompt}`;
             }),
           },
         });
-
         const enhanced = (response.text || '').trim();
         if (enhanced) {
           return res.json({ success: true, enhancedPrompt: enhanced });
@@ -4192,10 +3940,10 @@ Prompt: ${prompt}`;
       }
     }
 
-    if (GROQ_API_KEY) {
+    if (activeGroqKey) {
       try {
         const groqMotion = await callGroqChat(
-          GROQ_API_KEY,
+          activeGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: enhanceMotionInstruction }],
           `${SYSTEM_PROMPT}\n\n[CINEMA MOTION PROMPT ENHANCER]\nOutput ONLY the enhanced video prompt string.`,
@@ -4210,439 +3958,145 @@ Prompt: ${prompt}`;
       }
     }
 
-    const fallback = `${prompt}, cinematic 8K, camera trajectory: ${cameraMotion}, shot on Arri Alexa 65 with Panavision anamorphic lenses, natural motion blur, volumetric atmospheric haze, photorealistic temporal consistency, fluid physics`;
-    return res.json({ success: true, enhancedPrompt: fallback });
+    return sendApiError(req, res, 503, 'MOTION_ENHANCE_UNAVAILABLE', 'No AI text provider is currently available to enhance the video prompt.');
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'MOTION_ENHANCE_ERROR', err.message);
   }
 });
 
-// 3. Generate Video (T2V & I2V Generative Video Diffusion Synthesis)
-app.post('/api/motion/generate', async (req, res) => {
-  try {
-    const {
-      prompt,
-      negativePrompt = 'blurry, morphing, jitter, low framerate, artifacts, glitch',
-      model = 'Google Veo 2 (Frontier)',
-      cameraMotion = 'Pan Right & Tilt Up',
-      motionStrength = 6,
-      duration = 5,
-      fps = 30,
-      aspectRatio = '16:9',
-      dimensions = '1920x1080',
-      mode = 'text-to-video',
-      referenceImage = null,
-      seed = Math.floor(Math.random() * 99999999) + 10000000,
-    } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for video generation.' });
-    }
-
-    // High fidelity curated open-source cinematic MP4 streams for instant zero-latency playback
-    const curatedVideoStreams = [
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackSeeTheWorld.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4',
-    ];
-
-    const curatedPosters = [
-      'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1511447333015-45b65e60f6d5?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200&q=80',
-    ];
-
-    const hash = Math.abs(
-      (prompt + model + cameraMotion + seed).split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
+app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
+  const { prompt } = req.body || {};
+  if (!prompt) {
+    return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for video generation.');
+  }
+  if (!process.env.VIDEO_GENERATION_API_URL) {
+    return sendApiError(
+      req,
+      res,
+      503,
+      'VIDEO_PROVIDER_NOT_CONFIGURED',
+      'Video generation provider is not configured on this backend (set VIDEO_GENERATION_API_URL or connect a Veo/Runway worker).'
     );
+  }
+  return sendApiError(req, res, 501, 'VIDEO_WORKER_DISPATCH_UNIMPLEMENTED', 'External video worker adapter is not attached.');
+});
 
-    const selectedVideoUrl = curatedVideoStreams[hash % curatedVideoStreams.length];
-    const selectedPosterUrl = referenceImage || curatedPosters[hash % curatedPosters.length];
-
-    const newVideo = {
-      id: `vid_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      prompt,
-      negativePrompt,
-      model,
-      cameraMotion,
-      motionStrength: Number(motionStrength) || 6,
-      duration: Number(duration) || 5,
-      fps: Number(fps) || 30,
-      aspectRatio,
-      dimensions,
-      videoUrl: selectedVideoUrl,
-      posterUrl: selectedPosterUrl,
-      mode: (mode === 'image-to-video' ? 'image-to-video' : 'text-to-video'),
-      referenceImage: referenceImage || null,
-      seed: Number(seed),
-      createdAt: new Date().toISOString(),
-      isFavorite: false,
-      upscaled: false,
-      extended: false,
-      interpolated: fps >= 60,
-    };
-
-    const existing = getStoredVideoGenerations();
-    const updated = [newVideo, ...existing];
-    saveStoredVideoGenerations(updated);
-
-    return res.json({
-      success: true,
-      video: newVideo,
-      totalCount: updated.length,
-    });
+app.post('/api/motion/favorite', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    let updatedItem: any = null;
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'motion_videos', [], (list) =>
+      list.map((item) => {
+        if (item.id === id) {
+          updatedItem = { ...item, isFavorite: !item.isFavorite };
+          return updatedItem;
+        }
+        return item;
+      })
+    );
+    if (!updatedItem) return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video not found.');
+    return res.json({ success: true, item: updatedItem });
   } catch (err: any) {
-    console.error('Video Generation Error:', err);
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'MOTION_FAVORITE_ERROR', err.message);
   }
 });
 
-// 4. Toggle Video Favorite
-app.post('/api/motion/favorite', (req, res) => {
+app.post('/api/motion/delete', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredVideoGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Video not found.' });
-    }
-
-    list[index].isFavorite = !list[index].isFavorite;
-    saveStoredVideoGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// 5. Delete Video
-app.post('/api/motion/delete', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredVideoGenerations();
-    const filtered = list.filter((item) => item.id !== id);
-    saveStoredVideoGenerations(filtered);
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    const filtered = await mutateTenantCollection<any[]>(getReqTenant(req), 'motion_videos', [], (list) =>
+      list.filter((item) => item.id !== id)
+    );
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'MOTION_DELETE_ERROR', err.message);
   }
 });
 
-// 6. Extend Video (+5 Seconds Continuous Motion Synthesis)
 app.post('/api/motion/extend', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredVideoGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Video not found.' });
-    }
-
-    list[index].duration = (Number(list[index].duration) || 5) + 5;
-    list[index].extended = true;
-    saveStoredVideoGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  return sendApiError(req, res, 501, 'FFMPEG_WORKER_REQUIRED', 'Video extension requires a connected video synthesis & FFmpeg worker.');
 });
 
-// 7. Interpolate Frame Rate (60 FPS Smooth Flow Matching)
 app.post('/api/motion/interpolate', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredVideoGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Video not found.' });
-    }
-
-    list[index].fps = 60;
-    list[index].interpolated = true;
-    saveStoredVideoGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  return sendApiError(req, res, 501, 'FFMPEG_WORKER_REQUIRED', 'Frame rate interpolation (60fps RIFE/FFmpeg) requires a connected GPU video worker.');
 });
 
-// 8. 4K Video Upscale (Generative Spatio-Temporal Super Resolution)
 app.post('/api/motion/upscale', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredVideoGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Video not found.' });
-    }
-
-    list[index].upscaled = true;
-    list[index].dimensions = '3840x2160 (4K UHD)';
-    saveStoredVideoGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  return sendApiError(req, res, 501, 'FFMPEG_WORKER_REQUIRED', '4K video super-resolution requires a connected GPU video worker.');
 });
 
-// 9. Motion Brush & Directional Trajectory Synthesis (Multi-Layer Vector Masks)
-app.post('/api/motion/motion-brush', async (req, res) => {
-  try {
-    const {
-      prompt,
-      referenceImage,
-      brushes = [
-        { id: 1, name: 'Horizontal Flow / Water', color: 'cyan', angle: 90, speed: 7 },
-        { id: 2, name: 'Vertical Rise / Smoke', color: 'purple', angle: 0, speed: 5 },
-      ],
-      model = 'Google Veo 2 (Frontier)',
-      duration = 5,
-    } = req.body;
-
-    const curatedVideoStreams = [
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-    ];
-
-    const hash = Math.abs((prompt + model + JSON.stringify(brushes)).split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0));
-    const selectedVideo = curatedVideoStreams[hash % curatedVideoStreams.length];
-
-    const newVideo = {
-      id: `mbrush_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      prompt: `[Motion Brush: ${brushes.length} Vectors] ${prompt}`,
-      model,
-      cameraMotion: 'Directional Motion Brush Vector',
-      motionStrength: 8,
-      duration: Number(duration) || 5,
-      fps: 60,
-      aspectRatio: '16:9',
-      dimensions: '1920x1080',
-      videoUrl: selectedVideo,
-      posterUrl: referenceImage || 'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?auto=format&fit=crop&w=1200&q=80',
-      mode: 'image-to-video',
-      referenceImage: referenceImage || null,
-      seed: Math.floor(Math.random() * 99999999) + 10000000,
-      createdAt: new Date().toISOString(),
-      isFavorite: true,
-      upscaled: true,
-      interpolated: true,
-      hasMotionBrush: true,
-      motionBrushesCount: brushes.length,
-    };
-
-    const existing = getStoredVideoGenerations();
-    saveStoredVideoGenerations([newVideo, ...existing]);
-
-    return res.json({ success: true, video: newVideo });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+app.post('/api/motion/motion-brush', (req, res) => {
+  return sendApiError(req, res, 501, 'FFMPEG_WORKER_REQUIRED', 'Motion Brush trajectory synthesis requires a connected video diffusion worker.');
 });
 
-// 10. Multimodal Audio-to-Video Synchronization (Foley & Ambient Audio)
-app.post('/api/motion/audio-sync', async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredVideoGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Video not found.' });
-    }
-
-    list[index].hasFoleyAudio = true;
-    list[index].audioFoleyTrack = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3';
-    saveStoredVideoGenerations(list);
-
-    return res.json({
-      success: true,
-      item: list[index],
-      message: 'Foley sound effects & ambient audio synchronized with video visual timestamps.',
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+app.post('/api/motion/audio-sync', (req, res) => {
+  return sendApiError(req, res, 501, 'FFMPEG_WORKER_REQUIRED', 'Foley audio-to-video muxing requires a connected FFmpeg & audio synthesis worker.');
 });
 
 
 // ==========================================
-// 🎵 RAONE SUNO AUDIO & MUSIC STUDIO
-// Silicon Valley-Grade Text-to-Audio (TTA) Synthesis
-// Models: Suno v4 Alpha, Suno v3.5, Udio 130, Google Lyria AudioLM, ElevenLabs Voice
+// 🎵 RAONE SUNO AUDIO & MUSIC STUDIO (Per-Tenant Storage & Honest Provider/Worker Boundaries - A15, A28)
 // ==========================================
-const AUDIO_GENERATIONS_FILE = path.join(__dirname, 'audio_generations_data.json');
-const VOICE_CLONES_FILE = path.join(__dirname, 'voice_clones_data.json');
-
-function getStoredAudioGenerations(): any[] {
+app.get('/api/audio/voice-clone/list', async (req, res) => {
   try {
-    if (fs.existsSync(AUDIO_GENERATIONS_FILE)) {
-      const data = fs.readFileSync(AUDIO_GENERATIONS_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading audio generations file:', err);
-  }
-  return [];
-}
-
-function saveStoredAudioGenerations(generations: any[]): void {
-  try {
-    fs.writeFileSync(AUDIO_GENERATIONS_FILE, JSON.stringify(generations, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving audio generations file:', err);
-  }
-}
-
-function getStoredVoiceClones(): any[] {
-  try {
-    if (fs.existsSync(VOICE_CLONES_FILE)) {
-      const data = fs.readFileSync(VOICE_CLONES_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading voice clones file:', err);
-  }
-  return [
-    {
-      id: 'clone_shanthapriya_sovereign',
-      name: 'Shanthapriya (Sovereign Voice)',
-      sampleDuration: 10,
-      pitchRange: 'A2 - E4 (Baritone / Resonant)',
-      formants: 'F1: 520Hz | F2: 1480Hz | F3: 2540Hz',
-      timbre: 'Warm, Authoritative, Clear Articulation',
-      hnr: '26.4 dB',
-      createdAt: new Date().toISOString(),
-      audioSampleUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-    },
-    {
-      id: 'clone_aria_nuance',
-      name: 'Aria Nuance (Silicon Pop Studio)',
-      sampleDuration: 10,
-      pitchRange: 'C4 - A5 (Mezzo-Soprano / Crisp)',
-      formants: 'F1: 720Hz | F2: 1950Hz | F3: 2900Hz',
-      timbre: 'Bright, Modern Pop, Expressive Vibrato',
-      hnr: '28.1 dB',
-      createdAt: new Date().toISOString(),
-      audioSampleUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-    },
-  ];
-}
-
-function saveStoredVoiceClones(clones: any[]): void {
-  try {
-    fs.writeFileSync(VOICE_CLONES_FILE, JSON.stringify(clones, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving voice clones file:', err);
-  }
-}
-
-// 0. Voice Cloning Endpoints
-app.get('/api/audio/voice-clone/list', (_req, res) => {
-  try {
-    const list = getStoredVoiceClones();
+    const list = await readTenantCollection<any[]>(getReqTenant(req), 'voice_clones', []);
     return res.json({ success: true, count: list.length, items: list });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'VOICE_CLONE_LIST_ERROR', err.message);
   }
 });
 
 app.post('/api/audio/voice-clone', (req, res) => {
-  try {
-    const { name = 'Custom Vocalist', sampleDuration = 10 } = req.body;
-    const list = getStoredVoiceClones();
-    const f1 = 480 + Math.floor(Math.random() * 320);
-    const f2 = 1380 + Math.floor(Math.random() * 650);
-    const f3 = 2350 + Math.floor(Math.random() * 550);
-    const hnr = (23 + Math.random() * 6).toFixed(1);
-
-    const newClone = {
-      id: `clone_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      name: (name || 'Personal Vocal Clone').trim(),
-      sampleDuration: Number(sampleDuration) || 10,
-      pitchRange: 'G2 - F4 (Full Harmonic Range)',
-      formants: `F1: ${f1}Hz | F2: ${f2}Hz | F3: ${f3}Hz`,
-      timbre: 'Personal Cloned Timbre, Harmonic Resonance & Natural Dynamics',
-      hnr: `${hnr} dB (Studio Grade Master)`,
-      createdAt: new Date().toISOString(),
-      audioSampleUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-    };
-
-    list.unshift(newClone);
-    saveStoredVoiceClones(list);
-    return res.json({ success: true, clone: newClone });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  return sendApiError(
+    req,
+    res,
+    501,
+    'VOICE_CONSENT_WORKER_REQUIRED',
+    'Voice cloning requires an authenticated speaker consent workflow and an external neural voice cloning worker.'
+  );
 });
 
-// 1. Get Track Feed / History & Gallery
-app.get(['/api/audio/history', '/api/audio/gallery'], (_req, res) => {
+app.get(['/api/audio/history', '/api/audio/gallery'], async (req, res) => {
   try {
-    const list = getStoredAudioGenerations();
+    const list = await readTenantCollection<any[]>(getReqTenant(req), 'audio_tracks', []);
     return res.json({ success: true, count: list.length, items: list });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'AUDIO_HISTORY_ERROR', err.message);
   }
 });
 
-// 2. Enhance Lyrics with Songwriting AI (Verse, Chorus, Bridge, Drops)
-app.post('/api/audio/enhance-lyrics', async (req, res) => {
+app.post('/api/audio/enhance-lyrics', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, style = 'Electronic Pop', title = '' } = req.body;
+    const { prompt, style = 'Electronic Pop', title = '' } = req.body || {};
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for lyrics generation.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for lyrics generation.');
     }
 
-    const enhanceLyricsInstruction = `You are an elite Hollywood and Silicon Valley music producer & songwriter for Suno AI and Udio.
-Write complete, catchy, radio-ready lyrics formatted with Suno bracket tags:
+    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+
+    const enhanceLyricsInstruction = `You are a music songwriter. Write structured lyrics formatted with bracket tags:
 [Verse 1]
 [Pre-Chorus]
 [Chorus]
 [Verse 2]
 [Chorus]
 [Bridge]
-[Guitar Solo] or [Synth Drop]
 [Outro]
 
 Song Title: ${title || 'Untitled Anthem'}
 Genre/Style: ${style}
 Theme/Story: ${prompt}
 
-Output ONLY the formatted lyrics text with brackets. Do not add introductory chit-chat, quotes, or markdown explanations.`;
+Output ONLY the formatted lyrics text with brackets.`;
 
-    if (aiClient) {
+    if (tenantClient) {
       try {
-        const response = await aiClient.models.generateContent({
+        const response = await tenantClient.models.generateContent({
           model: 'gemini-4-hydrogen',
-          contents: {
-            role: 'user',
-            parts: [{ text: enhanceLyricsInstruction }],
-          },
+          contents: { role: 'user', parts: [{ text: enhanceLyricsInstruction }] },
           config: {
             systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
               provider: 'Google Gemini API',
@@ -4651,7 +4105,6 @@ Output ONLY the formatted lyrics text with brackets. Do not add introductory chi
             }),
           },
         });
-
         const lyrics = (response.text || '').trim();
         if (lyrics) {
           return res.json({ success: true, lyrics });
@@ -4661,10 +4114,10 @@ Output ONLY the formatted lyrics text with brackets. Do not add introductory chi
       }
     }
 
-    if (GROQ_API_KEY) {
+    if (activeGroqKey) {
       try {
         const groqLyrics = await callGroqChat(
-          GROQ_API_KEY,
+          activeGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: enhanceLyricsInstruction }],
           `${SYSTEM_PROMPT}\n\n[LYRICS STUDIO]\nOutput ONLY the formatted song lyrics with bracket tags.`,
@@ -4679,322 +4132,131 @@ Output ONLY the formatted lyrics text with brackets. Do not add introductory chi
       }
     }
 
-    // High quality songwriting fallback template
-    const fallbackLyrics = `[Verse 1]
-Midnight shadows walking in the light
-Chasing melodies burning through the night
-Every heartbeat echoes on the floor
-Open up the gate and unlock the door
-
-[Pre-Chorus]
-Feel the sub-bass rising high
-Reaching out to touch the sky
-
-[Chorus]
-Sing it loud, let the rhythm ignite!
-We are sovereign, dancing in the light!
-From the silence to the symphony
-This is our electric destiny!
-
-[Bridge - Instrumental Drop]
-(Driving analog synth arpeggiator and heavy kick drum)
-
-[Outro]
-Fading in the frequency...
-Forever wild and free.`;
-
-    return res.json({ success: true, lyrics: fallbackLyrics });
+    return sendApiError(req, res, 503, 'LYRICS_PROVIDER_UNAVAILABLE', 'No AI provider is configured to generate song lyrics.');
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'LYRICS_ENHANCE_ERROR', err.message);
   }
 });
 
-// 3. Generate Song (TTA Synthesis with Suno v4 / Udio / Lyria)
-app.post('/api/audio/generate', async (req, res) => {
-  try {
-    const {
-      prompt,
-      lyrics = '',
-      title = '',
-      styleTags = [],
-      model = 'Suno v4 Alpha (RVQ DiT)',
-      isInstrumental = false,
-      bpm = 120,
-      keySignature = 'C Major',
-      duration = 180,
-      clonedVoiceName = '',
-      clonedVoiceId = '',
-    } = req.body;
+app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
+  const { prompt = '', lyrics = '' } = req.body || {};
+  // Safely normalize prompt OR lyrics so lyrics-only calls never throw prompt.split TypeError (A28)
+  const titleSeed = String(prompt || lyrics || '').trim();
+  if (!titleSeed) {
+    return sendApiError(req, res, 400, 'INVALID_AUDIO_REQUEST', 'Either prompt or lyrics are required.');
+  }
 
-    if (!prompt && !lyrics) {
-      return res.status(400).json({ error: 'Either prompt or lyrics are required.' });
-    }
-
-    // High quality audio streams for seamless web playback
-    const curatedAudioStreams = [
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3',
-    ];
-
-    const curatedAlbumCovers = [
-      'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1511447333015-45b65e60f6d5?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=600&q=80',
-    ];
-
-    const hash = Math.abs(
-      ((prompt || lyrics) + model + (title || '')).split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
+  if (!process.env.AUDIO_SYNTHESIS_API_URL) {
+    return sendApiError(
+      req,
+      res,
+      503,
+      'AUDIO_SYNTHESIS_PROVIDER_REQUIRED',
+      'Full-track audio synthesis provider is not configured on this backend (set AUDIO_SYNTHESIS_API_URL or configure an audio generation worker).'
     );
+  }
+  return sendApiError(req, res, 501, 'AUDIO_WORKER_DISPATCH_UNIMPLEMENTED', 'External audio synthesis worker is not attached.');
+});
 
-    const streamIndex = hash % curatedAudioStreams.length;
-    const coverIndex = hash % curatedAlbumCovers.length;
-
-    // Generated track title if empty
-    const computedTitle =
-      title ||
-      prompt
-        .split(' ')
-        .slice(0, 4)
-        .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(' ') ||
-      'Sovereign Symphony';
-
-    const newTrack = {
-      id: `suno_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      title: computedTitle,
-      prompt: prompt || (lyrics ? 'Custom lyrical synthesis' : 'Ambient electronic piece'),
-      lyrics: lyrics || (isInstrumental ? '[Instrumental Track - No Vocals]' : 'Ambient synthesized vocalise'),
-      styleTags: Array.isArray(styleTags) && styleTags.length > 0 ? styleTags : ['Electronic', 'Modern Pop', 'Stereo Master'],
-      model,
-      isInstrumental: Boolean(isInstrumental),
-      duration: Number(duration) || 180,
-      bpm: Number(bpm) || 120,
-      keySignature: keySignature || 'C Major',
-      audioUrl: curatedAudioStreams[streamIndex],
-      coverUrl: curatedAlbumCovers[coverIndex],
-      vocalStemUrl: curatedAudioStreams[streamIndex],
-      instrumentalStemUrl: curatedAudioStreams[(streamIndex + 1) % curatedAudioStreams.length],
-      bassStemUrl: curatedAudioStreams[(streamIndex + 2) % curatedAudioStreams.length],
-      drumsStemUrl: curatedAudioStreams[(streamIndex + 3) % curatedAudioStreams.length],
-      otherStemUrl: curatedAudioStreams[(streamIndex + 4) % curatedAudioStreams.length],
-      stemsSeparated: false,
-      clonedVoiceName: clonedVoiceName || undefined,
-      clonedVoiceTimbre: clonedVoiceName ? 'Personal Cloned Vocalist (Harmonic Resonant Timbre)' : undefined,
-      neuralCodec: {
-        compressionRatio: '300x (EnCodec / DAC)',
-        rvqCodebooks: 8,
-        sampleRate: '48kHz Master / 24-bit FLAC',
-        twoStage: 'Autoregressive DiT + Flow Matching Diffusion',
-      },
-      createdAt: new Date().toISOString(),
-      isFavorite: false,
-      extended: false,
-      playCount: 1,
-    };
-
-    const existing = getStoredAudioGenerations();
-    const updated = [newTrack, ...existing];
-    saveStoredAudioGenerations(updated);
-
-    return res.json({
-      success: true,
-      track: newTrack,
-      totalCount: updated.length,
-    });
+app.post('/api/audio/favorite', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    let updatedItem: any = null;
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'audio_tracks', [], (list) =>
+      list.map((item) => {
+        if (item.id === id) {
+          updatedItem = { ...item, isFavorite: !item.isFavorite };
+          return updatedItem;
+        }
+        return item;
+      })
+    );
+    if (!updatedItem) return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track not found.');
+    return res.json({ success: true, item: updatedItem });
   } catch (err: any) {
-    console.error('Audio Generation Error:', err);
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'AUDIO_FAVORITE_ERROR', err.message);
   }
 });
 
-// 4. Toggle Favorite
-app.post('/api/audio/favorite', (req, res) => {
+app.post('/api/audio/delete', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredAudioGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Track not found.' });
-    }
-
-    list[index].isFavorite = !list[index].isFavorite;
-    saveStoredAudioGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// 5. Delete Track
-app.post('/api/audio/delete', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredAudioGenerations();
-    const filtered = list.filter((item) => item.id !== id);
-    saveStoredAudioGenerations(filtered);
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    const filtered = await mutateTenantCollection<any[]>(getReqTenant(req), 'audio_tracks', [], (list) =>
+      list.filter((item) => item.id !== id)
+    );
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'AUDIO_DELETE_ERROR', err.message);
   }
 });
 
-// 6. Extend Track (+60s Continuous Music Inpainting)
 app.post('/api/audio/extend', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredAudioGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Track not found.' });
-    }
-
-    list[index].duration = (Number(list[index].duration) || 180) + 60;
-    list[index].extended = true;
-    saveStoredAudioGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  return sendApiError(req, res, 501, 'AUDIO_WORKER_REQUIRED', 'Continuous audio extension requires a connected audio synthesis worker.');
 });
 
-// 7. Separate Stems (Demucs v4 Hybrid Transformer 4-Track Isolation: Vocals, Bass, Drums, Synths)
 app.post('/api/audio/separate-stems', (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredAudioGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Track not found.' });
-    }
-
-    const curatedAudioStreams = [
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
-    ];
-
-    list[index].stemsSeparated = true;
-    list[index].vocalStemUrl = list[index].vocalStemUrl || curatedAudioStreams[index % curatedAudioStreams.length];
-    list[index].instrumentalStemUrl = list[index].instrumentalStemUrl || curatedAudioStreams[(index + 1) % curatedAudioStreams.length];
-    list[index].bassStemUrl = list[index].bassStemUrl || curatedAudioStreams[(index + 2) % curatedAudioStreams.length];
-    list[index].drumsStemUrl = list[index].drumsStemUrl || curatedAudioStreams[(index + 3) % curatedAudioStreams.length];
-    list[index].otherStemUrl = list[index].otherStemUrl || curatedAudioStreams[(index + 4) % curatedAudioStreams.length];
-    saveStoredAudioGenerations(list);
-    return res.json({ success: true, item: list[index] });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  return sendApiError(req, res, 501, 'DEMUCS_WORKER_REQUIRED', 'Stem isolation (Demucs v4) requires a connected GPU audio DSP worker.');
 });
 
-// 8. Record Playback Hit
-app.post('/api/audio/play', (req, res) => {
+app.post('/api/audio/play', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredAudioGenerations();
-    const index = list.findIndex((item) => item.id === id);
-    if (index !== -1) {
-      list[index].playCount = (Number(list[index].playCount) || 0) + 1;
-      saveStoredAudioGenerations(list);
-    }
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'audio_tracks', [], (list) =>
+      list.map((item) => (item.id === id ? { ...item, playCount: (Number(item.playCount) || 0) + 1 } : item))
+    );
     return res.json({ success: true });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'AUDIO_PLAY_ERROR', err.message);
   }
 });
 
 // ==========================================
-// 📄 RAONE DOCUSTUDIO (NOTEBOOKLM + GAMMA APP + COPILOT)
-// Silicon Valley-Grade Intelligent Document Processing (IDP) & Graph-RAG
+// 📄 RAONE DOCUSTUDIO (Per-Tenant Storage, Honest RAG Citations, Real Native OOXML & PDF Exports - A16, A17, A30)
 // ==========================================
-const DOCUMENT_AI_FILE = path.join(__dirname, 'document_ai_data.json');
-
-function getStoredDocuments(): any[] {
+app.get(['/api/documents/history', '/api/documents/list'], async (req, res) => {
   try {
-    if (fs.existsSync(DOCUMENT_AI_FILE)) {
-      const data = fs.readFileSync(DOCUMENT_AI_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading document AI file:', err);
-  }
-  return [];
-}
-
-function saveStoredDocuments(documents: any[]): void {
-  try {
-    fs.writeFileSync(DOCUMENT_AI_FILE, JSON.stringify(documents, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving document AI file:', err);
-  }
-}
-
-// 1. Get Document Feed / History & List
-app.get(['/api/documents/history', '/api/documents/list'], (_req, res) => {
-  try {
-    const list = getStoredDocuments();
+    const list = await readTenantCollection<any[]>(getReqTenant(req), 'documents', []);
     return res.json({ success: true, count: list.length, items: list });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'DOCUMENTS_LIST_ERROR', err.message);
   }
 });
 
-// 2. Generate Document / Gamma Slides / Spreadsheet
-app.post('/api/documents/generate', async (req, res) => {
+app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
     const {
       prompt,
       docType = 'report',
       tone = 'executive',
       model = 'Gemini 3.8 Flash Document AI',
       sourceText = '',
-      includeSlides = true,
-      includeAudioOverview = true,
-    } = req.body;
+    } = req.body || {};
 
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required for document generation.' });
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for document generation.');
     }
 
-    let generatedTitle = prompt.split('\n')[0].substring(0, 60);
+    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    if (!tenantClient && !activeGroqKey) {
+      return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'No AI provider is configured to synthesize documents.');
+    }
+
+    let generatedTitle = String(prompt).split('\n')[0].substring(0, 60);
     let generatedContent = '';
     let generatedSummary = '';
     let generatedSlides: any[] = [];
     let generatedCitations: any[] = [];
 
-    const docPrompt = `You are an elite Silicon Valley executive document strategist (NotebookLM + Gamma App + Microsoft 365 Copilot).
-Generate a world-class, exhaustive, highly structured ${docType.toUpperCase()} based on:
+    const docPrompt = `You are an executive document strategist.
+Generate a structured ${String(docType).toUpperCase()} based on:
 Prompt: "${prompt}"
-${sourceText ? `Source Grounding Material: ${sourceText}` : ''}
+${sourceText ? `Source Grounding Material (quote ONLY from this material if citing sources): ${String(sourceText).slice(0, 18000)}` : 'No external source material provided; leave citations array empty unless strictly grounded.'}
 Tone: ${tone}
-
-Formatting instructions:
-1. Provide a clear Markdown document with # Title, ## Headers, ### Subheaders, bullet points, and high-impact Markdown tables.
-2. Provide a 2-3 sentence executive summary.
-3. If relevant, include 3 Gamma-style slide outlines.
 
 Respond in strict JSON format matching:
 {
@@ -5007,22 +4269,16 @@ Respond in strict JSON format matching:
       "title": "String",
       "subtitle": "String",
       "bulletPoints": ["Point 1", "Point 2", "Point 3"],
-      "callout": "Key quote or takeaway",
+      "callout": "Key takeaway",
       "themeColor": "emerald" | "purple" | "cyan" | "amber"
     }
   ],
-  "citations": [
-    {
-      "sourceTitle": "String",
-      "snippet": "Verifiable quote or datapoint",
-      "pageOrSection": "Section 1"
-    }
-  ]
+  "citations": []
 }`;
 
-    if (aiClient) {
+    if (tenantClient) {
       try {
-        const response = await aiClient.models.generateContent({
+        const response = await tenantClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: docPrompt }] }],
           config: {
@@ -5034,25 +4290,24 @@ Respond in strict JSON format matching:
             }),
           },
         });
-
         const parsed = JSON.parse(response.text || '{}');
         if (parsed.title) generatedTitle = parsed.title;
         if (parsed.content) generatedContent = parsed.content;
         if (parsed.summary) generatedSummary = parsed.summary;
         if (Array.isArray(parsed.slides)) generatedSlides = parsed.slides;
-        if (Array.isArray(parsed.citations)) generatedCitations = parsed.citations;
+        if (Array.isArray(parsed.citations) && sourceText) generatedCitations = parsed.citations;
       } catch (genErr: any) {
         console.warn('Document AI generation warning:', genErr.message);
       }
     }
 
-    if (!generatedContent && GROQ_API_KEY) {
+    if (!generatedContent && activeGroqKey) {
       try {
         const groqDoc = await callGroqChat(
-          GROQ_API_KEY,
+          activeGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: docPrompt }],
-          `${SYSTEM_PROMPT}\n\n[DOCUMENT AI SCHEMA DIRECTIVE]\nRespond strictly with a single valid JSON object matching the schema requested by the user. Do not wrap in markdown explanations.`,
+          `${SYSTEM_PROMPT}\n\n[DOCUMENT AI SCHEMA DIRECTIVE]\nRespond strictly with a single valid JSON object matching the schema requested.`,
           4096
         );
         const raw = (groqDoc.text || '').trim();
@@ -5062,63 +4317,19 @@ Respond in strict JSON format matching:
         if (parsed.content) generatedContent = parsed.content;
         if (parsed.summary) generatedSummary = parsed.summary;
         if (Array.isArray(parsed.slides)) generatedSlides = parsed.slides;
-        if (Array.isArray(parsed.citations)) generatedCitations = parsed.citations;
+        if (Array.isArray(parsed.citations) && sourceText) generatedCitations = parsed.citations;
       } catch (groqDocErr: any) {
         console.warn('Groq Document AI warning:', groqDocErr?.message || groqDocErr);
       }
     }
 
-    // High quality structural fallback
     if (!generatedContent) {
-      generatedTitle = generatedTitle || 'Executive Strategic Briefing';
-      generatedSummary = `Strategic analysis and operational roadmap formulated by RaOne Sovereign Document AI. Covers core market analysis, unit economics, and architectural delivery milestones for ${prompt}.`;
-      generatedContent = `# ${generatedTitle}\n\n## 1. Executive Summary & Market Context\n${generatedSummary}\n\n## 2. Core Operational Pillars\n- **High-Throughput Automation**: Removing manual operational friction through sovereign AI agent swarms.\n- **Data Sovereignty & Security**: Ensuring 100% private retrieval with zero data leakage.\n- **Financial Efficiency**: Slashing operational overhead by up to 78% via autonomous pipelines.\n\n| Strategic Pillar | Target Metric | Delivery Window | Primary Owner |\n| :--- | :--- | :--- | :--- |\n| Phase 1: Ingestion & Parsing | 99.8% Extraction Accuracy | Month 1-2 | RaOne IDP Core |\n| Phase 2: Graph-RAG Pipeline | <120ms Latency | Month 3-4 | Sovereign Vector Grid |\n| Phase 3: Autonomous Synthesis | 100% Verified Citations | Month 5-6 | Senior Agent Swarm |\n\n## 3. Implementation Blueprint\nAll document workflows are verified through multi-stage semantic grounding, preventing LLM hallucinations and guaranteeing cryptographic data integrity.`;
-
-      generatedSlides = [
-        {
-          slideNumber: 1,
-          title: generatedTitle,
-          subtitle: 'Strategic Overview & Execution Blueprint',
-          bulletPoints: [
-            'Market Context: Rapid transition to autonomous enterprise workflows',
-            'Sovereign Architecture: Zero-leakage localized compute',
-            'Target: 78% reduction in administrative overhead'
-          ],
-          callout: 'Execution is the only true competitive moat.',
-          themeColor: 'purple'
-        },
-        {
-          slideNumber: 2,
-          title: '3-Phase Delivery Timeline',
-          subtitle: 'From Ingestion to Full Enterprise Automation',
-          bulletPoints: [
-            'Phase 1: Multi-format parsing (PDF, Excel, Slides)',
-            'Phase 2: Hybrid vector & graph retrieval index',
-            'Phase 3: Automated document synthesis & audio briefings'
-          ],
-          callout: 'Sub-120ms search latency across 100,000+ internal documents.',
-          themeColor: 'emerald'
-        }
-      ];
-
-      generatedCitations = [
-        {
-          sourceTitle: 'Enterprise Intelligence Benchmark 2026',
-          snippet: 'Organizations deploying Graph-RAG achieve 94% higher factuality than standard vector stores.',
-          pageOrSection: 'Executive Summary'
-        }
-      ];
+      return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'Upstream AI provider failed to synthesize document content.');
     }
 
-    const audioStreams = [
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-      'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-    ];
-    const hash = Math.abs(generatedTitle.split('').reduce((acc: number, c: string) => acc + c.charCodeAt(0), 0));
-
+    const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const newDoc = {
-      id: `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: docId,
       title: generatedTitle,
       docType,
       prompt,
@@ -5126,35 +4337,22 @@ Respond in strict JSON format matching:
       summary: generatedSummary,
       slides: generatedSlides,
       citations: generatedCitations,
-      audioOverviewUrl: includeAudioOverview ? audioStreams[hash % audioStreams.length] : undefined,
-      audioOverviewTranscript: includeAudioOverview
-        ? `Host 1: Welcome to this deep dive into "${generatedTitle}". What's the main takeaway?\nHost 2: The focus on zero-hallucination document synthesis and structured execution. It breaks down complex strategy into concrete, measurable milestones.\nHost 1: Exactly. Clear, authoritative, and actionable.`
-        : undefined,
       model,
-      tags: [docType.toUpperCase(), tone, 'Sovereign IDP', 'RAG'],
+      tags: [String(docType).toUpperCase(), tone, 'OOXML Native'],
       pageCount: Math.max(1, Math.ceil(generatedContent.split('\n').length / 25)),
       wordCount: generatedContent.split(/\s+/).length,
-      ocrEngine: 'Vision Transformer (LayoutLMv3 2D Bounding Boxes)',
-      ragArchitecture: 'Hybrid Dense-Sparse RRF (Dense Vectors + BM25 Sparse)',
-      graphEntities: [
-        { id: 'e1', name: generatedTitle.substring(0, 30), type: 'milestone', connections: ['e2', 'e3'] },
-        { id: 'e2', name: 'LayoutLMv3 Vision Transformer', type: 'concept', connections: ['e1', 'e4'] },
-        { id: 'e3', name: 'BM25 + Dense Vectors (RRF)', type: 'metric', connections: ['e1', 'e5'] },
-        { id: 'e4', name: 'Neo4j Knowledge Graph', type: 'organization', connections: ['e2', 'e5'] },
-        { id: 'e5', name: 'Direct Office Binary Pipeline', type: 'regulation', connections: ['e3', 'e4'] },
-      ],
       officeExportUrls: {
-        docx: `/api/documents/export/docx?id=doc_${Date.now()}`,
-        pptx: `/api/documents/export/pptx?id=doc_${Date.now()}`,
-        xlsx: `/api/documents/export/xlsx?id=doc_${Date.now()}`,
+        docx: `/api/documents/export/docx?id=${docId}`,
+        pptx: `/api/documents/export/pptx?id=${docId}`,
+        xlsx: `/api/documents/export/xlsx?id=${docId}`,
+        pdf: `/api/documents/export/pdf?id=${docId}`,
+        md: `/api/documents/export/md?id=${docId}`,
       },
       createdAt: new Date().toISOString(),
       isFavorite: false,
     };
 
-    const existing = getStoredDocuments();
-    const updated = [newDoc, ...existing];
-    saveStoredDocuments(updated);
+    const updated = await mutateTenantCollection<any[]>(tenantId, 'documents', [], (existing) => [newDoc, ...existing]);
 
     return res.json({
       success: true,
@@ -5163,291 +4361,159 @@ Respond in strict JSON format matching:
     });
   } catch (err: any) {
     console.error('Document Generation Error:', err);
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'DOCUMENT_GENERATION_ERROR', err.message);
   }
 });
 
-// 3. Analyze & Q&A Document (NotebookLM RAG Style)
-app.post('/api/documents/analyze', async (req, res) => {
+app.post('/api/documents/analyze', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { documentId, query, content } = req.body;
+    const { query, content } = req.body || {};
     if (!query && !content) {
-      return res.status(400).json({ error: 'Query or content is required.' });
+      return sendApiError(req, res, 400, 'INVALID_INPUT', 'Query or content is required.');
     }
 
-    const ragPrompt = `You are the RaOne Document AI RAG Analysis Engine (NotebookLM & Copilot).
+    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    if (!tenantClient && !activeGroqKey) {
+      return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'No AI provider is configured to analyze the document.');
+    }
+
+    const ragPrompt = `You are the RaOne Document AI Analysis Engine.
 Given the document text:
-"${content ? content.substring(0, 4000) : 'General Document'}"
+"${content ? String(content).substring(0, 18000) : 'No source text supplied'}"
 
-Answer the user inquiry with verified, grounded, and concise insights:
-User Query: "${query || 'Summarize key takeaways, risks, and next steps'}"
+Answer the user inquiry concisely and honestly based ONLY on the text provided:
+User Query: "${query || 'Summarize key takeaways, risks, and next steps'}"`;
 
-Provide your answer with specific grounded references.`;
-
-    if (aiClient) {
+    if (tenantClient) {
       try {
-        const response = await aiClient.models.generateContent({
+        const response = await tenantClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: ragPrompt }] }],
           config: {
             systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
               provider: 'Google Gemini API',
               model: 'gemini-4-hydrogen',
-              subsystem: 'RaOne Document AI RAG Q&A',
+              subsystem: 'RaOne Document AI Q&A',
             }),
           },
         });
-
-        return res.json({
-          success: true,
-          answer: response.text || 'Document analyzed successfully.',
-        });
+        if (response.text) {
+          return res.json({ success: true, answer: response.text });
+        }
       } catch (err: any) {
         console.warn('Analysis warning:', err.message);
       }
     }
 
-    if (GROQ_API_KEY) {
+    if (activeGroqKey) {
       try {
         const groqRag = await callGroqChat(
-          GROQ_API_KEY,
+          activeGroqKey,
           'raone-llama3-70b',
           [{ role: 'user', content: ragPrompt }],
           SYSTEM_PROMPT
         );
         if (groqRag.text) {
-          return res.json({
-            success: true,
-            answer: groqRag.text,
-            modelUsed: groqRag.modelUsed,
-          });
+          return res.json({ success: true, answer: groqRag.text, modelUsed: groqRag.modelUsed });
         }
       } catch (groqErr: any) {
         console.warn('Groq analysis warning:', groqErr?.message || groqErr);
       }
     }
 
-    const fallbackAnswer = `Based on the provided document analysis, here are the key findings:\n1. Core Focus: The material establishes clear operational milestones with verified unit economics.\n2. Risk Mitigation: Graph-RAG indexing ensures verified citations across all strategic directives.\n3. Next Steps: Accelerate Phase 1 deployment and establish automated audit checkpoints.`;
-    return res.json({ success: true, answer: fallbackAnswer });
+    return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'Upstream AI provider failed to analyze the document.');
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'DOCUMENT_ANALYZE_ERROR', err.message);
   }
 });
 
-// 4. Toggle Favorite
-app.post('/api/documents/favorite', (req, res) => {
+app.post('/api/documents/favorite', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredDocuments();
-    const index = list.findIndex((item) => item.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Document not found.' });
-    }
-
-    list[index].isFavorite = !list[index].isFavorite;
-    saveStoredDocuments(list);
-    return res.json({ success: true, item: list[index] });
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    let updatedItem: any = null;
+    await mutateTenantCollection<any[]>(getReqTenant(req), 'documents', [], (list) =>
+      list.map((item) => {
+        if (item.id === id) {
+          updatedItem = { ...item, isFavorite: !item.isFavorite };
+          return updatedItem;
+        }
+        return item;
+      })
+    );
+    if (!updatedItem) return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', 'Document not found.');
+    return res.json({ success: true, item: updatedItem });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'DOCUMENT_FAVORITE_ERROR', err.message);
   }
 });
 
-// 5. Delete Document
-app.post('/api/documents/delete', (req, res) => {
+app.post('/api/documents/delete', async (req, res) => {
   try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required.' });
-
-    const list = getStoredDocuments();
-    const filtered = list.filter((item) => item.id !== id);
-    saveStoredDocuments(filtered);
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
+    const filtered = await mutateTenantCollection<any[]>(getReqTenant(req), 'documents', [], (list) =>
+      list.filter((item) => item.id !== id)
+    );
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'DOCUMENT_DELETE_ERROR', err.message);
   }
 });
 
-// 6. Direct Binary Office Export (DOCX, PPTX, XLSX)
-app.all('/api/documents/export/:format', (req, res) => {
+// 6. Real Binary OOXML & PDF Export (DOCX, PPTX, XLSX, PDF, MD) — A17 & A30
+app.all('/api/documents/export/:format', async (req, res) => {
   try {
-    const { format } = req.params;
+    const format = String(req.params.format || '').toLowerCase();
     const docId = (req.query.id as string) || req.body?.id;
     let title = req.body?.title || 'Executive Document';
     let content = req.body?.content || '';
     let slides = req.body?.slides || [];
 
     if (docId) {
-      const list = getStoredDocuments();
+      const list = await readTenantCollection<any[]>(getReqTenant(req), 'documents', []);
       const doc = list.find((d) => d.id === docId);
-      if (doc) {
-        title = doc.title || title;
-        content = doc.content || content;
-        slides = doc.slides || slides;
+      if (!doc) {
+        return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', `Document "${docId}" not found for your account.`);
       }
+      title = doc.title || title;
+      content = doc.content || content;
+      slides = doc.slides || slides;
     }
 
-    const safeTitle = title.replace(/[^a-zA-Z0-9_\- ]/g, '').trim().replace(/\s+/g, '_') || 'Document';
+    const safeTitle =
+      String(title)
+        .replace(/[^a-zA-Z0-9_\- ]/g, '')
+        .trim()
+        .replace(/\s+/g, '_') || 'Document';
 
     if (format === 'docx') {
-      const htmlBody = content
-        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-        .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-        .replace(/^- (.*$)/gim, '<li>$1</li>')
-        .replace(/\n\n/gim, '<p></p>')
-        .replace(/\n/gim, '<br/>');
-
-      const wordDoc = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-<head><meta charset='utf-8'><title>${title}</title>
-<!--[if gte mso 9]>
-<xml>
-<w:WordDocument>
-<w:View>Print</w:View>
-<w:Zoom>100</w:Zoom>
-<w:DoNotOptimizeForBrowser/>
-</w:WordDocument>
-</xml>
-<![endif]-->
-<style>
-body { font-family: 'Segoe UI', Calibri, Arial, sans-serif; font-size: 11pt; line-height: 1.6; color: #1e293b; margin: 48px; }
-h1 { font-size: 24pt; color: #047857; border-bottom: 2px solid #10b981; padding-bottom: 8px; margin-bottom: 20px; font-weight: bold; }
-h2 { font-size: 16pt; color: #0f172a; border-left: 4px solid #059669; padding-left: 12px; margin-top: 28px; font-weight: 600; }
-h3 { font-size: 13pt; color: #334155; margin-top: 20px; font-weight: 600; }
-p { margin: 8px 0; }
-ul, ol { margin: 8px 0 8px 24px; }
-li { margin: 4px 0; }
-table { border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 10pt; }
-th, td { border: 1px solid #cbd5e1; padding: 10px 14px; text-align: left; }
-th { background-color: #f1f5f9; color: #0f172a; font-weight: 700; border-bottom: 2px solid #059669; }
-.footer { font-size: 9pt; color: #64748b; margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 12px; }
-</style>
-</head>
-<body>
-<h1>${title}</h1>
-<div>${htmlBody}</div>
-<div class="footer">
-Generated by RaOne Sovereign Document AI • Microsoft 365 Enterprise Copilot & IDP Standard • Verified Zero-Leakage Architecture
-</div>
-</body></html>`;
-
+      const buf = await generateTrueDocxBuffer({ title, content });
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.docx"`);
-      return res.send(Buffer.from(wordDoc, 'utf-8'));
+      return res.send(buf);
     }
 
     if (format === 'pptx') {
-      const slideDeckHtml = `<!DOCTYPE html>
-<html>
-<head><meta charset='utf-8'><title>${title}</title>
-<style>
-body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 24px; }
-.slide { background: #1e293b; border-radius: 16px; border: 1px solid #334155; padding: 48px; margin-bottom: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); min-height: 480px; position: relative; }
-.slide-num { position: absolute; top: 24px; right: 32px; font-size: 14px; color: #94a3b8; font-weight: 600; }
-.slide-title { font-size: 28px; font-weight: 700; color: #38bdf8; margin-bottom: 8px; }
-.slide-subtitle { font-size: 16px; color: #94a3b8; margin-bottom: 28px; }
-.bullet-list { font-size: 18px; line-height: 1.8; color: #e2e8f0; padding-left: 28px; }
-.callout-box { background: rgba(56, 189, 248, 0.1); border-left: 4px solid #38bdf8; padding: 16px 20px; border-radius: 8px; margin-top: 32px; font-style: italic; color: #7dd3fc; }
-</style>
-</head>
-<body>
-${(slides && slides.length > 0 ? slides : [
-  { slideNumber: 1, title, subtitle: 'Executive Briefing Deck', bulletPoints: ['Sovereign Document Architecture', 'Automated Multi-format Parsing', 'Zero Data Leakage Governance'], callout: 'Engineered by RaOne Document AI' }
-]).map((s: any, idx: number) => `
-  <div class="slide">
-    <div class="slide-num">Slide ${s.slideNumber || idx + 1}</div>
-    <div class="slide-title">${s.title}</div>
-    ${s.subtitle ? `<div class="slide-subtitle">${s.subtitle}</div>` : ''}
-    <ul class="bullet-list">
-      ${(s.bulletPoints || []).map((bp: string) => `<li>${bp}</li>`).join('')}
-    </ul>
-    ${s.callout ? `<div class="callout-box">"${s.callout}"</div>` : ''}
-  </div>
-`).join('')}
-</body></html>`;
-
+      const buf = await generateTruePptxBuffer({ title, content, slides });
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
       res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.pptx"`);
-      return res.send(Buffer.from(slideDeckHtml, 'utf-8'));
+      return res.send(buf);
     }
 
     if (format === 'xlsx') {
-      const rows = content.split('\n').filter((l: string) => l.includes('|'));
-      let tableRowsXml = '';
-
-      if (rows.length >= 2) {
-        rows.forEach((row: string) => {
-          if (row.includes('---')) return;
-          const cells = row.split('|').map((c) => c.trim()).filter((c) => c.length > 0);
-          if (cells.length > 0) {
-            tableRowsXml += '<Row>\n' + cells.map((cell) => `<Cell><Data ss:Type="String">${cell.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</Data></Cell>`).join('\n') + '\n</Row>\n';
-          }
-        });
-      }
-
-      if (!tableRowsXml) {
-        tableRowsXml = `
-<Row>
-  <Cell><Data ss:Type="String">Metric / Milestone</Data></Cell>
-  <Cell><Data ss:Type="String">Target Value</Data></Cell>
-  <Cell><Data ss:Type="String">Status</Data></Cell>
-  <Cell><Data ss:Type="String">Sovereign Cluster</Data></Cell>
-</Row>
-<Row>
-  <Cell><Data ss:Type="String">LayoutLMv3 OCR Accuracy</Data></Cell>
-  <Cell><Data ss:Type="String">99.8%</Data></Cell>
-  <Cell><Data ss:Type="String">Verified</Data></Cell>
-  <Cell><Data ss:Type="String">Node Alpha</Data></Cell>
-</Row>
-<Row>
-  <Cell><Data ss:Type="String">BM25 + Dense RRF Latency</Data></Cell>
-  <Cell><Data ss:Type="String">&lt; 85ms</Data></Cell>
-  <Cell><Data ss:Type="String">Optimal</Data></Cell>
-  <Cell><Data ss:Type="String">Node Beta</Data></Cell>
-</Row>
-<Row>
-  <Cell><Data ss:Type="String">Direct Office Export Streams</Data></Cell>
-  <Cell><Data ss:Type="String">DOCX, PPTX, XLSX</Data></Cell>
-  <Cell><Data ss:Type="String">Active 100%</Data></Cell>
-  <Cell><Data ss:Type="String">All Nodes</Data></Cell>
-</Row>
-`;
-      }
-
-      const excelXml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
-  <Title>${title}</Title>
-  <Author>RaOne AI Sovereign Office</Author>
- </DocumentProperties>
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Vertical="Bottom"/>
-   <Borders/>
-   <Font ss:FontName="Segoe UI" x:Family="Swiss" ss:Size="11" ss:Color="#000000"/>
-   <Interior/>
-   <NumberFormat/>
-   <Protection/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="Financial & Metrics">
-  <Table>
-   ${tableRowsXml}
-  </Table>
- </Worksheet>
-</Workbook>`;
-
+      const buf = await generateTrueXlsxBuffer({ title, content });
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.xlsx"`);
-      return res.send(Buffer.from(excelXml, 'utf-8'));
+      return res.send(buf);
+    }
+
+    if (format === 'pdf') {
+      const buf = await generateTruePdfBuffer({ title, content });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.pdf"`);
+      return res.send(buf);
     }
 
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -5455,7 +4521,7 @@ ${(slides && slides.length > 0 ? slides : [
     return res.send(content);
   } catch (err: any) {
     console.error('Office Export Error:', err);
-    return res.status(500).json({ error: err.message });
+    return sendApiError(req, res, 500, 'EXPORT_FAILED', err.message);
   }
 });
 

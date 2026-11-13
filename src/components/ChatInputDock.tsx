@@ -40,6 +40,15 @@ interface ChatInputDockProps {
   isTemporary?: boolean;
 }
 
+interface AttachedUploadItem {
+  id: string;
+  file: File;
+  status: 'extracting' | 'ready' | 'error';
+  extractedText?: string;
+  charCount?: number;
+  error?: string;
+}
+
 export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   onSendMessage,
   isLoading,
@@ -54,7 +63,8 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isThinkingActive, setIsThinkingActive] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedUploadItem[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [activeItemIndex, setActiveItemIndex] = useState<number>(-1);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -194,13 +204,28 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
     };
   }, [isDropdownOpen, activeItemIndex]);
 
-  const handleSend = () => {
-    if ((!inputText.trim() && attachedFiles.length === 0) || isLoading) return;
+  const isExtractingFiles = attachedFiles.some((f) => f.status === 'extracting');
 
+  const handleSend = () => {
+    if ((!inputText.trim() && attachedFiles.length === 0) || isLoading || isExtractingFiles) return;
+
+    const readyAttachments = attachedFiles.filter((f) => f.status === 'ready');
     let promptToSend = inputText.trim();
-    if (attachedFiles.length > 0) {
-      const fileNames = attachedFiles.map((f) => f.name).join(', ');
-      promptToSend = `[Attached files: ${fileNames}] ${promptToSend}`;
+    if (readyAttachments.length > 0) {
+      const blocks = readyAttachments
+        .map((item) => {
+          const excerpt = (item.extractedText || '').trim();
+          return excerpt
+            ? `--- Attached File: ${item.file.name} (${item.charCount || excerpt.length} chars) ---\n${excerpt}`
+            : `[Attached file: ${item.file.name}]`;
+        })
+        .join('\n\n');
+      promptToSend = promptToSend ? `${blocks}\n\n${promptToSend}` : blocks;
+    }
+
+    if (!promptToSend) {
+      setUploadError('Please enter a message or wait for a valid file to finish extracting.');
+      return;
     }
 
     onSendMessage(promptToSend, {
@@ -209,6 +234,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
 
     setInputText('');
     setAttachedFiles([]);
+    setUploadError(null);
     setIsDropdownOpen(false);
     setActiveItemIndex(-1);
     if (textareaRef.current) {
@@ -223,10 +249,66 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
     }
   };
 
+  const extractSingleFile = async (itemId: string, file: File) => {
+    try {
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+        reader.readAsDataURL(file);
+      });
+
+      const res = await fetch('/api/uploads/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          base64Data,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to extract text from ${file.name}`);
+      }
+
+      setAttachedFiles((prev) =>
+        prev.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                status: 'ready',
+                extractedText: data.extractedText || '',
+                charCount: data.charCount || (data.extractedText || '').length,
+              }
+            : item
+        )
+      );
+    } catch (err: any) {
+      const errMsg = err?.message || `Unable to parse ${file.name}`;
+      setUploadError(errMsg);
+      setAttachedFiles((prev) =>
+        prev.map((item) =>
+          item.id === itemId ? { ...item, status: 'error', error: errMsg } : item
+        )
+      );
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const filesArray = Array.from(e.target.files);
-      setAttachedFiles((prev) => [...prev, ...filesArray]);
+      setUploadError(null);
+      const newItems: AttachedUploadItem[] = filesArray.map((file, idx) => ({
+        id: `att-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        file,
+        status: 'extracting',
+      }));
+      setAttachedFiles((prev) => [...prev, ...newItems]);
+      newItems.forEach((item) => {
+        void extractSingleFile(item.id, item.file);
+      });
+      e.target.value = '';
       setIsDropdownOpen(false);
       setActiveItemIndex(-1);
     }
@@ -282,6 +364,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
         ref={fileInputRef}
         type="file"
         multiple
+        accept=".pdf,.docx,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.html,.css,.yml,.yaml,.sql,.xml"
         className="hidden"
         onChange={handleFileChange}
       />
@@ -399,23 +482,49 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       )}
 
       {/* Attached files indicator badge */}
-      {attachedFiles.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5 px-2">
-          {attachedFiles.map((f, i) => (
-            <span
-              key={i}
-              className="inline-flex items-center gap-1.5 bg-[#262626] border border-[#383838] text-white text-xs px-2.5 py-1 rounded-full"
-            >
-              <Paperclip className="w-3 h-3 text-[#8e8e8e]" />
-              <span className="truncate max-w-[150px]">{f.name}</span>
-              <button
-                onClick={() => setAttachedFiles((prev) => prev.filter((_, idx) => idx !== i))}
-                className="text-[#8e8e8e] hover:text-white ml-1"
-              >
-                ×
-              </button>
-            </span>
-          ))}
+      {(attachedFiles.length > 0 || uploadError) && (
+        <div className="mt-2 space-y-1.5 px-2">
+          {uploadError && (
+            <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1">
+              {uploadError}
+            </div>
+          )}
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {attachedFiles.map((item) => (
+                <span
+                  key={item.id}
+                  title={item.error || `${item.file.name} (${item.status})`}
+                  className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
+                    item.status === 'error'
+                      ? 'bg-red-950/50 border-red-500/40 text-red-200'
+                      : item.status === 'extracting'
+                      ? 'bg-[#262626] border-amber-500/40 text-amber-200'
+                      : 'bg-[#262626] border-emerald-500/40 text-white'
+                  }`}
+                >
+                  <Paperclip className="w-3 h-3 text-[#8e8e8e]" />
+                  <span className="truncate max-w-[160px]">{item.file.name}</span>
+                  <span className="text-[10px] opacity-80">
+                    {item.status === 'extracting'
+                      ? 'extracting...'
+                      : item.status === 'error'
+                      ? 'failed'
+                      : `${Math.max(1, Math.round((item.charCount || 0) / 100) / 10)}k`}
+                  </span>
+                  <button
+                    onClick={() =>
+                      setAttachedFiles((prev) => prev.filter((x) => x.id !== item.id))
+                    }
+                    className="text-[#8e8e8e] hover:text-white ml-0.5"
+                    title="Remove attachment"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

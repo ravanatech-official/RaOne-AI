@@ -246,9 +246,11 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
           content: activeDoc.content,
         }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
         setQaHistory((prev) => [...prev, { query: queryText, answer: data.answer }]);
+      } else {
+        showToast(data?.error || 'Q&A analysis failed.');
       }
     } catch {
       showToast('Q&A query failed.');
@@ -257,33 +259,67 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const text = event.target?.result as string;
-        if (text) {
-          setSourceText(text);
-          showToast(`Source grounded from "${file.name}".`);
-        }
-      };
-      reader.readAsText(file);
+    if (!file) return;
+    e.target.value = '';
+    showToast(`Extracting "${file.name}"...`);
+
+    try {
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Unable to read file'));
+        reader.readAsDataURL(file);
+      });
+
+      const res = await fetch('/api/uploads/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          base64Data,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        showToast(data?.error || `Failed to extract text from "${file.name}".`);
+        return;
+      }
+      setSourceText(data.extractedText || '');
+      showToast(`Source grounded from "${file.name}" (${data.charCount || 0} chars).`);
+    } catch (err: any) {
+      showToast(err?.message || 'Source upload extraction failed.');
     }
   };
 
-  const handleExportOffice = (format: 'docx' | 'pptx' | 'xlsx' | 'md') => {
+  const handleExportOffice = async (format: 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'md') => {
     if (!activeDoc) return;
-    const downloadUrl = resolveApiUrl(
-      `/api/documents/export/${format}?id=${encodeURIComponent(activeDoc.id)}`
-    );
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.download = `${activeDoc.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.${format}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
     showToast(`Exporting .${format.toUpperCase()}...`);
+    try {
+      const downloadUrl = resolveApiUrl(
+        `/api/documents/export/${format}?id=${encodeURIComponent(activeDoc.id)}`
+      );
+      const res = await fetch(downloadUrl);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData?.error || `Export failed (${res.status}).`);
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `${activeDoc.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+      showToast(`Exported .${format.toUpperCase()} successfully.`);
+    } catch (err: any) {
+      showToast(err?.message || `Failed to export .${format.toUpperCase()}.`);
+    }
   };
 
   const previewContent = activeDoc ? (
@@ -357,6 +393,12 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
             className="px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
           >
             .XLSX
+          </button>
+          <button
+            onClick={() => handleExportOffice('pdf')}
+            className="px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
+          >
+            .PDF
           </button>
           <button
             onClick={() => handleToggleFavorite(activeDoc.id)}
@@ -753,7 +795,7 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.json,.csv"
+        accept=".pdf,.docx,.txt,.md,.json,.csv"
         onChange={handleFileUpload}
         className="hidden"
       />
@@ -821,7 +863,7 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
             className="text-[11px] text-[#8AB4F8] hover:underline flex items-center gap-1"
           >
             <FileUp className="w-3 h-3" />
-            <span>Upload (.txt, .md)</span>
+            <span>Upload (.pdf, .docx, .txt, .md)</span>
           </button>
         </div>
         <textarea
@@ -839,7 +881,7 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
             Export Deliverables
           </label>
           <div className="grid grid-cols-2 gap-1.5">
-            {(['docx', 'pptx', 'xlsx', 'md'] as const).map((fmt) => (
+            {(['docx', 'pptx', 'xlsx', 'pdf', 'md'] as const).map((fmt) => (
               <button
                 key={fmt}
                 onClick={() => handleExportOffice(fmt)}

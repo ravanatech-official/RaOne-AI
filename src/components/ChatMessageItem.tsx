@@ -1,4 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import {
   Copy,
   Check,
@@ -20,6 +24,100 @@ import {
 } from 'lucide-react';
 import { ChatMessage } from '../types/index.ts';
 
+let purifyHookRegistered = false;
+function ensurePurifyHook() {
+  if (purifyHookRegistered || typeof window === 'undefined') return;
+  purifyHookRegistered = true;
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A') {
+      const href = (node.getAttribute('href') || '').trim();
+      const lower = href.toLowerCase();
+      if (
+        lower.startsWith('javascript:') ||
+        lower.startsWith('data:') ||
+        lower.startsWith('vbscript:')
+      ) {
+        node.removeAttribute('href');
+      } else if (href.startsWith('http://') || href.startsWith('https://')) {
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+  });
+}
+
+function renderMarkdownWithMath(raw: string): string {
+  ensurePurifyHook();
+  const text = String(raw || '');
+  const codePlaceholders: string[] = [];
+  const mathPlaceholders: string[] = [];
+
+  // 1. Protect fenced & inline code blocks before extracting LaTeX delimiters
+  const withoutCode = text
+    .replace(/```[\s\S]*?```/g, (match) => {
+      const idx = codePlaceholders.push(match) - 1;
+      return `@@RAONE_CODE_${idx}@@`;
+    })
+    .replace(/`[^`\n]+`/g, (match) => {
+      const idx = codePlaceholders.push(match) - 1;
+      return `@@RAONE_CODE_${idx}@@`;
+    });
+
+  // 2. Render block $$...$$ and inline $...$ formulas with KaTeX
+  const withMathTokens = withoutCode
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_m, expr) => {
+      let rendered = '';
+      try {
+        rendered = katex.renderToString(String(expr).trim(), {
+          displayMode: true,
+          throwOnError: false,
+        });
+      } catch {
+        rendered = String(expr);
+      }
+      const idx = mathPlaceholders.push(rendered) - 1;
+      return `@@RAONE_MATH_${idx}@@`;
+    })
+    .replace(/(^|[^\\$])\$([^$\n]+?)\$/g, (_m, prefix, expr) => {
+      let rendered = '';
+      try {
+        rendered = katex.renderToString(String(expr).trim(), {
+          displayMode: false,
+          throwOnError: false,
+        });
+      } catch {
+        rendered = String(expr);
+      }
+      const idx = mathPlaceholders.push(rendered) - 1;
+      return `${prefix}@@RAONE_MATH_${idx}@@`;
+    });
+
+  // 3. Restore protected code snippets for Markdown parsing
+  const restoredForMarkdown = withMathTokens.replace(
+    /@@RAONE_CODE_(\d+)@@/g,
+    (_m, idxStr) => codePlaceholders[Number(idxStr)] || ''
+  );
+
+  const parsedHtml = marked.parse(restoredForMarkdown, {
+    async: false,
+    gfm: true,
+    breaks: true,
+  }) as string;
+
+  // 4. Restore KaTeX HTML tokens and sanitize everything with DOMPurify
+  const withRenderedMath = parsedHtml.replace(
+    /@@RAONE_MATH_(\d+)@@/g,
+    (_m, idxStr) => mathPlaceholders[Number(idxStr)] || ''
+  );
+
+  return DOMPurify.sanitize(withRenderedMath, {
+    USE_PROFILES: { html: true, mathMl: true },
+    ADD_TAGS: ['semantics', 'annotation', 'mrow', 'mi', 'mo', 'mn', 'ms', 'mspace', 'msup', 'msub', 'msubsup', 'mfrac', 'msqrt', 'mroot', 'mover', 'munder', 'munderover', 'mtable', 'mtr', 'mtd', 'mtext'],
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'button'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onmouseenter'],
+  });
+}
+
 interface ChatMessageItemProps {
   message: ChatMessage;
   onSpeak: (text: string) => void;
@@ -38,6 +136,10 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
   const [liked, setLiked] = useState<boolean | null>(null);
 
   const isUser = message.role === 'user';
+  const renderedHtml = useMemo(
+    () => (isUser ? '' : renderMarkdownWithMath(message.content)),
+    [isUser, message.content]
+  );
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -48,7 +150,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
   if (isUser) {
     return (
       <div className="flex justify-end my-3 max-w-[760px] mx-auto px-4">
-        <div className="bg-[#2f2f2f] text-white rounded-2xl px-5 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed shadow-sm font-normal break-words">
+        <div className="bg-[#2f2f2f] text-white rounded-2xl px-5 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed shadow-sm font-normal whitespace-pre-wrap break-words">
           {message.content}
         </div>
       </div>
@@ -87,10 +189,11 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
         </div>
       )}
 
-      {/* Message Text Content */}
-      <div className="text-sm text-[#ECECEC] leading-relaxed whitespace-pre-wrap font-normal selection:bg-amber-500/30 selection:text-amber-200">
-        {message.content}
-      </div>
+      {/* Sanitized Markdown + KaTeX Content */}
+      <div
+        className="raone-markdown selection:bg-amber-500/30 selection:text-amber-200"
+        dangerouslySetInnerHTML={{ __html: renderedHtml }}
+      />
 
       {/* Generated Media Attachments (Image, Audio, Video) */}
       {message.generatedImage && (

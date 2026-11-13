@@ -117,12 +117,6 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       })
       .catch(() => {});
 
-    const cachedKey = localStorage.getItem('raone_gemini_api_key');
-    if (cachedKey) {
-      setGeminiKeyInput(cachedKey);
-      setIsGeminiActive(true);
-    }
-
     fetch('/api/studio/apps')
       .then((res) => res.json())
       .then((data) => {
@@ -151,12 +145,12 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
         body: JSON.stringify({ geminiApiKey: key }),
       });
       const data = await res.json();
-      if (data?.success) {
-        localStorage.setItem('raone_gemini_api_key', key);
+      if (res.ok && data?.success) {
+        setGeminiKeyInput('');
         setIsGeminiActive(true);
-        showToast('Gemini API Key connected.');
+        showToast('Gemini API Key encrypted & saved to your account.');
       } else {
-        showToast(data?.error || 'Failed to verify key.');
+        showToast(data?.error || 'Sign in required or key invalid.');
       }
     } catch (err: any) {
       showToast('Error saving key: ' + err.message);
@@ -184,7 +178,6 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
 
     try {
       if (!builtApp) {
-        const activeKey = localStorage.getItem('raone_gemini_api_key') || undefined;
         const res = await fetch('/api/studio/build-app', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -192,7 +185,6 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
             prompt: finalPrompt,
             mode: selectedBuildMode,
             category,
-            geminiApiKey: activeKey,
           }),
         });
         const data = await res.json();
@@ -315,7 +307,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
             key={iframeKey}
             title={builtApp.title}
             srcDoc={builtApp.code}
-            sandbox="allow-scripts allow-modals allow-same-origin allow-forms allow-downloads"
+            sandbox="allow-scripts allow-modals allow-forms allow-downloads"
             className="w-full h-full border-none bg-black"
           />
         </div>

@@ -242,11 +242,13 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
           title: title || prompt.slice(0, 28),
         }),
       });
-      const data = await res.json();
-      if (data.success && data.lyrics) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.lyrics) {
         setLyrics(data.lyrics);
         setCustomMode(true);
         showToast('Lyrics generated into editor.');
+      } else {
+        showToast(data?.error || 'Lyrics generation unavailable.');
       }
     } catch {
       showToast('Lyrics generation failed.');
@@ -266,11 +268,13 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
           sampleDuration: 10,
         }),
       });
-      const data = await res.json();
-      if (data.success && data.clone) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.clone) {
         setClonedVoices((prev) => [data.clone, ...prev]);
         setSelectedVoiceClone(data.clone);
         showToast(`Voice profile "${data.clone.name}" created.`);
+      } else {
+        showToast(data?.error || 'Voice cloning requires an external voice synthesis worker.');
       }
     } catch {
       showToast('Voice cloning failed.');
@@ -339,11 +343,13 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       });
-      const data = await res.json();
-      if (data.success && data.item) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.item) {
         setTracks((prev) => prev.map((t) => (t.id === id ? data.item : t)));
         if (activeTrack?.id === id) setActiveTrack(data.item);
         showToast(`${label} complete.`);
+      } else {
+        showToast(data?.error || `${label} requires an external audio DSP/Demucs worker.`);
       }
     } catch {
       showToast(`${label} failed.`);

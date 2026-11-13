@@ -23,8 +23,10 @@ import {
   PanelLeft,
   Copy,
   FolderInput,
+  AlertTriangle,
 } from 'lucide-react';
 import { resolveApiUrl } from '../utils/api.ts';
+import { auth } from '../lib/firebase.ts';
 
 export type LibraryAssetType = 'image' | 'video' | 'audio' | 'document' | 'app';
 
@@ -62,8 +64,12 @@ interface LibraryWindowProps {
 type LibraryTab = 'Suggested' | 'Favorites' | 'Folders' | 'Images' | 'All';
 type SortMode = 'newest' | 'oldest' | 'title';
 
-const FOLDERS_STORAGE_KEY = 'raone_library_folders_v1';
-const LOCAL_FAVORITES_KEY = 'raone_library_local_favorites_v1';
+function getFoldersStorageKey(uid?: string | null): string {
+  return `raone_library_folders_v1_${uid || 'guest'}`;
+}
+function getLocalFavoritesKey(uid?: string | null): string {
+  return `raone_library_local_favorites_v1_${uid || 'guest'}`;
+}
 
 const TABS: LibraryTab[] = ['Suggested', 'Favorites', 'Folders', 'Images', 'All'];
 
@@ -104,11 +110,16 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
   const [typeFilter, setTypeFilter] = useState<LibraryAssetType | 'all'>('all');
   const [sortMode, setSortMode] = useState<SortMode>('newest');
 
+  const uid = auth?.currentUser?.uid || null;
+  const foldersStorageKey = getFoldersStorageKey(uid);
+  const localFavoritesKey = getLocalFavoritesKey(uid);
+
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [folders, setFolders] = useState<LibraryFolder[]>(() => {
     try {
-      const saved = localStorage.getItem(FOLDERS_STORAGE_KEY);
+      const saved = localStorage.getItem(foldersStorageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) return parsed;
@@ -118,6 +129,7 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
     }
     return [];
   });
+  const foldersHydratedRef = useRef(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
 
   const [isNewMenuOpen, setIsNewMenuOpen] = useState(false);
@@ -136,14 +148,20 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
   const filterMenuRef = useRef<HTMLDivElement>(null);
   const sortMenuRef = useRef<HTMLDivElement>(null);
 
-  // Persist folders
+  // Persist folders to UID-scoped localStorage and backend /api/library/folders
   useEffect(() => {
     try {
-      localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
+      localStorage.setItem(foldersStorageKey, JSON.stringify(folders));
     } catch {
       // ignore
     }
-  }, [folders]);
+    if (!foldersHydratedRef.current) return;
+    fetch(resolveApiUrl('/api/library/folders'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folders }),
+    }).catch(() => {});
+  }, [folders, foldersStorageKey]);
 
   // Close popovers on outside click / Escape
   useEffect(() => {
@@ -174,35 +192,56 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
 
   const fetchLibraryItems = useCallback(async () => {
     setIsLoading(true);
+    setSyncWarning(null);
     let localFavs: Record<string, boolean> = {};
     try {
-      const rawFavs = localStorage.getItem(LOCAL_FAVORITES_KEY);
+      const rawFavs = localStorage.getItem(localFavoritesKey);
       if (rawFavs) localFavs = JSON.parse(rawFavs);
     } catch {
       // ignore
     }
 
+    // Hydrate tenant folders from server
+    fetch(resolveApiUrl('/api/library/folders'))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.success && Array.isArray(data.folders)) {
+          foldersHydratedRef.current = true;
+          setFolders(data.folders);
+        } else {
+          foldersHydratedRef.current = true;
+        }
+      })
+      .catch(() => {
+        foldersHydratedRef.current = true;
+      });
+
     const endpoints = [
-      { key: 'vision', url: resolveApiUrl('/api/vision/history') },
-      { key: 'motion', url: resolveApiUrl('/api/motion/history') },
-      { key: 'audio', url: resolveApiUrl('/api/audio/history') },
-      { key: 'documents', url: resolveApiUrl('/api/documents/history') },
-      { key: 'apps', url: resolveApiUrl('/api/studio/apps') },
+      { key: 'vision', label: 'Images', url: resolveApiUrl('/api/vision/history') },
+      { key: 'motion', label: 'Videos', url: resolveApiUrl('/api/motion/history') },
+      { key: 'audio', label: 'Audio', url: resolveApiUrl('/api/audio/history') },
+      { key: 'documents', label: 'Documents', url: resolveApiUrl('/api/documents/history') },
+      { key: 'apps', label: 'Apps', url: resolveApiUrl('/api/studio/apps') },
     ] as const;
 
     const results = await Promise.allSettled(
       endpoints.map(async (ep) => {
         const res = await fetch(ep.url);
-        if (!res.ok) return { key: ep.key, data: null };
+        if (!res.ok) throw new Error(`${ep.label} (${res.status})`);
         const data = await res.json();
-        return { key: ep.key, data };
+        return { key: ep.key, label: ep.label, data };
       })
     );
 
     const unified: LibraryItem[] = [];
+    const failedSources: string[] = [];
 
-    for (const r of results) {
-      if (r.status !== 'fulfilled' || !r.value.data) continue;
+    for (let idx = 0; idx < results.length; idx++) {
+      const r = results[idx];
+      if (r.status !== 'fulfilled' || !r.value.data) {
+        failedSources.push(endpoints[idx].label);
+        continue;
+      }
       const { key, data } = r.value;
       const rawList = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
 
@@ -277,9 +316,12 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
       }
     }
 
+    if (failedSources.length > 0) {
+      setSyncWarning(`Some asset feeds could not sync: ${failedSources.join(', ')}`);
+    }
     setItems(unified);
     setIsLoading(false);
-  }, []);
+  }, [localFavoritesKey]);
 
   useEffect(() => {
     fetchLibraryItems();
@@ -311,9 +353,9 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
       }).catch(() => {});
     } else {
       try {
-        const stored = JSON.parse(localStorage.getItem(LOCAL_FAVORITES_KEY) || '{}');
+        const stored = JSON.parse(localStorage.getItem(localFavoritesKey) || '{}');
         stored[item.id] = nextFav;
-        localStorage.setItem(LOCAL_FAVORITES_KEY, JSON.stringify(stored));
+        localStorage.setItem(localFavoritesKey, JSON.stringify(stored));
       } catch {
         // ignore
       }
@@ -738,6 +780,21 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
 
       {/* Main Content Area */}
       <div className="flex-1 min-h-0 overflow-y-auto px-5 sm:px-8 pb-8 chat-scroll-area flex flex-col">
+        {syncWarning && (
+          <div className="mb-4 px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-2 shrink-0">
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>{syncWarning}</span>
+            </span>
+            <button
+              onClick={() => setSyncWarning(null)}
+              className="text-amber-200 hover:text-white"
+              title="Dismiss warning"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         {isLoading ? (
           <div className="flex-1 flex flex-col items-center justify-center text-[#8e8e8e] text-sm gap-2">
             <RefreshCw className="w-5 h-5 animate-spin text-[#9A9A9A]" />

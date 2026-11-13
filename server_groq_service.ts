@@ -256,7 +256,8 @@ export async function callGroqChat(
   messages: any[],
   systemPrompt: string,
   maxTokens = GROQ_SERVICE_CONFIG.maxTokens,
-  injectRuntimeContext = true
+  injectRuntimeContext = true,
+  signal?: AbortSignal
 ): Promise<{ text: string; modelUsed: string; responseId: string | null; usage: any }> {
   if (!apiKey) throw new Error('GROQ_API_KEY is not configured on the backend server.');
   const candidates = await resolveGroqCandidateQueue(apiKey, requestedModel);
@@ -275,6 +276,7 @@ export async function callGroqChat(
     const formattedMessages = withGroqRuntimeSystemMessage(baseFormattedMessages, modelId, injectRuntimeContext);
     const response = await fetch(`${GROQ_SERVICE_CONFIG.baseUrl}/chat/completions`, {
       method: 'POST',
+      signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
@@ -324,16 +326,19 @@ export async function streamGroqChatToSSE(
   formattedMessages: any[],
   sendEvent: (payload: Record<string, any>) => void,
   startTime: number,
-  injectRuntimeContext = true
+  injectRuntimeContext = true,
+  signal?: AbortSignal
 ): Promise<void> {
   if (!apiKey) throw new Error('GROQ_API_KEY is not configured on the backend server.');
   const candidates = await resolveGroqCandidateQueue(apiKey, requestedModel);
   let lastErr: Error | null = null;
 
   for (const modelId of candidates) {
+    if (signal?.aborted) return;
     const messagesWithRuntime = withGroqRuntimeSystemMessage(formattedMessages, modelId, injectRuntimeContext);
     const response = await fetch(`${GROQ_SERVICE_CONFIG.baseUrl}/chat/completions`, {
       method: 'POST',
+      signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
