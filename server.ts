@@ -37,11 +37,18 @@ const port = process.env.PORT || 3000;
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
-// HTTP Security Headers Middleware (Helmet-grade hardening)
+// HTTP Security Headers Middleware (Production-hardened + AI Studio iFrame-compatible)
 app.use((req, res, next) => {
+  const isDevPreview = process.env.NODE_ENV !== 'production';
+  const isIframeNav = req.headers['sec-fetch-dest'] === 'iframe';
+  const isApiRoute = req.path.startsWith('/api');
+  const allowIframe = (isDevPreview || isIframeNav) && !isApiRoute;
+
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
+  if (!allowIframe) {
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), geolocation=(self), microphone=(self)');
   res.setHeader('X-XSS-Protection', '0');
@@ -54,8 +61,10 @@ app.use((req, res, next) => {
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
       "media-src 'self' data: blob: https:",
-      "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://*.web.app https://*.run.app https://api.groq.com https://api.openai.com https://api.anthropic.com https://api.deepseek.com https://api.x.ai https://api.cometapi.com",
-      "frame-ancestors 'none'",
+      "frame-src 'self' data: blob: https:",
+      "worker-src 'self' blob:",
+      "connect-src 'self' ws: wss: data: blob: https:",
+      allowIframe ? 'frame-ancestors *' : "frame-ancestors 'none'",
     ].join('; ')
   );
   next();
@@ -3666,8 +3675,8 @@ function saveStoredImageGenerations(generations: any[]): void {
   }
 }
 
-// 1. Get Generation Feed / History
-app.get('/api/vision/history', (_req, res) => {
+// 1. Get Generation Feed / History & Gallery
+app.get(['/api/vision/history', '/api/vision/gallery'], (_req, res) => {
   try {
     const list = getStoredImageGenerations();
     return res.json({ success: true, count: list.length, items: list });
@@ -4128,8 +4137,8 @@ function saveStoredVideoGenerations(generations: any[]): void {
   }
 }
 
-// 1. Get Video Feed / History
-app.get('/api/motion/history', (_req, res) => {
+// 1. Get Video Feed / History & Gallery
+app.get(['/api/motion/history', '/api/motion/gallery'], (_req, res) => {
   try {
     const list = getStoredVideoGenerations();
     return res.json({ success: true, count: list.length, items: list });
@@ -4591,8 +4600,8 @@ app.post('/api/audio/voice-clone', (req, res) => {
   }
 });
 
-// 1. Get Track Feed / History
-app.get('/api/audio/history', (_req, res) => {
+// 1. Get Track Feed / History & Gallery
+app.get(['/api/audio/history', '/api/audio/gallery'], (_req, res) => {
   try {
     const list = getStoredAudioGenerations();
     return res.json({ success: true, count: list.length, items: list });
@@ -4943,8 +4952,8 @@ function saveStoredDocuments(documents: any[]): void {
   }
 }
 
-// 1. Get Document Feed / History
-app.get('/api/documents/history', (_req, res) => {
+// 1. Get Document Feed / History & List
+app.get(['/api/documents/history', '/api/documents/list'], (_req, res) => {
   try {
     const list = getStoredDocuments();
     return res.json({ success: true, count: list.length, items: list });
