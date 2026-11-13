@@ -99,7 +99,7 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
               }}
             >
               <img
-                src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
+                src="/assets/aistudio/RaOne_Logo_c8b49006.png"
                 alt="RaOne AI Core"
                 className="w-full h-full object-cover"
               />

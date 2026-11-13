@@ -238,7 +238,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl overflow-hidden border border-amber-500/40 p-0.5 bg-black shadow-md">
               <img
-                src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
+                src="/assets/aistudio/RaOne_Logo_c8b49006.png"
                 alt="RaOne Emblem"
                 className="w-full h-full object-cover rounded-lg"
               />

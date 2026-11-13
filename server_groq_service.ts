@@ -1,7 +1,8 @@
 /**
  * Groq Cloud Service Configuration & Streaming Adapter
  * Dedicated alternative AI provider configuration for RaOne AI chat & SSE streaming.
- * Uses Groq's OpenAI-compatible LPU endpoint (api.groq.com/openai/v1).
+ * Uses Groq's OpenAI-compatible LPU endpoint (api.groq.com/openai/v1) with dynamic
+ * live model discovery via GET /models so model_not_found (404) errors are avoided.
  */
 
 export type AIProviderMode = 'auto' | 'gemini' | 'groq';
@@ -42,7 +43,7 @@ export const GROQ_SERVICE_CONFIG: GroqServiceConfig = {
       groqModelId: 'meta-llama/llama-4-scout-17b-16e-instruct',
       name: 'RaOne Llama 4 Scout',
       tag: 'Meta Llama 4 · Groq',
-      description: 'Meta Llama 4 Scout 17B MoE running on Groq LPU',
+      description: 'Meta Llama 4 Scout / Active Llama running on Groq LPU',
     },
     {
       id: 'raone-llama-fast',
@@ -53,6 +54,56 @@ export const GROQ_SERVICE_CONFIG: GroqServiceConfig = {
     },
   ],
 };
+
+// Short-lived in-memory cache of active Groq chat models per API key prefix
+const groqModelsCache = new Map<string, { models: string[]; fetchedAt: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+function isGroqChatModel(modelId: string): boolean {
+  const id = String(modelId || '').toLowerCase();
+  if (!id) return false;
+  return !/whisper|tts|playai|orpheus|guard|safeguard|embedding|moderation/.test(id);
+}
+
+function isRetryableGroqModelError(status: number, errText: string): boolean {
+  const lower = errText.toLowerCase();
+  return (
+    status === 404 ||
+    lower.includes('model_not_found') ||
+    lower.includes('model_decommissioned') ||
+    lower.includes('does not exist') ||
+    lower.includes('do not have access') ||
+    lower.includes('decommissioned')
+  );
+}
+
+export async function fetchLiveGroqModels(apiKey: string): Promise<string[]> {
+  if (!apiKey) return [];
+  const cacheKey = `${apiKey.slice(0, 12)}:${apiKey.length}`;
+  const cached = groqModelsCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS && cached.models.length > 0) {
+    return cached.models;
+  }
+
+  try {
+    const resp = await fetch(`${GROQ_SERVICE_CONFIG.baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const list: string[] = Array.isArray(data?.data)
+      ? data.data
+          .map((item: any) => String(item?.id || ''))
+          .filter((id: string) => isGroqChatModel(id))
+      : [];
+    if (list.length > 0) {
+      groqModelsCache.set(cacheKey, { models: list, fetchedAt: Date.now() });
+    }
+    return list;
+  } catch {
+    return [];
+  }
+}
 
 export function isGroqModelId(requestedModel: string): boolean {
   const m = String(requestedModel || '').toLowerCase();
@@ -70,12 +121,76 @@ export function isGroqModelId(requestedModel: string): boolean {
 export function getGroqModelCandidates(requestedModel: string): string[] {
   const m = String(requestedModel || '').toLowerCase();
   if (m === 'raone-llama4' || m.includes('llama4') || m.includes('llama-4')) {
-    return ['meta-llama/llama-4-scout-17b-16e-instruct', 'llama-3.3-70b-versatile'];
+    return [
+      'meta-llama/llama-4-scout-17b-16e-instruct',
+      'meta-llama/llama-4-maverick-17b-128e-instruct',
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b',
+    ];
   }
   if (m === 'raone-llama-fast' || m.includes('8b-instant') || m.includes('lite')) {
-    return ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'];
+    return [
+      'llama-3.1-8b-instant',
+      'llama-3.3-70b-versatile',
+      'openai/gpt-oss-20b',
+    ];
   }
-  return ['llama-3.3-70b-versatile', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+  return [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+    'llama3-70b-8192',
+    'llama3-8b-8192',
+  ];
+}
+
+async function resolveGroqCandidateQueue(apiKey: string, requestedModel: string): Promise<string[]> {
+  const preferred = getGroqModelCandidates(requestedModel);
+  const liveModels = await fetchLiveGroqModels(apiKey);
+  if (liveModels.length === 0) {
+    return preferred;
+  }
+
+  const liveSet = new Set(liveModels);
+  const orderedLive: string[] = [];
+
+  // 1. Add preferred models that actually exist on this Groq account
+  for (const p of preferred) {
+    if (liveSet.has(p) && !orderedLive.includes(p)) {
+      orderedLive.push(p);
+    }
+  }
+
+  // 2. If user asked for llama4 and exact ID wasn't matched, prioritize any live llama-4 model
+  const reqLower = String(requestedModel || '').toLowerCase();
+  if (reqLower.includes('llama4') || reqLower.includes('llama-4')) {
+    for (const id of liveModels) {
+      if (id.toLowerCase().includes('llama-4') && !orderedLive.includes(id)) {
+        orderedLive.unshift(id);
+      }
+    }
+  }
+
+  // 3. Append any other live chat models (Llama, GPT-OSS, Qwen, DeepSeek, Gemma) sorted cleanly
+  const priorityMatchers = [/llama-3\.3/, /llama-4/, /llama-3\.1/, /gpt-oss/, /qwen/, /deepseek/, /gemma/, /llama/];
+  for (const matcher of priorityMatchers) {
+    for (const id of liveModels) {
+      if (matcher.test(id.toLowerCase()) && !orderedLive.includes(id)) {
+        orderedLive.push(id);
+      }
+    }
+  }
+  for (const id of liveModels) {
+    if (!orderedLive.includes(id)) {
+      orderedLive.push(id);
+    }
+  }
+
+  return orderedLive.length > 0 ? orderedLive : preferred;
 }
 
 export function formatGroqMessages(messages: any[], prompt: string, systemPrompt: string) {
@@ -114,7 +229,7 @@ export async function callGroqChat(
   maxTokens = GROQ_SERVICE_CONFIG.maxTokens
 ): Promise<{ text: string; modelUsed: string; responseId: string | null; usage: any }> {
   if (!apiKey) throw new Error('GROQ_API_KEY is not configured on the backend server.');
-  const candidates = getGroqModelCandidates(requestedModel);
+  const candidates = await resolveGroqCandidateQueue(apiKey, requestedModel);
   const formattedMessages = [
     { role: 'system', content: systemPrompt },
     ...messages
@@ -144,7 +259,7 @@ export async function callGroqChat(
     if (!response.ok) {
       const errText = await response.text();
       lastErr = new Error(`Groq API error (${response.status}): ${errText}`);
-      if (response.status === 404 || errText.toLowerCase().includes('model_not_found')) {
+      if (isRetryableGroqModelError(response.status, errText)) {
         console.warn(`Groq model ${modelId} unavailable, trying next candidate...`);
         continue;
       }
@@ -180,7 +295,7 @@ export async function streamGroqChatToSSE(
   startTime: number
 ): Promise<void> {
   if (!apiKey) throw new Error('GROQ_API_KEY is not configured on the backend server.');
-  const candidates = getGroqModelCandidates(requestedModel);
+  const candidates = await resolveGroqCandidateQueue(apiKey, requestedModel);
   let lastErr: Error | null = null;
 
   for (const modelId of candidates) {
@@ -202,7 +317,7 @@ export async function streamGroqChatToSSE(
     if (!response.ok || !response.body) {
       const errText = await response.text();
       lastErr = new Error(`Groq API error (${response.status}): ${errText}`);
-      if (response.status === 404 || errText.toLowerCase().includes('model_not_found')) {
+      if (isRetryableGroqModelError(response.status, errText)) {
         console.warn(`Groq stream model ${modelId} unavailable, trying next candidate...`);
         continue;
       }
@@ -274,6 +389,7 @@ export async function testGroqConnection(apiKey: string) {
     throw new Error('Please enter a Groq API Key (gsk_...) to test.');
   }
   const start = Date.now();
+  const availableModels = await fetchLiveGroqModels(apiKey);
   const result = await callGroqChat(
     apiKey,
     'raone-llama3-70b',
@@ -285,6 +401,7 @@ export async function testGroqConnection(apiKey: string) {
     success: true,
     model: result.modelUsed,
     responseId: result.responseId,
+    availableModels,
     latencyMs: Date.now() - start,
     message: `Connected to Groq Cloud (${result.modelUsed}) in ${Date.now() - start}ms!`,
   };

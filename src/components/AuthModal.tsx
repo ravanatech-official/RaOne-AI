@@ -95,7 +95,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, currentUs
         <div className="text-center mb-6">
           <div className="w-12 h-12 rounded-full overflow-hidden border border-amber-500/40 shadow-[0_0_15px_rgba(245,158,11,0.3)] mx-auto mb-3">
             <img
-              src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
+              src="/assets/aistudio/RaOne_Logo_c8b49006.png"
               alt="RaOne Logo"
               className="w-full h-full object-cover"
             />

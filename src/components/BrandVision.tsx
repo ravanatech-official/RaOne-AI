@@ -15,10 +15,10 @@ export const BrandVision: React.FC<BrandVisionProps> = ({ onLaunchStudio, onOpen
 
         {/* Hero Visual Asset */}
         <img
-          src="/src/assets/images/raone_hero_visual_1794208555300.jpg"
+          src="/assets/aistudio/RaOne_Logo_c8b49006.png"
           alt="RaOne AI Think Create Act Pillars"
           referrerPolicy="no-referrer"
-          className="absolute right-0 top-0 w-full h-full object-cover object-center opacity-35 sm:opacity-55 mix-blend-luminosity"
+          className="absolute right-0 top-0 w-full h-full object-cover object-center opacity-25 sm:opacity-35 mix-blend-luminosity"
         />
 
         <div className="relative z-20 p-8 sm:p-14 max-w-2xl">
@@ -154,7 +154,7 @@ export const BrandVision: React.FC<BrandVisionProps> = ({ onLaunchStudio, onOpen
           <div className="relative group">
             <div className="w-72 h-72 sm:w-80 sm:h-80 rounded-2xl overflow-hidden border border-amber-500/40 shadow-2xl relative">
               <img
-                src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
+                src="/assets/aistudio/RaOne_Logo_c8b49006.png"
                 alt="RaOne AI Core Symbol"
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"

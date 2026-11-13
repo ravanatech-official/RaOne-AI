@@ -141,8 +141,8 @@ RaOne AI by RavanaTec — Think. Create. Act.`,
                   RaOne AI Emblem by RavanaTec
                 </span>
                 <a
-                  href="/src/assets/images/raone_core_symbol_1794208556087.jpg"
-                  download="RaOne_AI_Logo_by_RavanaTec.jpg"
+                  href="/assets/aistudio/RaOne_Logo_c8b49006.png"
+                  download="RaOne_AI_Logo_by_RavanaTec.png"
                   className="text-[10px] text-amber-400 hover:text-amber-300 font-medium px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30"
                 >
                   Download
@@ -150,7 +150,7 @@ RaOne AI by RavanaTec — Think. Create. Act.`,
               </div>
               <div className="p-3 bg-black/40 flex items-center justify-center">
                 <img
-                  src="/src/assets/images/raone_core_symbol_1794208556087.jpg"
+                  src="/assets/aistudio/RaOne_Logo_c8b49006.png"
                   alt="RaOne AI Emblem"
                   referrerPolicy="no-referrer"
                   className="w-48 h-48 rounded-lg object-cover shadow-2xl border border-amber-500/20"
