@@ -32,6 +32,8 @@ interface SettingsModalProps {
   onToggleContinuousWake: () => void;
   selectedModel: string;
   onSelectModel: (model: string) => void;
+  activeProvider?: 'auto' | 'gemini' | 'groq';
+  onSelectProvider?: (provider: 'auto' | 'gemini' | 'groq') => void;
   currentPlan?: 'free' | 'plus' | 'ultimate';
   onOpenUpgrade?: () => void;
   onClearAllChats?: () => void;
@@ -44,6 +46,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToggleContinuousWake,
   selectedModel,
   onSelectModel,
+  activeProvider = 'auto',
+  onSelectProvider,
   currentPlan = 'free',
   onOpenUpgrade,
   onClearAllChats,
@@ -89,9 +93,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Security State
   const [mfaEnabled, setMfaEnabled] = useState<boolean>(false);
 
-  // API Keys state
+  // API Keys & Provider state
+  const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'groq'>(activeProvider);
   const [geminiKey, setGeminiKey] = useState('');
   const [groqKey, setGroqKey] = useState('');
+  const [showGroqKey, setShowGroqKey] = useState(false);
+  const [groqTesting, setGroqTesting] = useState(false);
+  const [groqTestResult, setGroqTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
   const [openAiKey, setOpenAiKey] = useState('');
   const [anthropicKey, setAnthropicKey] = useState('');
   const [deepSeekKey, setDeepSeekKey] = useState('');
@@ -128,6 +136,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Fetch settings & keys from Backend API on open
   useEffect(() => {
     if (isOpen) {
+      setProviderMode(activeProvider);
+      setGroqTestResult(null);
       fetch('/api/user/settings')
         .then((res) => res.json())
         .then((data) => {
@@ -135,6 +145,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             if (data.theme) setTheme(data.theme);
             if (data.language) setLanguage(data.language);
             if (typeof data.alwaysShowCode === 'boolean') setAlwaysShowCode(data.alwaysShowCode);
+            if (data.activeProvider && ['auto', 'gemini', 'groq'].includes(data.activeProvider)) {
+              setProviderMode(data.activeProvider);
+            }
             if (data.customInstructions) {
               setAboutUser(data.customInstructions.aboutUser || '');
               setResponseStyle(data.customInstructions.responseStyle || '');
@@ -198,6 +211,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  // Test Groq Cloud API connection
+  const handleTestGroqApi = async () => {
+    setGroqTesting(true);
+    setGroqTestResult(null);
+    try {
+      const res = await fetch('/api/groq/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          groqApiKey: groqKey || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setGroqTestResult({ success: true, message: data.message || 'Connected to Groq Cloud successfully!' });
+      } else {
+        setGroqTestResult({ success: false, message: data.error || 'Groq connection failed' });
+      }
+    } catch (err: any) {
+      setGroqTestResult({ success: false, message: err.message || 'Network error' });
+    } finally {
+      setGroqTesting(false);
+    }
+  };
+
+  // Switch active chat streaming provider seamlessly
+  const handleProviderSwitch = (nextProvider: 'auto' | 'gemini' | 'groq') => {
+    setProviderMode(nextProvider);
+    if (onSelectProvider) onSelectProvider(nextProvider);
+    if (nextProvider === 'groq' && !selectedModel.startsWith('raone-llama')) {
+      onSelectModel('raone-llama3-70b');
+    } else if (nextProvider === 'gemini' && selectedModel.startsWith('raone-llama')) {
+      onSelectModel('gemini-3.8-flash');
+    }
+  };
+
   // Save Settings to Backend API
   const handleSave = async () => {
     try {
@@ -205,6 +254,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         theme,
         language,
         alwaysShowCode,
+        activeProvider: providerMode,
+        selectedModel,
         customInstructions: {
           aboutUser,
           responseStyle,
@@ -232,6 +283,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+
+      if (onSelectProvider) onSelectProvider(providerMode);
 
       // Save API keys if any entered or updated
       if (geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || cometBaseUrl) {
@@ -853,6 +906,66 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 6. CONNECTED APPS & APIS TAB */}
             {activeTab === 'connectedapps' && (
               <div className="space-y-5">
+                {/* Primary Streaming Provider Switcher */}
+                <div className="p-4 rounded-2xl bg-[#1c1c1c] border border-[#2d2d2d] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-white">Chat Streaming Provider</div>
+                      <div className="text-[11px] text-[#8e8e8e]">
+                        Switch seamlessly between Google Gemini and Groq LPU (Meta Llama)
+                      </div>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium uppercase">
+                      {providerMode === 'auto' ? 'Auto Failover' : providerMode}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleProviderSwitch('auto')}
+                      className={`px-3 py-2 rounded-xl border text-left transition-all ${
+                        providerMode === 'auto'
+                          ? 'bg-amber-500/15 border-amber-500/50 text-white'
+                          : 'bg-[#242424] border-[#333] text-[#9e9e9e] hover:text-white'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">Auto Routing</div>
+                      <div className="text-[10px] text-[#8e8e8e] mt-0.5">Gemini → Groq fallback</div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleProviderSwitch('gemini')}
+                      className={`px-3 py-2 rounded-xl border text-left transition-all ${
+                        providerMode === 'gemini'
+                          ? 'bg-sky-500/15 border-sky-500/50 text-white'
+                          : 'bg-[#242424] border-[#333] text-[#9e9e9e] hover:text-white'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">Google Gemini</div>
+                      <div className="text-[10px] text-[#8e8e8e] mt-0.5">
+                        {keysConfigured.geminiConfigured ? 'Key Configured' : 'Key Not Set'}
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleProviderSwitch('groq')}
+                      className={`px-3 py-2 rounded-xl border text-left transition-all ${
+                        providerMode === 'groq'
+                          ? 'bg-emerald-500/15 border-emerald-500/50 text-white'
+                          : 'bg-[#242424] border-[#333] text-[#9e9e9e] hover:text-white'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">Groq (Meta Llama)</div>
+                      <div className="text-[10px] text-[#8e8e8e] mt-0.5">
+                        {keysConfigured.groqConfigured ? 'Key Configured' : 'Key Not Set'}
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Model Engine Selector */}
                 <div className="pb-4 border-b border-[#262626]">
                   <label className="block text-sm font-semibold text-white mb-1.5">
@@ -860,12 +973,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </label>
                   <select
                     value={selectedModel}
-                    onChange={(e) => onSelectModel(e.target.value)}
+                    onChange={(e) => {
+                      const nextModel = e.target.value;
+                      onSelectModel(nextModel);
+                      if (nextModel.startsWith('raone-llama')) {
+                        setProviderMode('groq');
+                        if (onSelectProvider) onSelectProvider('groq');
+                      }
+                    }}
                     className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2.5 text-xs text-white focus:outline-none"
                   >
-                    <option value="gemini-3.8-flash">RaOne Flash (High Velocity · Recommended)</option>
+                    <option value="gemini-3.8-flash">RaOne Flash (Gemini · Recommended)</option>
                     <option value="raone-llama3-70b">RaOne Llama 3.3 70B (Groq Free · Ultra Fast)</option>
                     <option value="raone-llama4">RaOne Llama 4 Scout (Groq Meta Llama 4)</option>
+                    <option value="raone-llama-fast">RaOne Llama 3.1 8B Instant (Groq Low Latency)</option>
                     <option value="gemini-4-argon">RaOne Argon (Deep Cognitive Reasoning & Systems Logic)</option>
                     <option value="comet-all-in-one">CometAPI All-In-One (Multi-Model Gateway: GPT-4o, Claude, DeepSeek, Gemini)</option>
                     <option value="raone-deepseek-r1">RaOne DeepSeek R1 (Open Deep Reasoning Matrix)</option>
@@ -1026,26 +1147,90 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     />
                   </div>
 
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-medium text-[#b4b4b4]">Groq API Key (Free · Meta Llama 3.3 / 4)</span>
+                  <div className="p-3.5 rounded-2xl bg-[#161e1b] border border-emerald-500/30 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-semibold text-white">Groq API Key (Free · Meta Llama 3.3 / 4)</span>
+                        <div className="text-[10px] text-[#94a3b8]">
+                          Ultra-fast LPU streaming endpoint for Llama 3.3 70B &amp; Llama 4 Scout
+                        </div>
+                      </div>
                       <span
-                        className={`text-[9px] px-2 py-0.5 rounded-full ${
+                        className={`text-[9px] px-2 py-0.5 rounded-full border ${
                           keysConfigured.groqConfigured
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-[#2a2a2a] text-[#737373]'
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : 'bg-[#2a2a2a] text-[#737373] border-[#383838]'
                         }`}
                       >
                         {keysConfigured.groqConfigured ? 'Active' : 'Not Set'}
                       </span>
                     </div>
-                    <input
-                      type="password"
-                      value={groqKey}
-                      onChange={(e) => setGroqKey(e.target.value)}
-                      placeholder="gsk_..."
-                      className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
-                    />
+
+                    <div className="relative">
+                      <input
+                        type={showGroqKey ? 'text' : 'password'}
+                        value={groqKey}
+                        onChange={(e) => setGroqKey(e.target.value)}
+                        placeholder="gsk_..."
+                        className="w-full bg-[#111614] border border-emerald-500/30 rounded-xl p-2 pr-9 text-xs text-white focus:outline-none focus:border-emerald-400 font-mono placeholder-[#555]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowGroqKey(!showGroqKey)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#94a3b8] hover:text-white p-1"
+                        title={showGroqKey ? 'Hide key' : 'Show key'}
+                      >
+                        {showGroqKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-0.5">
+                      <button
+                        type="button"
+                        onClick={handleTestGroqApi}
+                        disabled={groqTesting || (!groqKey && !keysConfigured.groqConfigured)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {groqTesting ? (
+                          <>
+                            <RotateCcw className="w-3 h-3 animate-spin" />
+                            <span>Testing Groq...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="w-3 h-3" />
+                            <span>Test Groq Connection</span>
+                          </>
+                        )}
+                      </button>
+
+                      <a
+                        href="https://console.groq.com/keys"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"
+                      >
+                        <span>Get free key at console.groq.com</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </div>
+
+                    {groqTestResult && (
+                      <div
+                        className={`p-2 rounded-xl text-[11px] flex items-center gap-2 ${
+                          groqTestResult.success
+                            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                            : 'bg-red-500/15 border border-red-500/30 text-red-300'
+                        }`}
+                      >
+                        {groqTestResult.success ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        ) : (
+                          <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                        )}
+                        <span>{groqTestResult.message}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div>

@@ -51,6 +51,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState<boolean>(false);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash');
+  const [activeProvider, setActiveProvider] = useState<'auto' | 'gemini' | 'groq'>('auto');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [showScrollDown, setShowScrollDown] = useState<boolean>(false);
   const [shareCopied, setShareCopied] = useState<boolean>(false);
@@ -148,7 +149,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [isAuthModalOpen, isSettingsOpen, isShortcutsOpen, isStudioHubOpen, isVoiceModalOpen, isUpgradeModalOpen, isGoogleAIStudioOpen]);
 
-  // Load user subscription plan from backend API
+  // Load user subscription plan & persisted provider/model settings from backend API
   useEffect(() => {
     fetch('/api/user/plan')
       .then((res) => res.json())
@@ -158,6 +159,18 @@ export default function App() {
         }
       })
       .catch((err) => console.warn('Plan fetch note:', err));
+
+    fetch('/api/user/settings')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.activeProvider && ['auto', 'gemini', 'groq'].includes(data.activeProvider)) {
+          setActiveProvider(data.activeProvider);
+        }
+        if (data?.selectedModel && typeof data.selectedModel === 'string') {
+          setSelectedModel(data.selectedModel);
+        }
+      })
+      .catch((err) => console.warn('Settings hydration note:', err));
   }, []);
 
   // Load persisted conversations from backend API on initial mount
@@ -441,6 +454,7 @@ export default function App() {
               prompt: text,
               mode: 'chat',
               model: selectedModel,
+              provider: activeProvider,
               enableSearch: options?.enableSearch,
               enableMaps: options?.enableMaps,
               isTemporary: true,
@@ -563,6 +577,7 @@ export default function App() {
             prompt: text,
             mode: 'chat',
             model: selectedModel,
+            provider: activeProvider,
             enableSearch: options?.enableSearch,
             enableMaps: options?.enableMaps,
             messages: history.map((m) => ({
@@ -671,6 +686,7 @@ export default function App() {
     [
       activeConversation.messages,
       activeId,
+      activeProvider,
       conversations,
       isLoading,
       isTemporaryChat,
@@ -938,6 +954,8 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
+        activeProvider={activeProvider}
+        onSelectProvider={setActiveProvider}
         isContinuousWakeListening={voice.isContinuousWakeListening}
         onToggleContinuousWake={voice.toggleContinuousWakeListening}
         currentPlan={currentPlan}
