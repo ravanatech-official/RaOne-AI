@@ -221,16 +221,42 @@ export function isGeminiFallbackEligibleError(err: any): boolean {
   );
 }
 
+function withGroqRuntimeSystemMessage(messages: any[], modelId: string, inject = true): any[] {
+  if (!inject) return messages;
+  const runtimeBlock = [
+    '[RUNTIME EXECUTION METADATA]',
+    '- Active Provider: Groq Cloud LPU API',
+    `- Executed Model ID: ${modelId}`,
+    '- Live Google Search Grounding: Disabled (no live internet search in this request)',
+    '- Live Google Maps Grounding: Disabled',
+    `- Truthfulness Rule: If asked which underlying AI model or provider is generating this reply, state "${modelId} via Groq Cloud" accurately. Do NOT guess or claim to be GPT-4 or Gemini.`,
+  ].join('\n');
+
+  let patchedSystem = false;
+  const next = messages.map((m) => {
+    if (!patchedSystem && m?.role === 'system') {
+      patchedSystem = true;
+      return { ...m, content: `${m.content}\n\n${runtimeBlock}` };
+    }
+    return m;
+  });
+  if (!patchedSystem) {
+    next.unshift({ role: 'system', content: runtimeBlock });
+  }
+  return next;
+}
+
 export async function callGroqChat(
   apiKey: string,
   requestedModel: string,
   messages: any[],
   systemPrompt: string,
-  maxTokens = GROQ_SERVICE_CONFIG.maxTokens
+  maxTokens = GROQ_SERVICE_CONFIG.maxTokens,
+  injectRuntimeContext = true
 ): Promise<{ text: string; modelUsed: string; responseId: string | null; usage: any }> {
   if (!apiKey) throw new Error('GROQ_API_KEY is not configured on the backend server.');
   const candidates = await resolveGroqCandidateQueue(apiKey, requestedModel);
-  const formattedMessages = [
+  const baseFormattedMessages = [
     { role: 'system', content: systemPrompt },
     ...messages
       .filter((m: any) => m && (m.content || m.parts?.[0]?.text))
@@ -242,6 +268,7 @@ export async function callGroqChat(
 
   let lastErr: Error | null = null;
   for (const modelId of candidates) {
+    const formattedMessages = withGroqRuntimeSystemMessage(baseFormattedMessages, modelId, injectRuntimeContext);
     const response = await fetch(`${GROQ_SERVICE_CONFIG.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -292,13 +319,15 @@ export async function streamGroqChatToSSE(
   requestedModel: string,
   formattedMessages: any[],
   sendEvent: (payload: Record<string, any>) => void,
-  startTime: number
+  startTime: number,
+  injectRuntimeContext = true
 ): Promise<void> {
   if (!apiKey) throw new Error('GROQ_API_KEY is not configured on the backend server.');
   const candidates = await resolveGroqCandidateQueue(apiKey, requestedModel);
   let lastErr: Error | null = null;
 
   for (const modelId of candidates) {
+    const messagesWithRuntime = withGroqRuntimeSystemMessage(formattedMessages, modelId, injectRuntimeContext);
     const response = await fetch(`${GROQ_SERVICE_CONFIG.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -307,7 +336,7 @@ export async function streamGroqChatToSSE(
       },
       body: JSON.stringify({
         model: modelId,
-        messages: formattedMessages,
+        messages: messagesWithRuntime,
         temperature: GROQ_SERVICE_CONFIG.temperature,
         max_tokens: GROQ_SERVICE_CONFIG.maxTokens,
         stream: true,
@@ -395,7 +424,8 @@ export async function testGroqConnection(apiKey: string) {
     'raone-llama3-70b',
     [{ role: 'user', content: 'Reply with exactly: OK' }],
     'Reply with OK only.',
-    16
+    16,
+    false
   );
   return {
     success: true,

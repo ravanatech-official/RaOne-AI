@@ -284,6 +284,7 @@ export default function App() {
     },
     onCommandRecognized: (command) => {
       if (command.trim()) {
+        setIsVoiceModalOpen(false);
         handleSendMessage(command);
       }
     },
@@ -989,7 +990,10 @@ export default function App() {
         onStopListening={voice.stopListening}
         onToggleContinuousWake={voice.toggleContinuousWakeListening}
         onStopSpeaking={voice.stopSpeaking}
-        onSendVoiceQuery={(query) => handleSendMessage(query)}
+        onSendVoiceQuery={(query) => {
+          voice.clearTranscript();
+          handleSendMessage(query);
+        }}
       />
 
       {/* Sovereign Authentication Modal */}

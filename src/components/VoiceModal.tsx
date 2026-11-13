@@ -11,7 +11,7 @@ interface VoiceModalProps {
   audioLevel: number;
   voiceError: string | null;
   onStartListening: () => void;
-  onStopListening: () => void;
+  onStopListening: (suppressAutoSubmit?: boolean) => void;
   onToggleContinuousWake: () => void;
   onStopSpeaking: () => void;
   onSendVoiceQuery: (query: string) => void;
@@ -46,7 +46,10 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
       <div className="relative w-full max-w-lg bg-[#0D1322] border border-amber-500/30 rounded-2xl p-6 sm:p-8 shadow-[0_0_60px_rgba(245,158,11,0.15)] overflow-hidden">
         {/* Close Button */}
         <button
-          onClick={onClose}
+          onClick={() => {
+            if (isListening) onStopListening(true);
+            onClose();
+          }}
           className="absolute top-5 right-5 text-slate-400 hover:text-white p-1 rounded-lg transition-colors"
         >
           <X className="w-5 h-5" />
@@ -174,7 +177,10 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
             {transcript && (
               <button
                 onClick={() => {
-                  onSendVoiceQuery(transcript);
+                  const queryToSend = transcript.trim();
+                  if (!queryToSend) return;
+                  if (isListening) onStopListening(true);
+                  onSendVoiceQuery(queryToSend);
                   onClose();
                 }}
                 className="px-4 py-2 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg transition-colors whitespace-nowrap"

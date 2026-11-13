@@ -26,6 +26,22 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
   const wakeRecognitionRef = useRef<any>(null);
   const synthRef = useRef<SpeechSynthesis | null>(null);
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const transcriptRef = useRef('');
+  const isContinuousWakeRef = useRef(false);
+  const manualStopRef = useRef(false);
+  const onCommandRecognizedRef = useRef(onCommandRecognized);
+  const onWakeWordTriggeredRef = useRef(onWakeWordTriggered);
+
+  useEffect(() => {
+    onCommandRecognizedRef.current = onCommandRecognized;
+  }, [onCommandRecognized]);
+
+  useEffect(() => {
+    onWakeWordTriggeredRef.current = onWakeWordTriggered;
+  }, [onWakeWordTriggered]);
+
+  const WAKE_WORD_REGEX = /\b(hey\s*raone|hey\s*ra[\s-]*one|hey\s*ravan[a]?|hey\s*rawan[a]?)\b/i;
+  const WAKE_WORD_STRIP_REGEX = /^[\s,.:;-]*(hey\s*raone|hey\s*ra[\s-]*one|hey\s*ravan[a]?|hey\s*rawan[a]?)[\s,.:;-]*/i;
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -37,11 +53,24 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
         synthRef.current = window.speechSynthesis;
       }
     }
+    return () => {
+      isContinuousWakeRef.current = false;
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        wakeRecognitionRef.current?.stop();
+      } catch {
+        // ignore
+      }
+    };
   }, []);
 
   // Voice level simulation when listening/speaking
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
     if (isListening || isSpeaking) {
       interval = setInterval(() => {
         setAudioLevel(Math.floor(Math.random() * 60) + 30);
@@ -52,6 +81,11 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
     return () => clearInterval(interval);
   }, [isListening, isSpeaking]);
 
+  const clearTranscript = useCallback(() => {
+    transcriptRef.current = '';
+    setTranscript('');
+  }, []);
+
   // Main active command listener
   const startListening = useCallback(() => {
     if (!isSupported) {
@@ -61,6 +95,18 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
 
     try {
       setVoiceError(null);
+      manualStopRef.current = false;
+      transcriptRef.current = '';
+      setTranscript('');
+
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
       recognition.continuous = false;
@@ -69,26 +115,26 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
 
       recognition.onstart = () => {
         setIsListening(true);
+        transcriptRef.current = '';
         setTranscript('');
       };
 
       recognition.onresult = (event: any) => {
         let currentTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
+        for (let i = 0; i < event.results.length; i++) {
           currentTranscript += event.results[i][0].transcript;
         }
+        transcriptRef.current = currentTranscript;
         setTranscript(currentTranscript);
 
-        // Check if wake word in stream
-        const lower = currentTranscript.toLowerCase();
-        if (lower.includes('hey raone') || lower.includes('hey ra one')) {
-          onWakeWordTriggered?.();
+        if (WAKE_WORD_REGEX.test(currentTranscript)) {
+          onWakeWordTriggeredRef.current?.();
         }
       };
 
       recognition.onerror = (event: any) => {
         console.warn('Voice recognition error:', event.error);
-        if (event.error !== 'no-speech') {
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
           setVoiceError(`Voice input error: ${event.error}`);
         }
         setIsListening(false);
@@ -96,8 +142,24 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
 
       recognition.onend = () => {
         setIsListening(false);
-        if (transcript.trim() && onCommandRecognized) {
-          onCommandRecognized(transcript.trim());
+        if (manualStopRef.current) {
+          manualStopRef.current = false;
+          return;
+        }
+        const raw = transcriptRef.current.trim();
+        if (!raw) return;
+
+        // If user only spoke the wake phrase without a command, keep transcript ready instead of auto-sending an empty wake greeting
+        const stripped = raw.replace(WAKE_WORD_STRIP_REGEX, '').trim();
+        if (WAKE_WORD_REGEX.test(raw) && !stripped) {
+          return;
+        }
+
+        const commandToSend = stripped || raw;
+        if (commandToSend && onCommandRecognizedRef.current) {
+          transcriptRef.current = '';
+          setTranscript('');
+          onCommandRecognizedRef.current(commandToSend);
         }
       };
 
@@ -107,11 +169,16 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
       setVoiceError(err.message || 'Failed to start microphone');
       setIsListening(false);
     }
-  }, [isSupported, transcript, onCommandRecognized, onWakeWordTriggered]);
+  }, [isSupported]);
 
-  const stopListening = useCallback(() => {
+  const stopListening = useCallback((suppressAutoSubmit = false) => {
+    manualStopRef.current = suppressAutoSubmit;
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
       setIsListening(false);
     }
   }, []);
@@ -120,14 +187,20 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
   const toggleContinuousWakeListening = useCallback(() => {
     if (!isSupported) return;
 
-    if (isContinuousWakeListening) {
+    if (isContinuousWakeRef.current) {
+      isContinuousWakeRef.current = false;
       if (wakeRecognitionRef.current) {
-        wakeRecognitionRef.current.stop();
+        try {
+          wakeRecognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
         wakeRecognitionRef.current = null;
       }
       setIsContinuousWakeListening(false);
     } else {
       try {
+        setVoiceError(null);
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         const wakeRec = new SpeechRecognition();
         wakeRec.continuous = true;
@@ -136,52 +209,64 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
 
         wakeRec.onresult = (event: any) => {
           for (let i = event.resultIndex; i < event.results.length; i++) {
-            const text = event.results[i][0].transcript.toLowerCase();
-            if (
-              text.includes('hey raone') ||
-              text.includes('hey ra one') ||
-              text.includes('hey ravana') ||
-              text.includes('raone')
-            ) {
-              onWakeWordTriggered?.();
-              // Clean query after wake word
-              const command = text.replace(/hey\s*raone|hey\s*ra\s*one/gi, '').trim();
-              if (command && onCommandRecognized) {
-                onCommandRecognized(command);
+            const result = event.results[i];
+            const rawText = String(result[0]?.transcript || '').trim();
+            if (!rawText) continue;
+
+            if (WAKE_WORD_REGEX.test(rawText) || /\braone\b/i.test(rawText)) {
+              onWakeWordTriggeredRef.current?.();
+              setTranscript(rawText);
+              transcriptRef.current = rawText;
+
+              if (result.isFinal) {
+                const command = rawText
+                  .replace(/\b(hey\s*raone|hey\s*ra[\s-]*one|hey\s*ravan[a]?|hey\s*rawan[a]?|raone)\b/gi, '')
+                  .trim();
+                if (command && onCommandRecognizedRef.current) {
+                  transcriptRef.current = '';
+                  setTranscript('');
+                  onCommandRecognizedRef.current(command);
+                }
               }
             }
           }
         };
 
-        wakeRec.onerror = () => {
-          // Restart quietly if listening
-          if (isContinuousWakeListening) {
-            try {
-              wakeRec.start();
-            } catch (e) {
-              // ignore
-            }
+        wakeRec.onerror = (event: any) => {
+          if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed' || event?.error === 'audio-capture') {
+            isContinuousWakeRef.current = false;
+            setIsContinuousWakeListening(false);
+            setVoiceError(`Wake listener microphone error: ${event.error}`);
+            return;
           }
+          // Transient error (e.g. no-speech) handled cleanly in onend
         };
 
         wakeRec.onend = () => {
-          if (isContinuousWakeListening) {
-            try {
-              wakeRec.start();
-            } catch (e) {
-              // ignore
-            }
+          if (isContinuousWakeRef.current) {
+            setTimeout(() => {
+              if (!isContinuousWakeRef.current) return;
+              try {
+                wakeRec.start();
+              } catch {
+                // ignore already-started races
+              }
+            }, 250);
           }
         };
 
+        isContinuousWakeRef.current = true;
         wakeRecognitionRef.current = wakeRec;
         wakeRec.start();
         setIsContinuousWakeListening(true);
-      } catch (err) {
+      } catch (err: any) {
+        isContinuousWakeRef.current = false;
+        setIsContinuousWakeListening(false);
+        setVoiceError(err?.message || 'Failed to start wake listener');
         console.error('Failed wake listener:', err);
       }
     }
-  }, [isSupported, isContinuousWakeListening, onWakeWordTriggered, onCommandRecognized]);
+  }, [isSupported]);
 
   // Speak text back using SpeechSynthesis
   const speakText = useCallback((text: string) => {
@@ -237,6 +322,7 @@ export function useRaOneVoice({ onCommandRecognized, onWakeWordTriggered }: UseR
     voiceError,
     startListening,
     stopListening,
+    clearTranscript,
     toggleContinuousWakeListening,
     speakText,
     stopSpeaking,

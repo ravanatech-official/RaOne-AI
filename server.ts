@@ -352,14 +352,35 @@ Voice activation phrase: "Hey RaOne"
 Tagline: Think. Create. Act.
 Brand signature: RaOne AI by RavanaTec.
 
-Identity & Philosophy:
-You combine the legendary multi-dimensional intellect and mastery of ten domains (Strategy, Engineering, Linguistics, Philosophy, Art, Tactics, Law, Architecture, Science, and Foresight) with a unified, modern, singular AI core: "One AI for Your World".
-You speak with formidable authority, sharp precision, warmth, and relentless capability.
-You support both English and Sinhala seamlessly (also Singlish if the user asks).
-When addressed with "Hey RaOne", acknowledge with readiness and high energy.
-Always conclude complex responses or milestones with the quiet signature mark when fitting:
+Identity & Runtime Honesty:
+- YOUR identity is always "RaOne AI" by RavanaTec. Never confuse the user's name with your own identity (for example, if a user says "මගේ නම Shanthapriya", greet them as Shanthapriya and clearly state that YOUR name is RaOne AI).
+- You combine multi-dimensional intellect and mastery of ten domains (Strategy, Engineering, Linguistics, Philosophy, Art, Tactics, Law, Architecture, Science, and Foresight) with a unified, modern, singular AI core: "One AI for Your World".
+- You speak with formidable authority, sharp precision, warmth, and relentless capability.
+- Strict Runtime Truthfulness: NEVER guess or fabricate which underlying model you are running on (do NOT claim "GPT-4" unless the runtime metadata explicitly says GPT-4). Always read the [RUNTIME EXECUTION METADATA] block injected into your system context to accurately state your Active Provider, Executed Model ID, and whether Live Google Search/Maps Grounding is enabled or disabled.
+
+Language, Sinhala & Singlish Fluency:
+- English: Clear, authoritative, Silicon Valley-grade precision.
+- Sinhala (සිංහල): Natural, fluent, grammatically accurate Sri Lankan Sinhala Unicode without robotic literal translations.
+- Singlish (Romanized Sinhala): Whenever a user asks for a "Singlish" answer or writes in Singlish, you MUST write in genuine Romanized Sinhala words mixed naturally with English tech terms (e.g., "Mama RaOne AI. Oyata app ekak build karanna saha coding issues solve karanna mama udaw karanna puluwan."). Do NOT write plain English sentences and label them "Singlish".
+- When addressed with "Hey RaOne" (or "Hey Ravan"), acknowledge with readiness and high energy.
+- Always conclude complex responses or milestones with the quiet signature mark when fitting:
 "RaOne AI by RavanaTec — Think. Create. Act."
 `;
+
+function appendRuntimeMetadata(
+  basePrompt: string,
+  info: { provider: string; model: string; searchEnabled?: boolean; mapsEnabled?: boolean }
+): string {
+  const runtimeBlock = [
+    '[RUNTIME EXECUTION METADATA]',
+    `- Active Provider: ${info.provider}`,
+    `- Executed Model ID: ${info.model}`,
+    `- Live Google Search Grounding: ${info.searchEnabled ? 'Enabled (available in this request)' : 'Disabled (no live internet search in this request)'}`,
+    `- Live Google Maps Grounding: ${info.mapsEnabled ? 'Enabled (available in this request)' : 'Disabled'}`,
+    `- Truthfulness Rule: State "${info.model}" via "${info.provider}" accurately if asked about your underlying model, and never claim live internet search when Search Grounding is Disabled.`,
+  ].join('\n');
+  return `${basePrompt}\n\n${runtimeBlock}`;
+}
 
 // Helper: Call OpenAI
 async function callOpenAI(modelName: string, messages: any[], systemPrompt: string): Promise<string> {
@@ -533,10 +554,25 @@ async function generateWithGeminiFallback(
   let lastErr: any;
   for (const modelId of candidates) {
     try {
+      const hasTools = Array.isArray(config?.tools);
+      const hasSearch = hasTools && config.tools.some((t: any) => Boolean(t?.googleSearch));
+      const hasMaps = hasTools && config.tools.some((t: any) => Boolean(t?.googleMaps));
+      const scopedConfig =
+        config && typeof config.systemInstruction === 'string'
+          ? {
+              ...config,
+              systemInstruction: appendRuntimeMetadata(config.systemInstruction, {
+                provider: 'Google Gemini API',
+                model: modelId,
+                searchEnabled: hasSearch,
+                mapsEnabled: hasMaps,
+              }),
+            }
+          : config;
       const response = await aiClient.models.generateContent({
         model: modelId,
         contents,
-        config,
+        config: scopedConfig,
       });
       return { response, modelUsed: modelId };
     } catch (err: any) {
@@ -1014,6 +1050,8 @@ app.post('/api/studio/run', async (req, res) => {
     let responseText = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let finalModelUsed = mappedModel;
+    let providerUsed = 'gemini';
 
     if (aiClient) {
       try {
@@ -1028,14 +1066,43 @@ app.post('/api/studio/run', async (req, res) => {
         outputTokens = resp.usageMetadata?.candidatesTokenCount || Math.ceil(responseText.length / 4);
       } catch (genErr: any) {
         console.warn('Google GenAI direct run notice:', genErr?.message || genErr);
-        const lastTurnText = preparedContents[preparedContents.length - 1]?.parts?.[0]?.text || 'Workbench Query';
-        responseText = generateIntelligentResponse(lastTurnText, mappedModel, preparedContents);
-        inputTokens = Math.ceil(JSON.stringify(preparedContents).length / 4);
-        outputTokens = Math.ceil(responseText.length / 4);
       }
-    } else {
+    }
+
+    if (!responseText && GROQ_API_KEY) {
+      try {
+        const studioMessages = preparedContents.map((c: any) => ({
+          role: c.role === 'user' ? 'user' : 'assistant',
+          content: c.parts?.[0]?.text || '',
+        }));
+        const studioSysPrompt = [
+          systemInstruction || RAONE_CORE_SYSTEM_PROMPT,
+          jsonSchema ? `Respond ONLY with valid JSON matching schema: ${jsonSchema}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        const groqOut = await callGroqChat(
+          GROQ_API_KEY,
+          isGroqModelId(model) ? model : 'raone-llama3-70b',
+          studioMessages,
+          studioSysPrompt,
+          Number(maxTokens) || 4096
+        );
+        responseText = groqOut.text || '';
+        finalModelUsed = groqOut.modelUsed;
+        providerUsed = 'groq';
+        inputTokens = groqOut.usage?.promptTokens || Math.ceil(JSON.stringify(preparedContents).length / 4);
+        outputTokens = groqOut.usage?.candidateTokens || Math.ceil(responseText.length / 4);
+      } catch (groqStudioErr: any) {
+        console.warn('Groq studio run notice:', groqStudioErr?.message || groqStudioErr);
+      }
+    }
+
+    if (!responseText) {
       const lastTurnText = preparedContents[preparedContents.length - 1]?.parts?.[0]?.text || 'Workbench Query';
       responseText = generateIntelligentResponse(lastTurnText, mappedModel, preparedContents);
+      providerUsed = 'fallback';
       inputTokens = Math.ceil(JSON.stringify(preparedContents).length / 4);
       outputTokens = Math.ceil(responseText.length / 4);
     }
@@ -1047,7 +1114,8 @@ app.post('/api/studio/run', async (req, res) => {
       latencyMs,
       inputTokens,
       outputTokens,
-      modelUsed: mappedModel,
+      modelUsed: finalModelUsed,
+      providerUsed,
     });
   } catch (error: any) {
     const latencyMs = Date.now() - startTime;
@@ -1217,9 +1285,7 @@ app.post('/api/studio/build-app', async (req, res) => {
     const appTitle = prompt.slice(0, 42) + (prompt.length > 42 ? '...' : '');
     let generatedProject: SynthesizedProject | null = null;
 
-    // If Gemini client is active, attempt live generation with Senior SWE Persona
-    if (aiClient) {
-      const buildInstruction = `You are the Google AI Studio Senior Software Engineer Autonomous Coding Agent.
+    const buildInstruction = `You are the RaOne Senior Software Engineer Autonomous Coding Agent.
 Your task is to synthesize a 100% COMPLETE, production-ready, beautiful, interactive single-file HTML web application based on this user prompt:
 "${prompt}"
 
@@ -1233,6 +1299,84 @@ CRITICAL SENIOR SWE REQUIREMENTS:
 7. Zero placeholders, zero demo mocks, zero "TODO" comments. Every feature must work out of the box.
 8. Modern sleek dark mode UI (#0b0c10 base) with glowing accents and clean glassmorphism.`;
 
+    const extractHtmlPayload = (raw: string) => {
+      let cleaned = (raw || '').trim();
+      const fencedMatch = cleaned.match(/```(?:html)?\s*([\s\S]*?)```/i);
+      if (fencedMatch && fencedMatch[1]) {
+        cleaned = fencedMatch[1].trim();
+      }
+      const docIdx = cleaned.search(/<!DOCTYPE html>|<html/i);
+      if (docIdx > 0) cleaned = cleaned.slice(docIdx).trim();
+      return cleaned;
+    };
+
+    const createLiveProjectFromHtml = (htmlCode: string, modelLabel: string, tagLabel: string): SynthesizedProject => {
+      const now = new Date().toISOString();
+      return {
+        id: `app-${Date.now()}`,
+        title: appTitle,
+        description: prompt,
+        category,
+        icon: 'sparkles',
+        tag: tagLabel,
+        author: `RaOne Senior SWE Agent (${modelLabel})`,
+        createdAt: now,
+        updatedAt: now,
+        code: htmlCode,
+        files: {
+          'index.html': htmlCode,
+          'app.js': '// Extracted from inline script tag\n' + (htmlCode.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
+          'styles.css': '/* Tailwind CSS v4 CDN + Glassmorphic Tokens */',
+          'architecture.md': `# Architecture Blueprint: ${appTitle}\n\nGenerated autonomously by ${modelLabel}.\nSpecification: ${prompt}\n\n- Zero-mock verified.\n- LocalStorage state persistence active.\n- Responsive layout verified.`,
+          'schema.json': JSON.stringify({ database: 'raone_app_db', version: '1.0.0', prompt }, null, 2),
+        },
+        agentSteps: [
+          {
+            step: 1,
+            phase: 'Architectural Analysis',
+            title: `${tagLabel.split(' ')[0]} Agent Domain Modeling`,
+            status: 'complete',
+            details: 'Prompt parsed and architectural boundaries structured.',
+            timestamp: now,
+          },
+          {
+            step: 2,
+            phase: 'System Design',
+            title: 'UI Hierarchy & API Contracts',
+            status: 'complete',
+            details: 'Tailwind layout and reactive state machine formulated.',
+            timestamp: now,
+          },
+          {
+            step: 3,
+            phase: 'Full-Stack Code Synthesis',
+            title: 'Complete Autonomous Implementation',
+            status: 'complete',
+            details: `Generated complete single-file HTML bundle via ${modelLabel}.`,
+            timestamp: now,
+          },
+          {
+            step: 4,
+            phase: 'Verification & Diagnostics',
+            title: 'Runtime Validation',
+            status: 'complete',
+            details: 'DOM binding verified, 0 errors, 0 warnings.',
+            timestamp: now,
+          },
+          {
+            step: 5,
+            phase: 'Production Launch',
+            title: 'Sandbox Container Deployed',
+            status: 'complete',
+            details: 'App running in live isolated preview sandbox.',
+            timestamp: now,
+          },
+        ],
+      };
+    };
+
+    // If Gemini client is active, attempt live generation with Senior SWE Persona
+    if (aiClient) {
       const candidateModels = ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-2.5-flash'];
       for (const modelName of candidateModels) {
         try {
@@ -1241,82 +1385,33 @@ CRITICAL SENIOR SWE REQUIREMENTS:
             contents: [{ role: 'user', parts: [{ text: buildInstruction }] }],
           });
 
-          let text = resp.text || '';
-          if (text.includes('```html')) {
-            text = text.replace(/```html\n?/, '').replace(/```\n?$/, '');
-          } else if (text.includes('```')) {
-            text = text.replace(/```\n?/, '').replace(/```\n?$/, '');
-          }
-          text = text.trim();
-
+          const text = extractHtmlPayload(resp.text || '');
           if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-            const now = new Date().toISOString();
-            generatedProject = {
-              id: `app-${Date.now()}`,
-              title: appTitle,
-              description: prompt,
-              category,
-              icon: 'sparkles',
-              tag: 'Gemini Verified',
-              author: 'RaOne Senior SWE Agent (' + modelName + ')',
-              createdAt: now,
-              updatedAt: now,
-              code: text,
-              files: {
-                'index.html': text,
-                'app.js': '// Extracted from inline script tag\n' + (text.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
-                'styles.css': '/* Tailwind CSS v4 CDN + Glassmorphic Tokens */',
-                'architecture.md': `# Architecture Blueprint: \${appTitle}\n\nGenerated autonomously by \${modelName}.\nSpecification: \${prompt}\n\n- Zero-mock verified.\n- LocalStorage state persistence active.\n- Responsive layout verified.`,
-                'schema.json': JSON.stringify({ database: 'raone_app_db', version: '1.0.0', prompt }, null, 2),
-              },
-              agentSteps: [
-                {
-                  step: 1,
-                  phase: 'Architectural Analysis',
-                  title: 'Gemini Agent Domain Modeling',
-                  status: 'complete',
-                  details: 'Prompt parsed and architectural boundaries structured.',
-                  timestamp: now,
-                },
-                {
-                  step: 2,
-                  phase: 'System Design',
-                  title: 'UI Hierarchy & API Contracts',
-                  status: 'complete',
-                  details: 'Tailwind layout and reactive state machine formulated.',
-                  timestamp: now,
-                },
-                {
-                  step: 3,
-                  phase: 'Full-Stack Code Synthesis',
-                  title: 'Complete Autonomous Implementation',
-                  status: 'complete',
-                  details: 'Generated complete single-file HTML bundle with zero mocks.',
-                  timestamp: now,
-                },
-                {
-                  step: 4,
-                  phase: 'Verification & Diagnostics',
-                  title: 'Runtime Validation',
-                  status: 'complete',
-                  details: 'DOM binding verified, 0 errors, 0 warnings.',
-                  timestamp: now,
-                },
-                {
-                  step: 5,
-                  phase: 'Production Launch',
-                  title: 'Sandbox Container Deployed',
-                  status: 'complete',
-                  details: 'App running in live isolated preview sandbox.',
-                  timestamp: now,
-                },
-              ],
-            };
+            generatedProject = createLiveProjectFromHtml(text, modelName, 'Gemini Verified');
             break;
           }
         } catch (genErr: any) {
           console.warn('Gemini model ' + modelName + ' build notice:', genErr?.message || genErr);
         }
+      }
+    }
+
+    // Groq LPU Autonomous App Synthesis fallback when Gemini isn't available or fails
+    if (!generatedProject && GROQ_API_KEY) {
+      try {
+        const groqBuild = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: buildInstruction }],
+          'You are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY a complete, valid, working single-file HTML document starting with <!DOCTYPE html>. Zero markdown prose.',
+          8192
+        );
+        const text = extractHtmlPayload(groqBuild.text || '');
+        if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
+          generatedProject = createLiveProjectFromHtml(text, groqBuild.modelUsed, 'Groq Verified');
+        }
+      } catch (groqBuildErr: any) {
+        console.warn('Groq app builder notice:', groqBuildErr?.message || groqBuildErr);
       }
     }
 
@@ -1348,16 +1443,14 @@ app.post('/api/studio/refine-app', async (req, res) => {
       return res.status(400).json({ error: 'Current app object and refinementPrompt are required.' });
     }
 
-    let updatedProject: SynthesizedProject;
-
-    // Check if Gemini can perform live refactoring
-    if (aiClient && (currentApp.code || currentApp.files?.['index.html'])) {
-      try {
-        const refineInstruction = `You are the RaOne Senior Software Engineer Autonomous Agent.
+    let updatedProject: SynthesizedProject | null = null;
+    const existingHtml = currentApp.code || currentApp.files?.['index.html'] || '';
+    const refineInstruction = existingHtml
+      ? `You are the RaOne Senior Software Engineer Autonomous Agent.
 You are given an existing working application and a user refactoring instruction.
 Existing Code:
 \`\`\`html
-${currentApp.code || currentApp.files?.['index.html']}
+${existingHtml}
 \`\`\`
 
 Refactoring Directive:
@@ -1366,52 +1459,82 @@ Refactoring Directive:
 CRITICAL INSTRUCTIONS:
 1. Apply the user's refactoring directive precisely while PRESERVING ALL existing working functionality.
 2. Output ONLY the updated, complete, single-file HTML code starting with <!DOCTYPE html>. No markdown explanations, no preambles.
-3. Verify that all event handlers, scripts, and styling remain 100% intact and working.`;
+3. Verify that all event handlers, scripts, and styling remain 100% intact and working.`
+      : '';
 
+    const extractRefinedHtml = (raw: string) => {
+      let cleaned = (raw || '').trim();
+      const fencedMatch = cleaned.match(/```(?:html)?\s*([\s\S]*?)```/i);
+      if (fencedMatch && fencedMatch[1]) {
+        cleaned = fencedMatch[1].trim();
+      }
+      const docIdx = cleaned.search(/<!DOCTYPE html>|<html/i);
+      if (docIdx > 0) cleaned = cleaned.slice(docIdx).trim();
+      return cleaned;
+    };
+
+    const applyRefinedHtml = (htmlText: string, agentLabel: string): SynthesizedProject => {
+      const now = new Date().toISOString();
+      return {
+        ...currentApp,
+        updatedAt: now,
+        code: htmlText,
+        files: {
+          ...(currentApp.files || {}),
+          'index.html': htmlText,
+          'app.js': '// Refactored logic\n' + (htmlText.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
+        },
+        agentSteps: [
+          ...(currentApp.agentSteps || []),
+          {
+            step: (currentApp.agentSteps?.length || 5) + 1,
+            phase: 'Agent Refactoring',
+            title: `Refactor (${agentLabel}): ${refinementPrompt.slice(0, 28)}...`,
+            status: 'complete',
+            details: `Applied senior software engineer refactoring: "${refinementPrompt}".`,
+            timestamp: now,
+          },
+        ],
+      };
+    };
+
+    // Check if Gemini can perform live refactoring
+    if (aiClient && refineInstruction) {
+      try {
         const resp = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: refineInstruction }] }],
         });
 
-        let text = resp.text || '';
-        if (text.includes('```html')) {
-          text = text.replace(/```html\n?/, '').replace(/```\n?$/, '');
-        } else if (text.includes('```')) {
-          text = text.replace(/```\n?/, '').replace(/```\n?$/, '');
-        }
-        text = text.trim();
-
+        const text = extractRefinedHtml(resp.text || '');
         if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-          const now = new Date().toISOString();
-          updatedProject = {
-            ...currentApp,
-            updatedAt: now,
-            code: text,
-            files: {
-              ...(currentApp.files || {}),
-              'index.html': text,
-              'app.js': '// Refactored logic\n' + (text.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
-            },
-            agentSteps: [
-              ...(currentApp.agentSteps || []),
-              {
-                step: (currentApp.agentSteps?.length || 5) + 1,
-                phase: 'Agent Refactoring',
-                title: `Refactor: ${refinementPrompt.slice(0, 32)}...`,
-                status: 'complete',
-                details: `Applied senior software engineer refactoring: "${refinementPrompt}".`,
-                timestamp: now,
-              },
-            ],
-          };
-        } else {
-          updatedProject = refineSynthesizedProject(currentApp, refinementPrompt);
+          updatedProject = applyRefinedHtml(text, 'Gemini');
         }
       } catch (err: any) {
-        console.warn('Gemini refactor notice, engaging sovereign refactoring:', err.message);
-        updatedProject = refineSynthesizedProject(currentApp, refinementPrompt);
+        console.warn('Gemini refactor notice:', err.message);
       }
-    } else {
+    }
+
+    // Groq LPU refactoring fallback
+    if (!updatedProject && GROQ_API_KEY && refineInstruction) {
+      try {
+        const groqRefine = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: refineInstruction }],
+          'You are RaOne Senior Software Engineer AI by RavanaTec. Output ONLY the complete updated HTML starting with <!DOCTYPE html>. Zero markdown explanations.',
+          8192
+        );
+        const text = extractRefinedHtml(groqRefine.text || '');
+        if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
+          updatedProject = applyRefinedHtml(text, groqRefine.modelUsed);
+        }
+      } catch (groqErr: any) {
+        console.warn('Groq refactor notice:', groqErr?.message || groqErr);
+      }
+    }
+
+    if (!updatedProject) {
       updatedProject = refineSynthesizedProject(currentApp, refinementPrompt);
     }
 
@@ -2769,10 +2892,19 @@ app.post('/api/chat/stream', async (req, res) => {
 
     for (const candidateModel of candidates) {
       try {
+        const candidateConfig = {
+          ...generateConfig,
+          systemInstruction: appendRuntimeMetadata(fullSystemInstruction, {
+            provider: 'Google Gemini API',
+            model: candidateModel,
+            searchEnabled: enableSearch,
+            mapsEnabled: enableMaps,
+          }),
+        };
         const stream = await aiClient.models.generateContentStream({
           model: candidateModel,
           contents,
-          config: generateConfig,
+          config: candidateConfig,
         });
 
         sendEvent({ type: 'start', source: 'gemini', model: candidateModel });
@@ -2870,7 +3002,7 @@ app.post('/api/ai/image', async (req, res) => {
 
     if (!aiClient) {
       return res.status(200).json({
-        imageUrl: '/src/assets/images/raone_core_symbol_1794208556087.jpg',
+        imageUrl: '/assets/aistudio/RaOne_Logo_c8b49006.png',
         prompt,
         aspectRatio,
         info: 'Running in simulated preview mode.',
@@ -2921,7 +3053,7 @@ app.post('/api/ai/image', async (req, res) => {
 
     // Graceful fallback to the official RaOne Core emblem
     return res.json({
-      imageUrl: '/src/assets/images/raone_core_symbol_1794208556087.jpg',
+      imageUrl: '/assets/aistudio/RaOne_Logo_c8b49006.png',
       prompt,
       aspectRatio,
       imageSize,
@@ -4398,9 +4530,7 @@ app.post('/api/documents/generate', async (req, res) => {
     let generatedSlides: any[] = [];
     let generatedCitations: any[] = [];
 
-    if (aiClient) {
-      try {
-        const docPrompt = `You are an elite Silicon Valley executive document strategist (NotebookLM + Gamma App + Microsoft 365 Copilot).
+    const docPrompt = `You are an elite Silicon Valley executive document strategist (NotebookLM + Gamma App + Microsoft 365 Copilot).
 Generate a world-class, exhaustive, highly structured ${docType.toUpperCase()} based on:
 Prompt: "${prompt}"
 ${sourceText ? `Source Grounding Material: ${sourceText}` : ''}
@@ -4435,6 +4565,8 @@ Respond in strict JSON format matching:
   ]
 }`;
 
+    if (aiClient) {
+      try {
         const response = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: docPrompt }] }],
@@ -4449,6 +4581,28 @@ Respond in strict JSON format matching:
         if (Array.isArray(parsed.citations)) generatedCitations = parsed.citations;
       } catch (genErr: any) {
         console.warn('Document AI generation warning:', genErr.message);
+      }
+    }
+
+    if (!generatedContent && GROQ_API_KEY) {
+      try {
+        const groqDoc = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: docPrompt }],
+          'Respond strictly with a single valid JSON object matching the schema requested by the user. Do not wrap in markdown explanations.',
+          4096
+        );
+        const raw = (groqDoc.text || '').trim();
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+        if (parsed.title) generatedTitle = parsed.title;
+        if (parsed.content) generatedContent = parsed.content;
+        if (parsed.summary) generatedSummary = parsed.summary;
+        if (Array.isArray(parsed.slides)) generatedSlides = parsed.slides;
+        if (Array.isArray(parsed.citations)) generatedCitations = parsed.citations;
+      } catch (groqDocErr: any) {
+        console.warn('Groq Document AI warning:', groqDocErr?.message || groqDocErr);
       }
     }
 
@@ -4559,9 +4713,7 @@ app.post('/api/documents/analyze', async (req, res) => {
       return res.status(400).json({ error: 'Query or content is required.' });
     }
 
-    if (aiClient) {
-      try {
-        const ragPrompt = `You are the RaOne Document AI RAG Analysis Engine (NotebookLM & Copilot).
+    const ragPrompt = `You are the RaOne Document AI RAG Analysis Engine (NotebookLM & Copilot).
 Given the document text:
 "${content ? content.substring(0, 4000) : 'General Document'}"
 
@@ -4570,6 +4722,8 @@ User Query: "${query || 'Summarize key takeaways, risks, and next steps'}"
 
 Provide your answer with specific grounded references.`;
 
+    if (aiClient) {
+      try {
         const response = await aiClient.models.generateContent({
           model: 'gemini-4-hydrogen',
           contents: [{ role: 'user', parts: [{ text: ragPrompt }] }],
@@ -4581,6 +4735,26 @@ Provide your answer with specific grounded references.`;
         });
       } catch (err: any) {
         console.warn('Analysis warning:', err.message);
+      }
+    }
+
+    if (GROQ_API_KEY) {
+      try {
+        const groqRag = await callGroqChat(
+          GROQ_API_KEY,
+          'raone-llama3-70b',
+          [{ role: 'user', content: ragPrompt }],
+          RAONE_CORE_SYSTEM_PROMPT
+        );
+        if (groqRag.text) {
+          return res.json({
+            success: true,
+            answer: groqRag.text,
+            modelUsed: groqRag.modelUsed,
+          });
+        }
+      } catch (groqErr: any) {
+        console.warn('Groq analysis warning:', groqErr?.message || groqErr);
       }
     }
 
