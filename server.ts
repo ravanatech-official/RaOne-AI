@@ -55,6 +55,23 @@ import {
   generateTruePdfBuffer,
 } from './server_exports.ts';
 import { extractTextFromUploadedBase64 } from './server_uploads.ts';
+import {
+  LOCAL_MODELS_DIR,
+  isCloudRunRuntime,
+  isLocalLoopbackAllowed,
+  isLocalProcessSpawnAllowed,
+  validateLocalLlmEndpoint,
+  listLocalGgufModels,
+  findLlamaServerBinary,
+  getManagedLlamaState,
+  startManagedLlamaServer,
+  stopManagedLlamaServer,
+  fetchOpenAiCompatibleModels,
+  probeLocalServersFromBackend,
+  getActiveLocalEndpointConfig,
+  callLocalLlmChat,
+  streamLocalLlmToSSE,
+} from './server_local_llm.ts';
 
 dotenv.config();
 
@@ -68,16 +85,24 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1);
 app.use(attachRequestId);
 
-// HTTP Security Headers Middleware (Production-hardened + AI Studio iFrame-compatible)
+// HTTP Security Headers Middleware (Production-hardened + AI Studio Preview iFrame-compatible)
 app.use((req, res, next) => {
   const isDevPreview = process.env.NODE_ENV !== 'production';
-  const isIframeNav = req.headers['sec-fetch-dest'] === 'iframe';
   const isApiRoute = req.path.startsWith('/api');
-  const allowIframe = isDevPreview && isIframeNav && !isApiRoute;
+  const hostHeader = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
+  const isAiStudioHost =
+    hostHeader.includes('ais-dev-') ||
+    hostHeader.includes('ais-pre-') ||
+    hostHeader.includes('localhost') ||
+    hostHeader.includes('127.0.0.1');
+  const strictFrameDeny = process.env.STRICT_FRAME_DENY === 'true';
+  const allowPreviewFraming = !isApiRoute && !strictFrameDeny;
 
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (!isDevPreview) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if (!allowIframe) {
+  if (!allowPreviewFraming) {
     res.setHeader('X-Frame-Options', 'DENY');
   }
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -87,15 +112,21 @@ app.use((req, res, next) => {
     'Content-Security-Policy',
     [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://apis.google.com",
+      isDevPreview
+        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://apis.google.com"
+        : "script-src 'self' 'unsafe-inline' blob: https://apis.google.com",
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
       "media-src 'self' data: blob: https:",
-      "frame-src 'self' blob:",
+      "frame-src 'self' blob: data: https://*.firebaseapp.com https://accounts.google.com",
       "worker-src 'self' blob:",
-      "connect-src 'self' ws: wss: https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://raone-ai-backend-348832701843.asia-southeast1.run.app",
-      allowIframe ? 'frame-ancestors *' : "frame-ancestors 'none'",
+      "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://raone-ai-backend-348832701843.asia-southeast1.run.app https://*.run.app",
+      allowPreviewFraming
+        ? isDevPreview || isAiStudioHost
+          ? 'frame-ancestors *'
+          : "frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com https://*.scf.usercontent.goog"
+        : "frame-ancestors 'none'",
     ].join('; ')
   );
   next();
@@ -758,7 +789,105 @@ app.get('/api/capabilities', (_req, res) => {
       uploads: ['pdf', 'docx', 'txt', 'md', 'csv'],
       exports: ['docx', 'pptx', 'xlsx', 'pdf', 'md'],
     },
+    localLlm: {
+      browserDirectSupported: true,
+      backendLoopbackAllowed: isLocalLoopbackAllowed(),
+      inbuiltLlamaServerSupported: isLocalProcessSpawnAllowed() && Boolean(findLlamaServerBinary()),
+      managedProcessRunning: getManagedLlamaState().running,
+    },
   });
+});
+
+// ==========================================
+// 🖥️ INBUILT LOCAL LLM ENGINE (llama.cpp / GGUF / Ollama / LM Studio)
+// ==========================================
+app.get('/api/local-llm/status', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const byok = await getTenantByokKeys(tenantId);
+    const llamaServerBin = findLlamaServerBinary();
+    const [detectedServers] = await Promise.all([probeLocalServersFromBackend()]);
+    res.json({
+      success: true,
+      isCloudRun: isCloudRunRuntime(),
+      backendLoopbackAllowed: isLocalLoopbackAllowed(),
+      processSpawnAllowed: isLocalProcessSpawnAllowed(),
+      llamaServerBinaryAvailable: Boolean(llamaServerBin),
+      llamaServerBinaryPath: llamaServerBin || null,
+      modelsDir: LOCAL_MODELS_DIR,
+      ggufFiles: listLocalGgufModels(),
+      managedProcess: getManagedLlamaState(),
+      detectedServers,
+      savedConfig: {
+        baseUrl: byok.localLlmBaseUrl || process.env.LOCAL_LLM_BASE_URL || '',
+        modelId: byok.localLlmModel || process.env.LOCAL_LLM_MODEL || '',
+        hasApiKey: Boolean(byok.localLlmApiKey || process.env.LOCAL_LLM_API_KEY),
+      },
+    });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'LOCAL_LLM_STATUS_ERROR', err?.message || 'Failed to inspect local LLM runtime.');
+  }
+});
+
+app.post('/api/local-llm/start', async (req, res) => {
+  try {
+    const { modelFile, port = 8081, contextSize = 4096, gpuLayers } = req.body || {};
+    if (!modelFile) {
+      return sendApiError(req, res, 400, 'MODEL_FILE_REQUIRED', 'Select a .gguf model file inside ./models/ to start.');
+    }
+    const state = await startManagedLlamaServer({
+      modelFile: String(modelFile),
+      port: Number(port) || 8081,
+      contextSize: Number(contextSize) || 4096,
+      gpuLayers: gpuLayers !== undefined ? Number(gpuLayers) : undefined,
+    });
+    return res.json({ success: true, managedProcess: state });
+  } catch (err: any) {
+    return sendApiError(req, res, 400, 'LOCAL_LLM_START_FAILED', err?.message || 'Could not start inbuilt llama-server.');
+  }
+});
+
+app.post('/api/local-llm/stop', async (req, res) => {
+  try {
+    const state = await stopManagedLlamaServer();
+    return res.json({ success: true, managedProcess: state });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'LOCAL_LLM_STOP_FAILED', err?.message || 'Could not stop llama-server.');
+  }
+});
+
+app.post('/api/local-llm/test', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const byok = await getTenantByokKeys(tenantId);
+    const { baseUrl, apiKey: keyInput, modelId } = req.body || {};
+    const targetBase = String(baseUrl || byok.localLlmBaseUrl || process.env.LOCAL_LLM_BASE_URL || '').trim();
+    const targetKey = String(keyInput || byok.localLlmApiKey || process.env.LOCAL_LLM_API_KEY || '').trim();
+
+    const check = await validateLocalLlmEndpoint(targetBase);
+    if (!check.ok) {
+      return sendApiError(req, res, 400, 'INVALID_LOCAL_LLM_URL', check.reason);
+    }
+
+    const start = Date.now();
+    const models = await fetchOpenAiCompatibleModels(check.normalizedBaseUrl, targetKey || undefined, 4000);
+    const selected = String(modelId || models[0] || byok.localLlmModel || 'local-model').trim();
+
+    return res.json({
+      success: true,
+      baseUrl: check.normalizedBaseUrl,
+      isLoopback: check.isLoopback,
+      models,
+      selectedModel: selected,
+      latencyMs: Date.now() - start,
+      message:
+        models.length > 0
+          ? `Connected to Local AI Server (${models.length} model${models.length > 1 ? 's' : ''} ready: ${models.slice(0, 3).join(', ')})`
+          : `Connected to Local AI Server at ${check.normalizedBaseUrl}`,
+    });
+  } catch (err: any) {
+    return sendApiError(req, res, 502, 'LOCAL_LLM_TEST_FAILED', err?.message || 'Failed to connect to local LLM endpoint.');
+  }
 });
 
 // Binary Upload Text Extraction Endpoint (A22 & A27: Real PDF/DOCX/TXT ingestion)
@@ -2556,6 +2685,9 @@ app.get('/api/keys', async (req, res) => {
       xaiConfigured: Boolean(byok.xaiApiKey || XAI_API_KEY),
       cometApiConfigured: Boolean(byok.cometApiKey || COMET_API_KEY),
       cometApiBaseUrl: byok.cometApiBaseUrl || COMET_API_BASE_URL || 'https://api.cometapi.com/v1',
+      localLlmConfigured: Boolean(byok.localLlmBaseUrl || getManagedLlamaState().running || process.env.LOCAL_LLM_BASE_URL),
+      localLlmBaseUrl: byok.localLlmBaseUrl || getManagedLlamaState().endpointUrl || process.env.LOCAL_LLM_BASE_URL || '',
+      localLlmModel: byok.localLlmModel || getManagedLlamaState().modelFile || process.env.LOCAL_LLM_MODEL || '',
       tenantHasCustomKeys: Boolean(
         byok.geminiApiKey ||
           byok.groqApiKey ||
@@ -2563,7 +2695,8 @@ app.get('/api/keys', async (req, res) => {
           byok.anthropicApiKey ||
           byok.deepSeekApiKey ||
           byok.xaiApiKey ||
-          byok.cometApiKey
+          byok.cometApiKey ||
+          byok.localLlmBaseUrl
       ),
     });
   } catch (err: any) {
@@ -2583,12 +2716,22 @@ app.post('/api/keys', requireVerifiedAuth, async (req, res) => {
       xaiApiKey,
       cometApiKey,
       cometApiBaseUrl,
+      localLlmBaseUrl,
+      localLlmModel,
+      localLlmApiKey,
     } = req.body || {};
 
     if (cometApiBaseUrl !== undefined && String(cometApiBaseUrl).trim()) {
       const egressCheck = await validateSafeHttpsEgress(String(cometApiBaseUrl).trim());
       if (!egressCheck.ok) {
         return sendApiError(req, res, 400, 'UNSAFE_GATEWAY_URL', egressCheck.reason || 'Unsafe HTTPS gateway URL.');
+      }
+    }
+
+    if (localLlmBaseUrl !== undefined && String(localLlmBaseUrl).trim()) {
+      const localCheck = await validateLocalLlmEndpoint(String(localLlmBaseUrl).trim());
+      if (!localCheck.ok) {
+        return sendApiError(req, res, 400, 'UNSAFE_LOCAL_LLM_URL', localCheck.reason || 'Unsafe local LLM URL.');
       }
     }
 
@@ -2601,6 +2744,9 @@ app.post('/api/keys', requireVerifiedAuth, async (req, res) => {
       ...(xaiApiKey !== undefined ? { xaiApiKey: String(xaiApiKey).trim() } : {}),
       ...(cometApiKey !== undefined ? { cometApiKey: String(cometApiKey).trim() } : {}),
       ...(cometApiBaseUrl !== undefined ? { cometApiBaseUrl: String(cometApiBaseUrl).trim() } : {}),
+      ...(localLlmBaseUrl !== undefined ? { localLlmBaseUrl: String(localLlmBaseUrl).trim() } : {}),
+      ...(localLlmModel !== undefined ? { localLlmModel: String(localLlmModel).trim() } : {}),
+      ...(localLlmApiKey !== undefined ? { localLlmApiKey: String(localLlmApiKey).trim() } : {}),
     });
 
     res.json({
@@ -2930,6 +3076,43 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
       });
     }
 
+    // Provider 5: Local LLM Engine (llama.cpp / Ollama / LM Studio / Custom OpenAI-Compatible)
+    const localCfg = getActiveLocalEndpointConfig(byok);
+    if (effectiveProvider === 'local' || String(model || '').startsWith('local:')) {
+      if (!localCfg.baseUrl) {
+        return sendApiError(
+          req,
+          res,
+          503,
+          'LOCAL_LLM_NOT_CONFIGURED',
+          'Local LLM endpoint is not configured. Open Settings -> Local AI Engine to connect llama.cpp, Ollama, or LM Studio.'
+        );
+      }
+      const chatStart = Date.now();
+      const localOut = await callLocalLlmChat({
+        baseUrl: localCfg.baseUrl,
+        modelId: String(model || '').startsWith('local:') ? String(model) : localCfg.modelId,
+        apiKey: localCfg.apiKey,
+        messages,
+        prompt,
+        systemPrompt: fullSystemInstruction,
+      });
+      return res.json({
+        text: localOut.text,
+        mode,
+        model: localOut.modelUsed,
+        source: 'local_llm',
+        verifiedModel: localOut.modelUsed,
+        modelVersion: localOut.modelUsed,
+        responseId: localOut.responseId,
+        usage: localOut.usage,
+        latencyMs: Date.now() - chatStart,
+        groundingSources: [],
+        mapsSources: [],
+        brandSignature: 'RaOne AI Local Engine',
+      });
+    }
+
     // CometAPI fallback for Gemini models if Gemini API key is missing
     if (!tenantClient && effectiveProvider === 'auto' && activeCometKey) {
       try {
@@ -3136,6 +3319,7 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
   let clientClosed = false;
@@ -3257,10 +3441,51 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
       return await externalResult('deepseek', 'deepseek-reasoner', text);
     }
 
+    const localCfg = getActiveLocalEndpointConfig(byok);
+    if (effectiveProvider === 'local' || String(model || '').startsWith('local:')) {
+      if (!localCfg.baseUrl) {
+        sendEvent({
+          type: 'error',
+          code: 'LOCAL_LLM_NOT_CONFIGURED',
+          error: 'Local LLM endpoint is not configured on backend. Use Browser Direct mode or configure a local/tunneled URL in Settings.',
+        });
+        return endStream();
+      }
+      hasStartedStream = true;
+      await streamLocalLlmToSSE({
+        baseUrl: localCfg.baseUrl,
+        modelId: String(model || '').startsWith('local:') ? String(model) : localCfg.modelId,
+        apiKey: localCfg.apiKey,
+        messages,
+        prompt,
+        systemPrompt: fullSystemInstruction,
+        sendEvent,
+        startTime,
+        signal: abortController.signal,
+      });
+      return endStream();
+    }
+
     if (!tenantClient && effectiveProvider === 'auto' && activeGroqKey) {
       hasStartedStream = true;
       const formattedMessages = formatGroqMessages(messages, prompt, fullSystemInstruction);
       await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
+      return endStream();
+    }
+
+    if (!tenantClient && effectiveProvider === 'auto' && localCfg.baseUrl) {
+      hasStartedStream = true;
+      await streamLocalLlmToSSE({
+        baseUrl: localCfg.baseUrl,
+        modelId: localCfg.modelId,
+        apiKey: localCfg.apiKey,
+        messages,
+        prompt,
+        systemPrompt: fullSystemInstruction,
+        sendEvent,
+        startTime,
+        signal: abortController.signal,
+      });
       return endStream();
     }
 

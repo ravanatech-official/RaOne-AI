@@ -25,6 +25,8 @@ import {
   purgeAllTenantData,
 } from '../server_tenant_store.ts';
 import { extractTextFromUploadedBase64 } from '../server_uploads.ts';
+import { validateLocalLlmEndpoint, startManagedLlamaServer } from '../server_local_llm.ts';
+import { parseSseBuffer, flushSseBuffer, extractSseTextDelta } from '../src/utils/sseParser.ts';
 
 test('verifyFirebaseBearerToken rejects dummy, malformed, and forged JWT tokens', async () => {
   await assert.rejects(() => verifyFirebaseBearerToken(''));
@@ -183,4 +185,69 @@ test('extractTextFromUploadedBase64 validates magic bytes and extracts UTF-8 con
       }),
     /empty/i
   );
+});
+
+test('validateLocalLlmEndpoint blocks private LAN/metadata SSRF while honoring Cloud Run vs local loopback policy', async () => {
+  const prevLoopback = process.env.ALLOW_LOCAL_LLM_LOOPBACK;
+  const prevProcess = process.env.ALLOW_LOCAL_LLM_PROCESS;
+  try {
+    process.env.ALLOW_LOCAL_LLM_LOOPBACK = 'true';
+    const blocked = [
+      'http://169.254.169.254/latest/meta-data',
+      'http://192.168.1.50:8080/v1',
+      'http://10.0.0.5:11434/v1',
+      'http://example.com/v1',
+      'http://127.0.0.1:22/v1',
+      'https://user:pass@tunnel.example.com/v1',
+    ];
+    for (const url of blocked) {
+      const res = await validateLocalLlmEndpoint(url);
+      assert.equal(res.ok, false, `Expected local LLM validator to block ${url}`);
+    }
+
+    const localOk = await validateLocalLlmEndpoint('http://127.0.0.1:8080');
+    assert.equal(localOk.ok, true);
+    if (localOk.ok) {
+      assert.equal(localOk.normalizedBaseUrl, 'http://127.0.0.1:8080/v1');
+      assert.equal(localOk.isLoopback, true);
+    }
+
+    process.env.ALLOW_LOCAL_LLM_LOOPBACK = 'false';
+    const deniedInCloud = await validateLocalLlmEndpoint('http://127.0.0.1:8080');
+    assert.equal(deniedInCloud.ok, false);
+
+    process.env.ALLOW_LOCAL_LLM_PROCESS = 'true';
+    await assert.rejects(
+      () => startManagedLlamaServer({ modelFile: '../../etc/passwd.gguf' }),
+      /Invalid GGUF|not found/i
+    );
+  } finally {
+    if (prevLoopback === undefined) delete process.env.ALLOW_LOCAL_LLM_LOOPBACK;
+    else process.env.ALLOW_LOCAL_LLM_LOOPBACK = prevLoopback;
+    if (prevProcess === undefined) delete process.env.ALLOW_LOCAL_LLM_PROCESS;
+    else process.env.ALLOW_LOCAL_LLM_PROCESS = prevProcess;
+  }
+});
+
+test('parseSseBuffer and flushSseBuffer handle split frames, CRLF boundaries, no-space data:, and EOF flush', () => {
+  // Simulate split chunk ending mid-JSON with CRLF framing
+  const packet1 = 'data: {"type":"start","source":"gemini","model":"gemini-2.5-flash"}\r\n\r\ndata:{"type":"chunk","text":"Ayubo';
+  const step1 = parseSseBuffer(packet1);
+  assert.equal(step1.events.length, 1);
+  assert.equal(step1.events[0].json.type, 'start');
+  assert.equal(step1.rest, 'data:{"type":"chunk","text":"Ayubo');
+
+  // Second packet completes first chunk and adds another without trailing blank line (EOF)
+  const packet2 = `${step1.rest}wan!"}\r\n\r\n: keepalive\r\n\r\ndata: {"type":"chunk","text":" RaOne"}`;
+  const step2 = parseSseBuffer(packet2);
+  assert.equal(step2.events.length, 1);
+  assert.equal(extractSseTextDelta(step2.events[0].json), 'Ayubowan!');
+
+  // Flush final trailing event at EOF plus ignore [DONE]
+  const flushed = flushSseBuffer(step2.rest);
+  assert.equal(flushed.length, 1);
+  assert.equal(extractSseTextDelta(flushed[0].json), ' RaOne');
+
+  assert.equal(flushSseBuffer('data: [DONE]\n\n').length, 0);
+  assert.equal(extractSseTextDelta({ choices: [{ delta: { content: 'Delta' } }] }), 'Delta');
 });

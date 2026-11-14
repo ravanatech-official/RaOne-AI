@@ -96,6 +96,7 @@ const PUBLIC_UNAUTHENTICATED_ROUTES = new Set<string>([
   '/api/capabilities',
   '/api/policies',
   '/api/billing/webhook',
+  '/api/local-llm/status',
 ]);
 
 /**

@@ -3,6 +3,14 @@ import { multiFactor } from 'firebase/auth';
 import { auth, logoutUser } from '../lib/firebase';
 import { resolveApiUrl } from '../utils/api';
 import {
+  readLocalLlmConfig,
+  saveLocalLlmConfig,
+  probeBrowserLocalServers,
+  fetchBrowserLocalModels,
+  type LocalLlmTransport,
+  type BrowserDetectedEngine,
+} from '../utils/localLlmClient';
+import {
   X,
   User,
   Settings,
@@ -27,17 +35,21 @@ import {
   Zap,
   Globe,
   FileText,
+  Cpu,
+  RefreshCw,
+  Square,
 } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  uid?: string | null;
   isContinuousWakeListening: boolean;
   onToggleContinuousWake: () => void;
   selectedModel: string;
   onSelectModel: (model: string) => void;
-  activeProvider?: 'auto' | 'gemini' | 'groq';
-  onSelectProvider?: (provider: 'auto' | 'gemini' | 'groq') => void;
+  activeProvider?: 'auto' | 'gemini' | 'groq' | 'local';
+  onSelectProvider?: (provider: 'auto' | 'gemini' | 'groq' | 'local') => void;
   currentPlan?: 'free' | 'plus' | 'ultimate';
   onOpenUpgrade?: () => void;
   onClearAllChats?: () => void;
@@ -46,6 +58,7 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
+  uid,
   isContinuousWakeListening,
   onToggleContinuousWake,
   selectedModel,
@@ -111,7 +124,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [isOpen, activeTab, policiesData]);
 
   // API Keys & Provider state
-  const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'groq'>(activeProvider);
+  const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'groq' | 'local'>(activeProvider);
   const [geminiKey, setGeminiKey] = useState('');
   const [groqKey, setGroqKey] = useState('');
   const [showGroqKey, setShowGroqKey] = useState(false);
@@ -126,6 +139,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [showCometKey, setShowCometKey] = useState(false);
   const [cometTesting, setCometTesting] = useState(false);
   const [cometTestResult, setCometTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
+
+  // Local AI Engine (llama.cpp / GGUF / Ollama / LM Studio) state
+  const [localTransport, setLocalTransport] = useState<LocalLlmTransport>('browser_direct');
+  const [localBaseUrl, setLocalBaseUrl] = useState('http://127.0.0.1:8080/v1');
+  const [localModelId, setLocalModelId] = useState('');
+  const [localApiKey, setLocalApiKey] = useState('');
+  const [localScanning, setLocalScanning] = useState(false);
+  const [localTesting, setLocalTesting] = useState(false);
+  const [localTestResult, setLocalTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
+  const [browserDetected, setBrowserDetected] = useState<BrowserDetectedEngine[]>([]);
+  const [backendLocalStatus, setBackendLocalStatus] = useState<any>(null);
+  const [selectedGgufFile, setSelectedGgufFile] = useState<string>('');
+  const [llamaStarting, setLlamaStarting] = useState(false);
 
   const [keysConfigured, setKeysConfigured] = useState<{
     geminiConfigured: boolean;
@@ -155,6 +181,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isOpen) {
       setProviderMode(activeProvider);
       setGroqTestResult(null);
+      setLocalTestResult(null);
+      const localStored = readLocalLlmConfig(uid);
+      setLocalTransport(localStored.transport);
+      setLocalBaseUrl(localStored.baseUrl);
+      setLocalModelId(localStored.modelId);
+      setLocalApiKey(localStored.apiKey || '');
+
       if (auth?.currentUser) {
         try {
           setMfaFactorCount(multiFactor(auth.currentUser).enrolledFactors.length);
@@ -172,7 +205,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             if (data.theme) setTheme(data.theme);
             if (data.language) setLanguage(data.language);
             if (typeof data.alwaysShowCode === 'boolean') setAlwaysShowCode(data.alwaysShowCode);
-            if (data.activeProvider && ['auto', 'gemini', 'groq'].includes(data.activeProvider)) {
+            if (data.activeProvider && ['auto', 'gemini', 'groq', 'local'].includes(data.activeProvider)) {
               setProviderMode(data.activeProvider);
             }
             if (data.customInstructions) {
@@ -206,8 +239,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           }
         })
         .catch(() => {});
+
+      fetch('/api/local-llm/status')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.success) {
+            setBackendLocalStatus(data);
+            if (Array.isArray(data.ggufFiles) && data.ggufFiles.length > 0 && !selectedGgufFile) {
+              setSelectedGgufFile(data.ggufFiles[0].filename);
+            }
+          }
+        })
+        .catch(() => {});
     }
-  }, [isOpen]);
+  }, [isOpen, uid]);
 
   if (!isOpen) return null;
 
@@ -262,14 +307,171 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  // Scan localhost engines (browser-direct + backend status)
+  const handleScanLocalEngines = async () => {
+    setLocalScanning(true);
+    setLocalTestResult(null);
+    try {
+      const [browserEngines, backendRes] = await Promise.all([
+        probeBrowserLocalServers(localBaseUrl, localApiKey || undefined),
+        fetch('/api/local-llm/status')
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+      ]);
+      setBrowserDetected(browserEngines);
+      if (backendRes?.success) setBackendLocalStatus(backendRes);
+
+      const firstOnline = browserEngines.find((e) => e.online);
+      if (firstOnline) {
+        setLocalBaseUrl(firstOnline.baseUrl);
+        if (firstOnline.models.length > 0 && !localModelId) {
+          setLocalModelId(firstOnline.models[0]);
+        }
+        setLocalTestResult({
+          success: true,
+          message: `Found ${firstOnline.label} (${firstOnline.models.length} model${firstOnline.models.length === 1 ? '' : 's'} ready)`,
+        });
+      } else {
+        setLocalTestResult({
+          success: false,
+          message:
+            'No running local server detected on ports 8080/8081/11434/1234. Start llama-server or Ollama on your PC and try again.',
+        });
+      }
+    } catch (err: any) {
+      setLocalTestResult({ success: false, message: err?.message || 'Scan failed.' });
+    } finally {
+      setLocalScanning(false);
+    }
+  };
+
+  // Test & activate configured Local AI Engine
+  const handleTestLocalLlm = async () => {
+    setLocalTesting(true);
+    setLocalTestResult(null);
+    try {
+      let models: string[] = [];
+      let verifiedUrl = localBaseUrl;
+
+      if (localTransport === 'browser_direct') {
+        const start = Date.now();
+        models = await fetchBrowserLocalModels(localBaseUrl, localApiKey || undefined, 3500);
+        const pickedModel = localModelId || models[0] || 'local-model';
+        setLocalModelId(pickedModel);
+        saveLocalLlmConfig(
+          {
+            enabled: true,
+            transport: 'browser_direct',
+            baseUrl: verifiedUrl,
+            modelId: pickedModel,
+            apiKey: localApiKey,
+          },
+          uid
+        );
+        setLocalTestResult({
+          success: true,
+          message: `Browser Direct connected in ${Date.now() - start}ms! Ready model: ${pickedModel}`,
+        });
+      } else {
+        const res = await fetch('/api/local-llm/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            baseUrl: localBaseUrl,
+            modelId: localModelId || undefined,
+            apiKey: localApiKey || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data?.error || 'Backend proxy could not reach local LLM endpoint.');
+        }
+        verifiedUrl = data.baseUrl || localBaseUrl;
+        models = Array.isArray(data.models) ? data.models : [];
+        const pickedModel = data.selectedModel || localModelId || models[0] || 'local-model';
+        setLocalBaseUrl(verifiedUrl);
+        setLocalModelId(pickedModel);
+        saveLocalLlmConfig(
+          {
+            enabled: true,
+            transport: 'backend_proxy',
+            baseUrl: verifiedUrl,
+            modelId: pickedModel,
+            apiKey: localApiKey,
+          },
+          uid
+        );
+        setLocalTestResult({
+          success: true,
+          message: data.message || `Connected via Backend Bridge (${pickedModel})!`,
+        });
+      }
+    } catch (err: any) {
+      setLocalTestResult({
+        success: false,
+        message: err?.message || 'Could not reach local model server.',
+      });
+    } finally {
+      setLocalTesting(false);
+    }
+  };
+
+  // Start / Stop inbuilt managed llama-server (when running locally with llama.cpp installed)
+  const handleStartManagedLlama = async () => {
+    if (!selectedGgufFile) return;
+    setLlamaStarting(true);
+    setLocalTestResult(null);
+    try {
+      const res = await fetch('/api/local-llm/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelFile: selectedGgufFile, port: 8081, contextSize: 4096 }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || 'Failed to launch llama-server');
+      }
+      setBackendLocalStatus((prev: any) => ({ ...(prev || {}), managedProcess: data.managedProcess }));
+      setLocalBaseUrl(data.managedProcess?.endpointUrl || 'http://127.0.0.1:8081/v1');
+      setLocalModelId(selectedGgufFile);
+      setLocalTestResult({
+        success: true,
+        message: `Started inbuilt llama-server with ${selectedGgufFile} on port ${data.managedProcess?.port || 8081}!`,
+      });
+    } catch (err: any) {
+      setLocalTestResult({ success: false, message: err?.message || 'Could not start llama-server' });
+    } finally {
+      setLlamaStarting(false);
+    }
+  };
+
+  const handleStopManagedLlama = async () => {
+    setLlamaStarting(true);
+    try {
+      const res = await fetch('/api/local-llm/stop', { method: 'POST' });
+      const data = await res.json();
+      if (data?.managedProcess) {
+        setBackendLocalStatus((prev: any) => ({ ...(prev || {}), managedProcess: data.managedProcess }));
+      }
+      setLocalTestResult({ success: true, message: 'Stopped inbuilt llama-server.' });
+    } catch (err: any) {
+      setLocalTestResult({ success: false, message: err?.message || 'Failed to stop llama-server' });
+    } finally {
+      setLlamaStarting(false);
+    }
+  };
+
   // Switch active chat streaming provider seamlessly
-  const handleProviderSwitch = (nextProvider: 'auto' | 'gemini' | 'groq') => {
+  const handleProviderSwitch = (nextProvider: 'auto' | 'gemini' | 'groq' | 'local') => {
     setProviderMode(nextProvider);
     if (onSelectProvider) onSelectProvider(nextProvider);
     if (nextProvider === 'groq' && !selectedModel.startsWith('raone-llama')) {
       onSelectModel('raone-llama3-70b');
-    } else if (nextProvider === 'gemini' && selectedModel.startsWith('raone-llama')) {
+    } else if (nextProvider === 'gemini' && (selectedModel.startsWith('raone-llama') || selectedModel.startsWith('local:'))) {
       onSelectModel('gemini-3.8-flash');
+    } else if (nextProvider === 'local') {
+      const m = localModelId ? `local:${localModelId}` : 'local:local-model';
+      onSelectModel(m);
     }
   };
 
@@ -315,11 +517,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       if (onSelectProvider) onSelectProvider(providerMode);
 
+      // Persist Local LLM configuration per UID
+      saveLocalLlmConfig(
+        {
+          enabled: providerMode === 'local' || Boolean(localBaseUrl),
+          transport: localTransport,
+          baseUrl: localBaseUrl,
+          modelId: localModelId,
+          apiKey: localApiKey,
+        },
+        uid
+      );
+
       // Save API keys if any entered or updated (requires verified Firebase sign-in)
       const hasAnyKeyChange = Boolean(
-        geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey
+        geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || localApiKey
       );
-      if (hasAnyKeyChange || (cometBaseUrl && cometBaseUrl !== (keysConfigured.cometApiBaseUrl || 'https://api.cometapi.com/v1'))) {
+      const localProxyConfigChanged =
+        localTransport === 'backend_proxy' &&
+        Boolean(localBaseUrl) &&
+        (localBaseUrl !== (keysConfigured as any).localLlmBaseUrl || localModelId !== (keysConfigured as any).localLlmModel);
+
+      if (
+        hasAnyKeyChange ||
+        localProxyConfigChanged ||
+        (cometBaseUrl && cometBaseUrl !== (keysConfigured.cometApiBaseUrl || 'https://api.cometapi.com/v1'))
+      ) {
         const keyRes = await fetch('/api/keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -332,6 +555,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             xaiApiKey: xaiKey || undefined,
             cometApiKey: cometKey || undefined,
             cometApiBaseUrl: cometBaseUrl || undefined,
+            ...(localTransport === 'backend_proxy'
+              ? {
+                  localLlmBaseUrl: localBaseUrl || undefined,
+                  localLlmModel: localModelId || undefined,
+                  localLlmApiKey: localApiKey || undefined,
+                }
+              : {}),
           }),
         });
         const keyData = await keyRes.json().catch(() => ({}));
@@ -1064,7 +1294,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <button
                       type="button"
                       onClick={() => handleProviderSwitch('auto')}
@@ -1107,7 +1337,255 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {keysConfigured.groqConfigured ? 'Key Configured' : 'Key Not Set'}
                       </div>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleProviderSwitch('local')}
+                      className={`px-3 py-2 rounded-xl border text-left transition-all ${
+                        providerMode === 'local'
+                          ? 'bg-violet-500/15 border-violet-500/50 text-white'
+                          : 'bg-[#242424] border-[#333] text-[#9e9e9e] hover:text-white'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">Local AI (llama.cpp)</div>
+                      <div className="text-[10px] text-[#8e8e8e] mt-0.5">
+                        {localModelId ? localModelId.slice(0, 18) : 'GGUF / Ollama / LM Studio'}
+                      </div>
+                    </button>
                   </div>
+                </div>
+
+                {/* Inbuilt Local AI Engine (llama.cpp / GGUF / Ollama / LM Studio) Card */}
+                <div className="p-4 rounded-2xl bg-gradient-to-b from-[#191624] to-[#111018] border border-violet-500/30 space-y-3.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-violet-500/20 border border-violet-500/40 flex items-center justify-center text-violet-300">
+                        <Cpu className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white">Local AI Engine</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40 font-semibold uppercase">
+                            llama.cpp · Free
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-[#94a3b8]">
+                          Connect any local GGUF model via llama.cpp, Ollama, LM Studio, Jan, or KoboldCpp
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleScanLocalEngines}
+                      disabled={localScanning}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 text-violet-200 text-[11px] font-semibold transition-all disabled:opacity-50 shrink-0"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${localScanning ? 'animate-spin' : ''}`} />
+                      <span>{localScanning ? 'Scanning...' : 'Scan Local Models'}</span>
+                    </button>
+                  </div>
+
+                  {/* Transport Mode Toggle */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLocalTransport('browser_direct')}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        localTransport === 'browser_direct'
+                          ? 'bg-violet-500/15 border-violet-500/50 text-white'
+                          : 'bg-[#1b1b24] border-[#2e2e3d] text-[#9e9e9e] hover:text-white'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">Browser Direct (localhost)</div>
+                      <div className="text-[10px] text-[#94a3b8] mt-0.5">
+                        Best for Firebase web app · Zero tunnel needed
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setLocalTransport('backend_proxy')}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        localTransport === 'backend_proxy'
+                          ? 'bg-violet-500/15 border-violet-500/50 text-white'
+                          : 'bg-[#1b1b24] border-[#2e2e3d] text-[#9e9e9e] hover:text-white'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">Backend Bridge / HTTPS Tunnel</div>
+                      <div className="text-[10px] text-[#94a3b8] mt-0.5">
+                        Local server.ts or Cloudflare Tunnel URL
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Detected Running Engines */}
+                  {browserDetected.some((e) => e.online) && (
+                    <div className="space-y-1.5">
+                      <div className="text-[11px] font-medium text-violet-300">Detected Running Local Engines:</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {browserDetected
+                          .filter((e) => e.online)
+                          .map((eng) => (
+                            <button
+                              key={eng.id}
+                              type="button"
+                              onClick={() => {
+                                setLocalBaseUrl(eng.baseUrl);
+                                if (eng.models[0]) {
+                                  setLocalModelId(eng.models[0]);
+                                  onSelectModel(`local:${eng.models[0]}`);
+                                }
+                                handleProviderSwitch('local');
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-200 text-[11px] flex items-center gap-1.5"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                              <span>{eng.label}</span>
+                              {eng.models[0] && (
+                                <span className="text-emerald-300/80 font-mono">({eng.models[0]})</span>
+                              )}
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Inbuilt Managed llama-server Controller (available when running locally with ./models/*.gguf) */}
+                  {backendLocalStatus?.processSpawnAllowed && (
+                    <div className="p-3 rounded-xl bg-[#161522] border border-[#2d2b40] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-white">
+                          Inbuilt GGUF Launcher (./models/)
+                        </span>
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                            backendLocalStatus?.managedProcess?.running
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : 'bg-[#24242f] text-[#94a3b8] border-[#343446]'
+                          }`}
+                        >
+                          {backendLocalStatus?.managedProcess?.running
+                            ? `Running PID ${backendLocalStatus.managedProcess.pid}`
+                            : backendLocalStatus?.llamaServerBinaryAvailable
+                            ? 'llama-server Ready'
+                            : 'llama-server not on PATH'}
+                        </span>
+                      </div>
+
+                      {Array.isArray(backendLocalStatus?.ggufFiles) && backendLocalStatus.ggufFiles.length > 0 ? (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={selectedGgufFile}
+                            onChange={(e) => setSelectedGgufFile(e.target.value)}
+                            className="flex-1 bg-[#1e1d2b] border border-[#35334a] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+                          >
+                            {backendLocalStatus.ggufFiles.map((f: any) => (
+                              <option key={f.filename} value={f.filename}>
+                                {f.filename} ({f.sizeLabel})
+                              </option>
+                            ))}
+                          </select>
+                          {backendLocalStatus?.managedProcess?.running ? (
+                            <button
+                              type="button"
+                              onClick={handleStopManagedLlama}
+                              disabled={llamaStarting}
+                              className="px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-xs font-semibold flex items-center gap-1"
+                            >
+                              <Square className="w-3 h-3" />
+                              <span>Stop</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={handleStartManagedLlama}
+                              disabled={llamaStarting || !backendLocalStatus?.llamaServerBinaryAvailable}
+                              className="px-3 py-1.5 rounded-lg bg-violet-500/25 hover:bg-violet-500/35 border border-violet-500/40 text-violet-100 text-xs font-semibold flex items-center gap-1 disabled:opacity-40"
+                            >
+                              <Play className="w-3 h-3" />
+                              <span>{llamaStarting ? 'Starting...' : 'Start Model'}</span>
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-[#94a3b8]">
+                          Drop any <code className="text-violet-300">.gguf</code> file into <code className="text-violet-300">models/</code> or run <code className="text-violet-300">llama-server</code> / Ollama below.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Endpoint URL & Model ID */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-medium text-[#cbd5e1] mb-1">
+                        Endpoint Base URL (llama.cpp / Ollama / LM Studio)
+                      </label>
+                      <input
+                        type="text"
+                        value={localBaseUrl}
+                        onChange={(e) => setLocalBaseUrl(e.target.value)}
+                        placeholder="http://127.0.0.1:8080/v1"
+                        className="w-full bg-[#1a1926] border border-violet-500/30 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-violet-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-[#cbd5e1] mb-1">
+                        Model ID (e.g. llama3.2, qwen2.5:7b, or local-model)
+                      </label>
+                      <input
+                        type="text"
+                        value={localModelId}
+                        onChange={(e) => setLocalModelId(e.target.value)}
+                        placeholder="Auto-detected or custom model name"
+                        className="w-full bg-[#1a1926] border border-[#2f2d42] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-violet-400"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Quick Run Guide & Test Button */}
+                  <div className="p-2.5 rounded-xl bg-[#161522] border border-[#29273a] text-[10px] text-[#94a3b8] space-y-1 font-mono">
+                    <div># llama.cpp (any GGUF): <span className="text-violet-300">llama-server -m model.gguf --port 8080 --cors-allow-origin "*"</span></div>
+                    <div># Ollama (local CORS): <span className="text-violet-300">OLLAMA_ORIGINS="*" ollama serve</span> (URL: <span className="text-violet-300">http://localhost:11434/v1</span>)</div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={handleTestLocalLlm}
+                      disabled={localTesting || !localBaseUrl.trim()}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-500/25 hover:bg-violet-500/35 border border-violet-500/40 text-violet-200 text-xs font-semibold transition-all disabled:opacity-40"
+                    >
+                      <Zap className="w-3 h-3" />
+                      <span>{localTesting ? 'Connecting...' : 'Test & Save Local Engine'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleProviderSwitch('local')}
+                      className="text-[11px] text-violet-300 hover:text-violet-200 underline"
+                    >
+                      Use Local AI Now
+                    </button>
+                  </div>
+
+                  {localTestResult && (
+                    <div
+                      className={`p-2.5 rounded-xl text-xs flex items-center gap-2 ${
+                        localTestResult.success
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                          : 'bg-red-500/15 border border-red-500/30 text-red-300'
+                      }`}
+                    >
+                      {localTestResult.success ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                      )}
+                      <span>{localTestResult.message}</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Model Engine Selector */}

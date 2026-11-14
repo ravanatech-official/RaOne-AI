@@ -16,6 +16,16 @@ import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal.tsx'
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage, ProjectItem } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
+import {
+  readLocalLlmConfig,
+  streamLocalLlmFromBrowser,
+  isLoopbackUrl,
+} from './utils/localLlmClient.ts';
+import {
+  parseSseBuffer,
+  flushSseBuffer,
+  extractSseTextDelta,
+} from './utils/sseParser.ts';
 
 const SettingsModal = React.lazy(() =>
   import('./components/SettingsModal.tsx').then((m) => ({ default: m.SettingsModal }))
@@ -80,7 +90,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState<boolean>(false);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash');
-  const [activeProvider, setActiveProvider] = useState<'auto' | 'gemini' | 'groq'>('auto');
+  const [activeProvider, setActiveProvider] = useState<'auto' | 'gemini' | 'groq' | 'local'>('auto');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [showScrollDown, setShowScrollDown] = useState<boolean>(false);
   const [shareCopied, setShareCopied] = useState<boolean>(false);
@@ -210,7 +220,7 @@ export default function App() {
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
-        if (data?.activeProvider && ['auto', 'gemini', 'groq'].includes(data.activeProvider)) {
+        if (data?.activeProvider && ['auto', 'gemini', 'groq', 'local'].includes(data.activeProvider)) {
           setActiveProvider(data.activeProvider);
         }
         if (data?.selectedModel && typeof data.selectedModel === 'string') {
@@ -299,9 +309,14 @@ export default function App() {
     }
   };
 
+  const lastMessageContentLength =
+    activeConversation.messages[activeConversation.messages.length - 1]?.content?.length || 0;
+
   useEffect(() => {
-    scrollToBottom();
-  }, [activeConversation.messages.length, isLoading]);
+    if (!showScrollDown) {
+      scrollToBottom(isLoading ? 'smooth' : 'auto');
+    }
+  }, [activeConversation.messages.length, lastMessageContentLength, isLoading, showScrollDown]);
 
   const handleScroll = () => {
     if (!chatContainerRef.current) return;
@@ -392,6 +407,29 @@ export default function App() {
         onChunk: (accumulatedText: string, meta?: any) => void
       ) => {
         const startMs = Date.now();
+        const localCfg = readLocalLlmConfig(activeUid);
+        const wantsLocal =
+          payload.provider === 'local' ||
+          String(payload.model || '').startsWith('local:');
+
+        const shouldUseBrowserDirect =
+          wantsLocal &&
+          (localCfg.transport === 'browser_direct' ||
+            (isLoopbackUrl(localCfg.baseUrl) && typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'));
+
+        if (shouldUseBrowserDirect) {
+          const overrideModel = String(payload.model || '').startsWith('local:')
+            ? String(payload.model).replace(/^local:/, '')
+            : localCfg.modelId;
+          return await streamLocalLlmFromBrowser({
+            config: { ...localCfg, modelId: overrideModel || localCfg.modelId },
+            prompt: payload.prompt || '',
+            messages: payload.messages || [],
+            systemContext: payload.context || '',
+            onChunk,
+          });
+        }
+
         const response = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -417,6 +455,13 @@ export default function App() {
           };
         }
 
+        if (!response.ok && !contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
+          const errSnippet = await response.text().catch(() => '');
+          throw new Error(
+            `Backend API returned error (${response.status}): ${errSnippet.slice(0, 180) || 'Unable to stream response.'}`
+          );
+        }
+
         if (!contentType.includes('text/event-stream') || !response.body) {
           throw new Error(
             `Backend API returned non-JSON/non-SSE response (${response.status}). Make sure the RaOne backend server (server.ts) is deployed and connected.`
@@ -429,49 +474,54 @@ export default function App() {
         let accumulated = '';
         let finalMeta: any = {};
 
+        const processSseEvent = (evt: any) => {
+          if (!evt || typeof evt !== 'object') return;
+          if (evt.type === 'error') {
+            throw new Error(evt.error || 'AI streaming error');
+          }
+          if (evt.type === 'start') {
+            finalMeta = {
+              ...finalMeta,
+              source: evt.source ?? finalMeta.source,
+              verifiedModel: evt.model ?? finalMeta.verifiedModel,
+            };
+          }
+          const deltaText = extractSseTextDelta(evt);
+          if (deltaText) {
+            accumulated += deltaText;
+            onChunk(accumulated, finalMeta);
+          }
+          if (evt.type === 'done') {
+            finalMeta = {
+              ...finalMeta,
+              ...evt,
+              elapsedSec: ((Date.now() - startMs) / 1000).toFixed(1),
+            };
+          }
+        };
+
         while (true) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done) {
+            // Flush any trailing UTF-8 bytes and unterminated SSE frame at EOF
+            buffer += decoder.decode();
+            for (const parsedEvt of flushSseBuffer(buffer)) {
+              processSseEvent(parsedEvt.json);
+            }
+            break;
+          }
+
           buffer += decoder.decode(value, { stream: true });
+          const { events, rest } = parseSseBuffer(buffer);
+          buffer = rest;
 
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
-
-          for (const rawEvent of events) {
-            const lines = rawEvent
-              .split('\n')
-              .filter((l) => l.startsWith('data: '))
-              .map((l) => l.slice(6));
-            if (lines.length === 0) continue;
-
-            let evt: any;
-            try {
-              evt = JSON.parse(lines.join('\n'));
-            } catch {
-              continue;
-            }
-
-            if (evt.type === 'error') {
-              throw new Error(evt.error || 'Gemini streaming error');
-            }
-            if (evt.type === 'start') {
-              finalMeta = { ...finalMeta, source: evt.source, verifiedModel: evt.model };
-            }
-            if (evt.type === 'chunk' && typeof evt.text === 'string') {
-              accumulated += evt.text;
-              onChunk(accumulated, finalMeta);
-            }
-            if (evt.type === 'done') {
-              finalMeta = {
-                ...evt,
-                elapsedSec: ((Date.now() - startMs) / 1000).toFixed(1),
-              };
-            }
+          for (const parsedEvt of events) {
+            processSseEvent(parsedEvt.json);
           }
         }
 
         if (!accumulated) {
-          throw new Error('Empty response received from Gemini API.');
+          throw new Error('Empty response received from AI provider.');
         }
 
         return { text: accumulated, meta: finalMeta };
@@ -479,7 +529,17 @@ export default function App() {
 
       const buildThoughtProcess = (meta: any) => {
         const lines = [
-          `Verified Brain: ${meta?.source === 'gemini' ? 'Google Gemini API (Live)' : meta?.source === 'groq' ? 'Groq Cloud LPU (Meta Llama Live)' : meta?.source || 'Verified Provider'}`,
+          `Verified Brain: ${
+            meta?.source === 'gemini'
+              ? 'Google Gemini API (Live)'
+              : meta?.source === 'groq'
+              ? 'Groq Cloud LPU (Meta Llama Live)'
+              : meta?.source === 'local_llm_direct'
+              ? 'Local Model Engine (Browser Direct · llama.cpp / Ollama)'
+              : meta?.source === 'local_llm'
+              ? 'Local Model Engine (Backend Bridge · llama.cpp)'
+              : meta?.source || 'Verified Provider'
+          }`,
           `Model Executed: ${meta?.verifiedModel || meta?.model || selectedModel}`,
         ];
         if (meta?.modelVersion) lines.push(`Model Version: ${meta.modelVersion}`);
@@ -667,13 +727,29 @@ export default function App() {
                 verifiedSource: partialMeta?.source,
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               };
-              setConversations((prev) =>
-                prev.map((c) =>
+              setConversations((prev) => {
+                const exists = prev.some((c) => c.id === currentConvId);
+                if (!exists) {
+                  return [
+                    {
+                      id: currentConvId,
+                      title: autoTitle,
+                      section: activeProject ? 'projects' : 'recents',
+                      projectName: activeProject?.name,
+                      createdAt: 'Today',
+                      updatedAt: 'Just now',
+                      modelId: selectedModel,
+                      messages: [userMessage, initialModelMsg],
+                    },
+                    ...prev,
+                  ];
+                }
+                return prev.map((c) =>
                   c.id === currentConvId
                     ? { ...c, messages: [...c.messages, initialModelMsg], updatedAt: 'Just now' }
                     : c
-                )
-              );
+                );
+              });
             } else {
               setConversations((prev) =>
                 prev.map((c) =>
@@ -681,7 +757,14 @@ export default function App() {
                     ? {
                         ...c,
                         messages: c.messages.map((m) =>
-                          m.id === streamMsgId ? { ...m, content: partialText } : m
+                          m.id === streamMsgId
+                            ? {
+                                ...m,
+                                content: partialText,
+                                model: partialMeta?.verifiedModel || m.model,
+                                verifiedSource: partialMeta?.source || m.verifiedSource,
+                              }
+                            : m
                         ),
                       }
                     : c
@@ -758,6 +841,7 @@ export default function App() {
       activeId,
       activeProjectId,
       activeProvider,
+      activeUid,
       conversations,
       isLoading,
       isTemporaryChat,
@@ -1080,6 +1164,7 @@ export default function App() {
           <SettingsModal
             isOpen={isSettingsOpen}
             onClose={() => setIsSettingsOpen(false)}
+            uid={activeUid}
             selectedModel={selectedModel}
             onSelectModel={setSelectedModel}
             activeProvider={activeProvider}

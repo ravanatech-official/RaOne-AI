@@ -85,6 +85,9 @@ export type ByokKeyMap = {
   xaiApiKey?: string;
   cometApiKey?: string;
   cometApiBaseUrl?: string;
+  localLlmBaseUrl?: string;
+  localLlmModel?: string;
+  localLlmApiKey?: string;
 };
 
 export async function getTenantByokKeys(tenantId: string): Promise<ByokKeyMap> {
@@ -98,6 +101,9 @@ export async function getTenantByokKeys(tenantId: string): Promise<ByokKeyMap> {
     xaiApiKey: stored.xaiApiKey ? decryptSecret(stored.xaiApiKey) : undefined,
     cometApiKey: stored.cometApiKey ? decryptSecret(stored.cometApiKey) : undefined,
     cometApiBaseUrl: stored.cometApiBaseUrl || undefined,
+    localLlmBaseUrl: stored.localLlmBaseUrl || undefined,
+    localLlmModel: stored.localLlmModel || undefined,
+    localLlmApiKey: stored.localLlmApiKey ? decryptSecret(stored.localLlmApiKey) : undefined,
   };
 }
 
@@ -112,6 +118,7 @@ export async function saveTenantByokKeys(tenantId: string, updates: ByokKeyMap):
       'deepSeekApiKey',
       'xaiApiKey',
       'cometApiKey',
+      'localLlmApiKey',
     ] as const;
 
     for (const field of secretFields) {
@@ -126,6 +133,12 @@ export async function saveTenantByokKeys(tenantId: string, updates: ByokKeyMap):
     }
     if (updates.cometApiBaseUrl !== undefined) {
       next.cometApiBaseUrl = updates.cometApiBaseUrl.trim();
+    }
+    if (updates.localLlmBaseUrl !== undefined) {
+      next.localLlmBaseUrl = updates.localLlmBaseUrl.trim();
+    }
+    if (updates.localLlmModel !== undefined) {
+      next.localLlmModel = updates.localLlmModel.trim();
     }
     return next;
   });

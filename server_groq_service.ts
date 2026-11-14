@@ -7,7 +7,7 @@
 
 import { SYSTEM_PROMPT, buildRuntimeMetadataBlock } from './src/lib/systemPrompts.ts';
 
-export type AIProviderMode = 'auto' | 'gemini' | 'groq';
+export type AIProviderMode = 'auto' | 'gemini' | 'groq' | 'local';
 
 export interface GroqModelDefinition {
   id: string;
