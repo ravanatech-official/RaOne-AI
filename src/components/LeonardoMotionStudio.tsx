@@ -1,29 +1,36 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  Play,
-  Pause,
-  Download,
-  Copy,
-  Trash2,
-  Heart,
   Dices,
   Film,
   Wand2,
-  Check,
   Upload,
-  FastForward,
-  Cpu,
-  Volume2,
-  VolumeX,
   Search,
+  Heart,
   Sparkles,
+  Image as ImageIcon,
+  X,
+  Cpu,
+  Scissors,
 } from 'lucide-react';
-import { GeneratedVideoItem } from '../types/index.ts';
+import {
+  DEFAULT_CINEMA_CONFIG,
+  type CinemaConfig,
+  type CinemaEditPreset,
+  type CinemaEditSpec,
+  type CinemaEnhancerMode,
+} from '../types/cinema.ts';
+import type { GeneratedVideoItem } from '../types/index.ts';
 import {
   UnifiedStudioWorkspace,
-  WorkspaceTurn,
-  WorkspaceRightTab,
+  type WorkspaceTurn,
+  type WorkspaceRightTab,
 } from './UnifiedStudioWorkspace';
+import { CinemaConfigDrawer } from './CinemaConfigDrawer';
+import { CinemaVideoStage } from './CinemaVideoStage';
+import {
+  fetchUniversalSettings,
+  subscribeUniversalSettings,
+} from '../utils/settingsClient.ts';
 
 interface LeonardoMotionStudioProps {
   isOpen: boolean;
@@ -31,37 +38,38 @@ interface LeonardoMotionStudioProps {
 }
 
 const T2V_MODELS = [
-  { id: 'Google Veo 2 (Frontier)', label: 'Google Veo 2', description: 'Google DeepMind · 4K physical world dynamics' },
-  { id: 'OpenAI Sora Turbo', label: 'Sora Turbo', description: 'Spatio-temporal latent world simulator' },
-  { id: 'Runway Gen-3 Alpha', label: 'Runway Gen-3', description: 'Director camera & human motion fidelity' },
-  { id: 'Kling AI 1.5 Pro', label: 'Kling 1.5 Pro', description: '3D spatio-temporal fluid dynamics' },
-  { id: 'Luma Dream Machine 2.0', label: 'Luma Dream 2.0', description: 'Flow matching rapid video transformer' },
-  { id: 'MiniMax Hailuo Video 01', label: 'MiniMax Hailuo', description: 'High-octane kinematic action synthesis' },
-];
-
-const CAMERA_MOTIONS = [
-  'Fly Through Forward',
-  'Pan Right & Tilt Up',
-  'Orbit 360',
-  'Zoom In Hyper',
-  'Zoom Out (Reveal)',
-  'Crane Up High Angle',
-  'Tilt Down Grounding',
-  'Static Camera (Tripod)',
-];
-
-const ASPECT_RATIOS = [
-  { id: '16:9', dim: '1920x1080' },
-  { id: '9:16', dim: '1080x1920' },
-  { id: '1:1', dim: '1080x1080' },
-  { id: '2.39:1', dim: '1920x804' },
+  {
+    id: 'Google Veo 2 (Gemini Omni)',
+    label: 'Veo 2 · Gemini Omni',
+    description: 'Gemini Omni 1.2 Flash · T2V, I2V, Video Edit & Extend',
+  },
+  {
+    id: 'OpenAI Sora Turbo',
+    label: 'Sora Turbo Profile',
+    description: 'Spatio-temporal cinematic world simulator preset',
+  },
+  {
+    id: 'Runway Gen-3 Alpha',
+    label: 'Runway Gen-3 Profile',
+    description: 'Director camera trajectories & human motion',
+  },
+  {
+    id: 'Kling AI 1.5 Pro',
+    label: 'Kling 1.5 Physics',
+    description: 'Fluid dynamics & long-horizon continuity',
+  },
+  {
+    id: 'Luma Dream Machine 2.0',
+    label: 'Luma Dream 2.0',
+    description: 'Keyframe Start/End interpolation preset',
+  },
 ];
 
 const RANDOM_VIDEO_PROMPTS = [
-  'A neon-lit cybernetic runner dashing across rain-slicked glass skyscrapers in Neo Tokyo 2099, low-angle tracking camera, 8K Arri Alexa',
-  'Drone shot soaring through a glowing crystalline ice canyon under emerald aurora borealis, 70mm IMAX aesthetic',
-  'Robotic cheetah accelerating across red Mars dunes at sunset with dust physics simulation, 60fps tracking camera',
-  'Ancient Sigiriya rock fortress surrounded by floating lanterns at midnight, rolling valley mist, slow 360 helicopter orbit',
+  'A sleek obsidian electric supercar drifting through rain-slicked neon Colombo Port City streets at midnight, low tracking gimbal 35mm anamorphic',
+  'Aerial FPV drone soaring through glowing emerald aurora over jagged snow peaks, dramatic volumetric mist, IMAX 70mm film grain',
+  'Ancient Sigiriya rock fortress surrounded by floating golden lanterns at dawn, mist rolling through the jungle valley, slow 360 helicopter orbit',
+  'Futuristic cybernetic artisan assembling a holographic watch inside a warm candlelight workshop, macro shallow depth of field',
 ];
 
 export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
@@ -70,42 +78,31 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
 }) => {
   const [rightTab, setRightTab] = useState<WorkspaceRightTab>('preview');
   const [prompt, setPrompt] = useState('');
-  const [negativePrompt, setNegativePrompt] = useState(
-    'blurry, morphing, jitter, low framerate, artifacts, glitch, static'
-  );
-  const [selectedModel, setSelectedModel] = useState('Google Veo 2 (Frontier)');
-  const [selectedCamera, setSelectedCamera] = useState('Fly Through Forward');
-  const [motionStrength, setMotionStrength] = useState<number>(7);
-  const [duration, setDuration] = useState<number>(5);
-  const [fps, setFps] = useState<number>(30);
-  const [selectedAspect, setSelectedAspect] = useState('16:9');
-  const [generationMode, setGenerationMode] = useState<'text-to-video' | 'image-to-video'>(
-    'text-to-video'
-  );
-  const [referenceImage, setReferenceImage] = useState<string | null>(null);
-  const [seed, setSeed] = useState<number>(894172);
+  const [enhancedFromPrompt, setEnhancedFromPrompt] = useState<string | null>(null);
+  const [config, setConfig] = useState<CinemaConfig>(DEFAULT_CINEMA_CONFIG);
+
+  const [startKeyframe, setStartKeyframe] = useState<string | null>(null);
+  const [endKeyframe, setEndKeyframe] = useState<string | null>(null);
+  const [storyboardRefs, setStoryboardRefs] = useState<string[]>([]);
 
   const [videoFeed, setVideoFeed] = useState<GeneratedVideoItem[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<GeneratedVideoItem | null>(null);
   const [turns, setTurns] = useState<WorkspaceTurn[]>([]);
+
   const [isLoading, setIsLoading] = useState(false);
+  const [isPostBusy, setIsPostBusy] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
-  const [filterFavorite, setFilterFavorite] = useState(false);
+
+  const [libraryFilter, setLibraryFilter] = useState<'all' | 'favorites' | 'uploads'>('all');
   const [fileSearch, setFileSearch] = useState('');
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
-  const [isMuted, setIsMuted] = useState(true);
-  const [currentTime, setCurrentTime] = useState<number>(0);
-  const [videoDuration, setVideoDuration] = useState<number>(0);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const videoPlayerRef = useRef<HTMLVideoElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const quickImageInputRef = useRef<HTMLInputElement>(null);
+  const quickVideoUploadRef = useRef<HTMLInputElement>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2500);
+    setTimeout(() => setToastMessage(null), 3200);
   };
 
   const fetchVideoHistory = async () => {
@@ -116,19 +113,159 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
         setVideoFeed(data.items);
       }
     } catch {
-      // ignore
+      // ignore transient load failure
     }
   };
 
   useEffect(() => {
-    if (isOpen) {
-      fetchVideoHistory();
-    }
+    if (!isOpen) return;
+    fetchVideoHistory();
+    fetchUniversalSettings()
+      .then((profile) => {
+        if (profile?.studioDefaults?.cinema) {
+          setConfig((prev) => ({ ...prev, ...profile.studioDefaults.cinema }));
+        }
+      })
+      .catch(() => {});
+
+    return subscribeUniversalSettings((profile) => {
+      if (profile?.studioDefaults?.cinema) {
+        setConfig((prev) => ({ ...prev, ...profile.studioDefaults.cinema }));
+      }
+    });
   }, [isOpen]);
 
-  const handleGenerate = async () => {
+  useEffect(() => {
+    if (!isOpen || videoFeed.length === 0) return;
+    const pending = (window as any).__RAONE_PENDING_ASSET__;
+    if (pending && pending.studio === 'cinema' && pending.rawId) {
+      const match = videoFeed.find((v) => v.id === pending.rawId);
+      if (match) {
+        setSelectedVideo(match);
+        setRightTab('preview');
+        delete (window as any).__RAONE_PENDING_ASSET__;
+      }
+    }
+  }, [isOpen, videoFeed]);
+
+  const versionTree = useMemo(() => {
+    if (!selectedVideo) return [];
+    const rootId = selectedVideo.rootId || selectedVideo.id;
+    const related = videoFeed.filter(
+      (v) => v.id === rootId || v.rootId === rootId || v.parentId === selectedVideo.id
+    );
+    return related.sort((a, b) => (b.version || 1) - (a.version || 1));
+  }, [selectedVideo, videoFeed]);
+
+  const registerNewVideoResult = (
+    video: GeneratedVideoItem,
+    userMessage: string,
+    assistantSummary: string,
+    details: string[]
+  ) => {
+    setVideoFeed((prev) => [video, ...prev.filter((item) => item.id !== video.id)]);
+    setSelectedVideo(video);
+    setRightTab('preview');
+    setTurns((prev) => [
+      ...prev,
+      { id: `u_${Date.now()}`, role: 'user', content: userMessage },
+      {
+        id: `a_${Date.now() + 1}`,
+        role: 'assistant',
+        modelLabel: video.engineModelUsed || video.model,
+        content: assistantSummary,
+        details,
+      },
+    ]);
+  };
+
+  const handleUploadSourceVideo = async (file: File) => {
+    if (isLoading || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast(`Uploading & normalizing ${file.name}...`);
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await fetch('/api/motion/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type || 'video/mp4',
+          'X-File-Name': file.name,
+          'X-Clip-Title': file.name.replace(/\.[^.]+$/, ''),
+        },
+        body: buf,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.video) {
+        setConfig((prev) => ({ ...prev, mode: 'video-edit' }));
+        registerNewVideoResult(
+          data.video,
+          `Uploaded video: ${file.name}`,
+          `Video uploaded (${data.video.dimensions}, ${data.video.duration}s, ${data.video.fps}fps) and loaded into Text-to-Video Edit mode.`,
+          ['Ready for natural-language AI video edits, Motion Brush, Trim, 60fps & Audio Sync.']
+        );
+        showToast('Video uploaded. Ready for AI Editing!');
+      } else {
+        showToast(data?.error || 'Video upload failed.');
+      }
+    } catch {
+      showToast('Failed to upload video.');
+    } finally {
+      setIsPostBusy(false);
+    }
+  };
+
+  const handleEnhancePrompt = async (modeOverride?: CinemaEnhancerMode) => {
+    if (!prompt.trim() || isEnhancing) return;
+    const raw = prompt.trim();
+    setIsEnhancing(true);
+    try {
+      const res = await fetch('/api/motion/enhance-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: raw,
+          enhancerMode: modeOverride || config.enhancerMode,
+          cinemaConfig: config,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.enhancedPrompt) {
+        setEnhancedFromPrompt(raw);
+        setPrompt(data.enhancedPrompt);
+        if (data.suggestedNegativePrompt || data.suggestedAudioCue) {
+          setConfig((prev) => ({
+            ...prev,
+            negativePrompt: data.suggestedNegativePrompt || prev.negativePrompt,
+            audio: {
+              ...prev.audio,
+              audioPrompt: prev.audio.audioPrompt || data.suggestedAudioCue || '',
+            },
+          }));
+        }
+        showToast(`Enhanced via ${data.providerUsed || 'Cinema Architect'}.`);
+      } else {
+        showToast(data?.error || 'Prompt enhancement unavailable.');
+      }
+    } catch {
+      showToast('Prompt enhancement failed.');
+    } finally {
+      setIsEnhancing(false);
+    }
+  };
+
+  const handleSubmitMainComposer = async () => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt || isLoading) return;
+
+    // If user is in Video Edit mode with an active video, route composer directly to Text-to-Video Edit
+    if (config.mode === 'video-edit' && selectedVideo) {
+      await handleApplyTextEdit({
+        instruction: cleanPrompt,
+        preset: config.edit.preset,
+      });
+      setPrompt('');
+      return;
+    }
 
     const startMs = Date.now();
     setTurns((prev) => [
@@ -139,80 +276,292 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
     setIsLoading(true);
 
     try {
-      const dim = ASPECT_RATIOS.find((a) => a.id === selectedAspect)?.dim || '1920x1080';
+      const activeSeed = config.seedLocked
+        ? config.seed
+        : Math.floor(Math.random() * 9000000) + 100000;
+      if (!config.seedLocked) {
+        setConfig((prev) => ({ ...prev, seed: activeSeed }));
+      }
+
       const res = await fetch('/api/motion/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: cleanPrompt,
-          negativePrompt,
-          model: selectedModel,
-          cameraMotion: selectedCamera,
-          motionStrength,
-          duration,
-          fps,
-          aspectRatio: selectedAspect,
-          dimensions: dim,
-          mode: generationMode,
-          referenceImage,
-          seed,
+          enhancedFrom: enhancedFromPrompt,
+          negativePrompt: config.negativePrompt,
+          model: config.model,
+          cameraMotion: config.camera.trajectory,
+          motionStrength: config.camera.motionStrength,
+          duration: config.duration,
+          fps: config.fps,
+          aspectRatio: config.aspectRatio,
+          mode: config.mode,
+          referenceImage: startKeyframe,
+          endKeyframeImage: endKeyframe,
+          referenceImages: storyboardRefs,
+          seed: activeSeed,
+          cinemaConfig: { ...config, seed: activeSeed },
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       const elapsed = `${((Date.now() - startMs) / 1000).toFixed(1)}s`;
-      if (data.success && data.video) {
+      setEnhancedFromPrompt(null);
+
+      if (res.ok && data.success && data.video) {
         setVideoFeed((prev) => [data.video, ...prev]);
         setSelectedVideo(data.video);
-        setIsPlaying(true);
         setRightTab('preview');
         setTurns((prev) => [
           ...prev,
           {
             id: `a_${Date.now()}`,
             role: 'assistant',
-            modelLabel: selectedModel,
+            modelLabel: data.video.engineModelUsed || config.model,
             durationSec: elapsed,
-            content: `Synthesized ${data.video.duration}s cinema clip at ${data.video.fps}fps (${dim}).`,
+            content: `Rendered ${data.video.duration.toFixed(1)}s clip (${data.video.dimensions} · ${data.video.fps}fps).`,
             details: [
-              `Camera: ${selectedCamera} · Motion Strength: ${motionStrength}/10`,
-              `Mode: ${generationMode === 'image-to-video' ? 'Image-to-Video' : 'Text-to-Video'}`,
+              `Camera: ${config.camera.trajectory} · ${config.camera.focalLength} (${config.camera.aperture})`,
+              `Style: ${config.look.visualStyle} · LUT: ${config.look.colorGrade}`,
             ],
           },
         ]);
+        showToast('Cinema clip synthesized!');
       } else {
         showToast(data?.error || 'Video generation failed.');
+        setTurns((prev) => [
+          ...prev,
+          {
+            id: `a_${Date.now()}`,
+            role: 'assistant',
+            content: data?.error || 'Video generation failed.',
+          },
+        ]);
       }
     } catch {
-      showToast('Error synthesizing video.');
+      showToast('Error contacting Cinema Studio server.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleEnhancePrompt = async () => {
-    if (!prompt.trim() || isEnhancing) return;
-    setIsEnhancing(true);
+  const handleApplyTextEdit = async ({
+    instruction,
+    preset,
+    maskImage,
+  }: {
+    instruction: string;
+    preset: CinemaEditPreset;
+    maskImage?: string | null;
+  }) => {
+    if (!selectedVideo || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast('Synthesizing Text-to-Video Edit...');
     try {
-      const res = await fetch('/api/motion/enhance-prompt', {
+      const res = await fetch('/api/motion/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt,
-          cameraMotion: selectedCamera,
-          model: selectedModel,
+          id: selectedVideo.id,
+          instruction,
+          maskImage,
+          referenceImages: storyboardRefs,
+          cinemaConfig: {
+            ...config,
+            mode: 'video-edit',
+            edit: { ...config.edit, preset },
+          },
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success && data.enhancedPrompt) {
-        setPrompt(data.enhancedPrompt);
-        showToast('Video prompt enhanced.');
+      if (res.ok && data.success && data.video) {
+        registerNewVideoResult(
+          data.video,
+          `Edit video: ${instruction}`,
+          `Created edited version v${data.video.version || 2} (${data.video.dimensions}).`,
+          [`Preset: ${preset}`, `Parent clip: ${selectedVideo.id}`]
+        );
+        showToast('Text-to-Video edit complete! Compare slider enabled.');
       } else {
-        showToast(data?.error || 'Prompt enhancement unavailable.');
+        showToast(data?.error || 'Video edit failed.');
       }
     } catch {
-      showToast('Enhancement failed.');
+      showToast('Video edit failed.');
     } finally {
-      setIsEnhancing(false);
+      setIsPostBusy(false);
+    }
+  };
+
+  const handleApplyMotionBrush = async ({
+    instruction,
+    maskImage,
+    direction,
+  }: {
+    instruction: string;
+    maskImage: string;
+    direction: CinemaEditSpec['motionBrushDirection'];
+  }) => {
+    if (!selectedVideo || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast(`Synthesizing Motion Brush (${direction})...`);
+    try {
+      const res = await fetch('/api/motion/motion-brush', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedVideo.id,
+          instruction,
+          maskImage,
+          direction,
+          cinemaConfig: config,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.video) {
+        registerNewVideoResult(
+          data.video,
+          `Motion Brush (${direction}): ${instruction}`,
+          `Synthesized regional Motion Brush v${data.video.version || 2}.`,
+          [`Direction: ${direction}`]
+        );
+        showToast('Motion Brush clip rendered.');
+      } else {
+        showToast(data?.error || 'Motion Brush failed.');
+      }
+    } catch {
+      showToast('Motion Brush failed.');
+    } finally {
+      setIsPostBusy(false);
+    }
+  };
+
+  const handleExtendVideo = async (addSec: number, extPrompt: string) => {
+    if (!selectedVideo || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast(`Extending video +${addSec}s...`);
+    try {
+      const res = await fetch('/api/motion/extend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedVideo.id,
+          addDurationSec: addSec,
+          extensionPrompt: extPrompt,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.video) {
+        registerNewVideoResult(
+          data.video,
+          `Extend +${addSec}s`,
+          `Extended video to ${data.video.duration.toFixed(1)}s (v${data.video.version || 2}).`,
+          ['Seamless tail scene continuation merged.']
+        );
+        showToast('Video extended seamlessly.');
+      } else {
+        showToast(data?.error || 'Video extension failed.');
+      }
+    } catch {
+      showToast('Video extension failed.');
+    } finally {
+      setIsPostBusy(false);
+    }
+  };
+
+  const handleTrimVideo = async (startSec: number, endSec: number) => {
+    if (!selectedVideo || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast(`Trimming ${startSec.toFixed(1)}s – ${endSec.toFixed(1)}s...`);
+    try {
+      const res = await fetch('/api/motion/trim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedVideo.id, startSec, endSec }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.video) {
+        registerNewVideoResult(
+          data.video,
+          `Trim ${startSec.toFixed(1)}s–${endSec.toFixed(1)}s`,
+          `Trimmed clip saved (${data.video.duration.toFixed(1)}s).`,
+          ['FFmpeg frame-accurate trim complete.']
+        );
+        showToast('Clip trimmed cleanly.');
+      } else {
+        showToast(data?.error || 'Trim failed.');
+      }
+    } catch {
+      showToast('Trim failed.');
+    } finally {
+      setIsPostBusy(false);
+    }
+  };
+
+  const handlePostProcess = async (
+    endpoint: 'interpolate' | 'upscale',
+    label: string,
+    extraBody?: Record<string, any>
+  ) => {
+    if (!selectedVideo || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast(`Processing ${label}...`);
+    try {
+      const res = await fetch(`/api/motion/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedVideo.id, ...(extraBody || {}) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.video) {
+        registerNewVideoResult(
+          data.video,
+          label,
+          `${label} finished (${data.video.dimensions} · ${data.video.fps}fps).`,
+          [`Saved as version v${data.video.version || 2}.`]
+        );
+        showToast(`${label} complete.`);
+      } else {
+        showToast(data?.error || `${label} failed.`);
+      }
+    } catch {
+      showToast(`${label} failed.`);
+    } finally {
+      setIsPostBusy(false);
+    }
+  };
+
+  const handleAudioSync = async ({
+    audioPrompt,
+    audioDataUrl,
+  }: {
+    audioPrompt?: string;
+    audioDataUrl?: string;
+  }) => {
+    if (!selectedVideo || isPostBusy) return;
+    setIsPostBusy(true);
+    showToast(audioDataUrl ? 'Muxing custom audio track...' : 'Composing Lyria soundtrack & muxing...');
+    try {
+      const res = await fetch('/api/motion/audio-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedVideo.id, audioPrompt, audioDataUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.video) {
+        registerNewVideoResult(
+          data.video,
+          `Audio sync: ${audioPrompt || 'Custom audio'}`,
+          `Audio track synchronized (v${data.video.version || 2}).`,
+          [`Engine: ${data.video.engineModelUsed}`]
+        );
+        showToast('Audio synchronized!');
+      } else {
+        showToast(data?.error || 'Audio sync failed.');
+      }
+    } catch {
+      showToast('Audio sync failed.');
+    } finally {
+      setIsPostBusy(false);
     }
   };
 
@@ -227,14 +576,10 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
       const data = await res.json();
       if (data.success && data.item) {
         setVideoFeed((prev) =>
-          prev.map((v) =>
-            v.id === id ? { ...v, isFavorite: data.item.isFavorite } : v
-          )
+          prev.map((v) => (v.id === id ? { ...v, isFavorite: data.item.isFavorite } : v))
         );
         if (selectedVideo?.id === id) {
-          setSelectedVideo((prev) =>
-            prev ? { ...prev, isFavorite: data.item.isFavorite } : null
-          );
+          setSelectedVideo((prev) => (prev ? { ...prev, isFavorite: data.item.isFavorite } : null));
         }
       }
     } catch {
@@ -242,8 +587,27 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
     }
   };
 
-  const handleDelete = async (id: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
+  const handleShareVideo = async (id: string) => {
+    try {
+      const res = await fetch('/api/motion/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.shareUrl) {
+        const fullUrl = `${window.location.origin}${data.shareUrl}`;
+        navigator.clipboard?.writeText(fullUrl).catch(() => {});
+        showToast(`Share URL copied: ${data.shareUrl}`);
+      } else {
+        showToast(data?.error || 'Publish failed.');
+      }
+    } catch {
+      showToast('Share failed.');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
     try {
       const res = await fetch('/api/motion/delete', {
         method: 'POST',
@@ -261,50 +625,6 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
     }
   };
 
-  const handleVideoOp = async (endpoint: 'extend' | 'interpolate' | 'upscale', id: string, label: string) => {
-    showToast(`Processing ${label}...`);
-    try {
-      const res = await fetch(`/api/motion/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success && data.item) {
-        setVideoFeed((prev) => prev.map((v) => (v.id === id ? data.item : v)));
-        if (selectedVideo?.id === id) setSelectedVideo(data.item);
-        showToast(`${label} complete.`);
-      } else {
-        showToast(data?.error || `${label} requires an external FFmpeg/GPU worker.`);
-      }
-    } catch {
-      showToast(`${label} failed.`);
-    }
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setReferenceImage(event.target?.result as string);
-        setGenerationMode('image-to-video');
-        showToast('Keyframe image attached.');
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const togglePlay = () => {
-    if (!videoPlayerRef.current) return;
-    if (isPlaying) {
-      videoPlayerRef.current.pause();
-    } else {
-      videoPlayerRef.current.play().catch(() => {});
-    }
-    setIsPlaying(!isPlaying);
-  };
-
   const downloadVideo = (video: GeneratedVideoItem) => {
     const a = document.createElement('a');
     a.href = video.videoUrl;
@@ -312,252 +632,108 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
     a.click();
   };
 
-  const previewContent = selectedVideo ? (
-    <div className="h-full flex flex-col p-4 md:p-6 gap-4 max-w-5xl mx-auto w-full">
-      <div className="flex-1 min-h-[280px] rounded-2xl bg-black border border-[#282A2E] overflow-hidden flex items-center justify-center relative">
-        <video
-          ref={videoPlayerRef}
-          src={selectedVideo.videoUrl}
-          poster={selectedVideo.posterUrl}
-          autoPlay
-          loop
-          muted={isMuted}
-          playsInline
-          onTimeUpdate={() => {
-            if (videoPlayerRef.current) {
-              setCurrentTime(videoPlayerRef.current.currentTime);
-              setVideoDuration(videoPlayerRef.current.duration || 0);
-            }
-          }}
-          className="max-h-[62vh] w-full object-contain"
-        />
-      </div>
-
-      {/* Player Scrubber + Actions */}
-      <div className="bg-[#18191C] border border-[#282A2E] rounded-xl p-3 space-y-3">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={togglePlay}
-            className="w-8 h-8 rounded-full bg-[#E3E3E3] hover:bg-white text-[#131314] flex items-center justify-center shrink-0"
-          >
-            {isPlaying ? (
-              <Pause className="w-4 h-4 fill-current" />
-            ) : (
-              <Play className="w-4 h-4 fill-current ml-0.5" />
-            )}
-          </button>
-
-          <input
-            type="range"
-            min="0"
-            max={videoDuration || 5}
-            step="0.05"
-            value={currentTime}
-            onChange={(e) => {
-              const t = Number(e.target.value);
-              setCurrentTime(t);
-              if (videoPlayerRef.current) videoPlayerRef.current.currentTime = t;
-            }}
-            className="flex-1 accent-[#8AB4F8]"
-          />
-
-          <span className="text-[11px] font-mono text-[#9AA0A6] tabular-nums shrink-0">
-            {currentTime.toFixed(1)}s / {(videoDuration || selectedVideo.duration).toFixed(1)}s
-          </span>
-
-          <button
-            onClick={() => setIsMuted(!isMuted)}
-            className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] text-[#E3E3E3]"
-          >
-            {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-          </button>
-
-          <div className="hidden sm:flex items-center gap-1 bg-[#131314] p-0.5 rounded-lg border border-[#2A2B2E]">
-            {[0.5, 1, 1.5, 2].map((spd) => (
-              <button
-                key={spd}
-                onClick={() => {
-                  setPlaybackSpeed(spd);
-                  if (videoPlayerRef.current) videoPlayerRef.current.playbackRate = spd;
-                }}
-                className={`px-1.5 py-0.5 rounded text-[11px] font-mono tabular-nums ${
-                  playbackSpeed === spd ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F]'
-                }`}
-              >
-                {spd}x
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#252629]">
-          <div className="text-xs text-[#9AA0A6] tabular-nums">
-            <span className="text-[#E3E3E3] font-medium">{selectedVideo.model}</span> ·{' '}
-            {selectedVideo.cameraMotion} · {selectedVideo.fps}fps · {selectedVideo.dimensions}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              onClick={() => handleVideoOp('extend', selectedVideo.id, 'Extend +5s')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
-            >
-              <FastForward className="w-3.5 h-3.5" />
-              <span>Extend +5s</span>
-            </button>
-            <button
-              onClick={() => handleVideoOp('interpolate', selectedVideo.id, '60 FPS Smooth')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
-            >
-              <span>60 FPS</span>
-            </button>
-            <button
-              onClick={() => handleVideoOp('upscale', selectedVideo.id, '4K Upscale')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] text-xs text-[#E3E3E3]"
-            >
-              <span>4K</span>
-            </button>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(selectedVideo.prompt);
-                setCopiedId(selectedVideo.id);
-                setTimeout(() => setCopiedId(null), 1500);
-              }}
-              className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] text-[#E3E3E3]"
-              title="Copy prompt"
-            >
-              {copiedId === selectedVideo.id ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <Copy className="w-3.5 h-3.5" />
-              )}
-            </button>
-            <button
-              onClick={() => handleToggleFavorite(selectedVideo.id)}
-              className="p-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] text-[#E3E3E3]"
-            >
-              <Heart
-                className={`w-3.5 h-3.5 ${
-                  selectedVideo.isFavorite ? 'fill-rose-500 text-rose-500' : ''
-                }`}
-              />
-            </button>
-            <button
-              onClick={() => downloadVideo(selectedVideo)}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#2B2D30] hover:bg-[#383A40] text-xs font-medium text-white"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>MP4</span>
-            </button>
-            <button
-              onClick={() => handleDelete(selectedVideo.id)}
-              className="p-1.5 rounded-lg bg-[#252629] hover:bg-red-950/60 text-[#9AA0A6] hover:text-red-400"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  ) : null;
+  const displayedVideos = videoFeed.filter((v) => {
+    const matchTab =
+      libraryFilter === 'all'
+        ? true
+        : libraryFilter === 'favorites'
+        ? v.isFavorite
+        : v.operationType === 'upload';
+    const matchSearch =
+      !fileSearch.trim() ||
+      v.prompt.toLowerCase().includes(fileSearch.toLowerCase()) ||
+      v.model.toLowerCase().includes(fileSearch.toLowerCase());
+    return matchTab && matchSearch;
+  });
 
   const codeContent = (
     <div className="p-6 max-w-4xl mx-auto space-y-5">
       <div className="p-4 rounded-xl bg-[#18191B] border border-[#282A2E] space-y-2">
         <span className="text-xs font-medium text-white block">
-          Cinema Video Diffusion Specification (JSON)
+          Cinema Studio Shot Manifest & Engine Specification (JSON)
         </span>
         <pre className="font-mono text-xs text-[#D4D7DD] bg-[#111214] p-3.5 rounded-lg border border-[#252629] overflow-x-auto">
-          {JSON.stringify(
-            selectedVideo || {
-              model: selectedModel,
-              mode: generationMode,
-              cameraMotion: selectedCamera,
-              motionStrength,
-              duration,
-              fps,
-              aspectRatio: selectedAspect,
-              seed,
-            },
-            null,
-            2
-          )}
+          {JSON.stringify(selectedVideo || config, null, 2)}
         </pre>
       </div>
 
       <div className="p-4 rounded-xl bg-[#18191B] border border-[#282A2E] space-y-3">
         <div className="flex items-center gap-2 text-xs font-medium text-white">
           <Cpu className="w-4 h-4 text-[#8AB4F8]" />
-          <span>Generative Video Diffusion Architecture</span>
+          <span>Active Silicon Valley Video Pipeline</span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#9AA0A6]">
           <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
-            <div className="font-medium text-[#E3E3E3] mb-1">1. Spatio-Temporal DiT</div>
-            Models 3D spacetime patches across frames with joint spatial and temporal attention.
+            <div className="font-medium text-[#E3E3E3] mb-1">1. Gemini Omni 1.2 Flash</div>
+            Multi-turn Interactions API supporting Text-to-Video, Start/End Keyframe Morph, Storyboard (up to 6 refs), Video-to-Video Edit & Extension.
           </div>
           <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
-            <div className="font-medium text-[#E3E3E3] mb-1">2. 3D Causal Video VAE</div>
-            Compresses 8x spatially and 4x temporally while enforcing causal frame ordering.
-          </div>
-          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
-            <div className="font-medium text-[#E3E3E3] mb-1">3. CameraCtrl Trajectory</div>
-            Injects Plucker camera rays for deterministic Pan, Orbit, Zoom, and Crane motion.
-          </div>
-          <div className="p-3 rounded-lg bg-[#131314] border border-[#252629]">
-            <div className="font-medium text-[#E3E3E3] mb-1">4. Foley Audio Sync & Motion Brush</div>
-            Supports frame interpolation, 4K upscaling, and synchronized ambient sound.
+            <div className="font-medium text-[#E3E3E3] mb-1">2. FFmpeg Optical Post-Prod</div>
+            Real frame-accurate trim, optical-flow 60fps minterpolate, Lanczos 4K super-resolution, HTTP Range streaming & Lyria 3 audio muxing.
           </div>
         </div>
       </div>
     </div>
   );
 
-  const displayedVideos = videoFeed.filter((v) => {
-    const matchFav = !filterFavorite || v.isFavorite;
-    const matchSearch =
-      !fileSearch.trim() ||
-      v.prompt.toLowerCase().includes(fileSearch.toLowerCase()) ||
-      v.model.toLowerCase().includes(fileSearch.toLowerCase());
-    return matchFav && matchSearch;
-  });
-
   const filesContent = (
     <div className="p-5 max-w-6xl mx-auto space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#252629] pb-3">
         <div className="flex items-center gap-1 bg-[#1B1C1E] p-0.5 rounded-lg border border-[#2C2D30]">
-          <button
-            onClick={() => setFilterFavorite(false)}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-              !filterFavorite ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F] hover:text-white'
-            }`}
-          >
-            All Videos ({videoFeed.length})
-          </button>
-          <button
-            onClick={() => setFilterFavorite(true)}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-              filterFavorite ? 'bg-[#2B2D30] text-white' : 'text-[#8E918F] hover:text-white'
-            }`}
-          >
-            Favorites ({videoFeed.filter((v) => v.isFavorite).length})
-          </button>
+          {(
+            [
+              { id: 'all', label: `All Clips (${videoFeed.length})` },
+              {
+                id: 'favorites',
+                label: `Favorites (${videoFeed.filter((v) => v.isFavorite).length})`,
+              },
+              {
+                id: 'uploads',
+                label: `Uploaded (${videoFeed.filter((v) => v.operationType === 'upload').length})`,
+              },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setLibraryFilter(tab.id)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+                libraryFilter === tab.id
+                  ? 'bg-[#2B2D30] text-white'
+                  : 'text-[#8E918F] hover:text-white'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 text-[#8E918F] absolute left-2.5 top-2" />
-          <input
-            type="text"
-            value={fileSearch}
-            onChange={(e) => setFileSearch(e.target.value)}
-            placeholder="Search videos..."
-            className="bg-[#1B1C1E] border border-[#2C2D30] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[#E3E3E3] placeholder-[#6E7075] focus:outline-none focus:border-[#4A4D54] w-56"
-          />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => quickVideoUploadRef.current?.click()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#252629] hover:bg-[#303236] border border-[#35373B] text-xs text-[#E3E3E3] whitespace-nowrap"
+          >
+            <Upload className="w-3.5 h-3.5 text-[#8AB4F8]" />
+            <span>Upload Video</span>
+          </button>
+
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-[#8E918F] absolute left-2.5 top-2" />
+            <input
+              type="text"
+              value={fileSearch}
+              onChange={(e) => setFileSearch(e.target.value)}
+              placeholder="Search videos..."
+              className="bg-[#1B1C1E] border border-[#2C2D30] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[#E3E3E3] placeholder-[#6E7075] focus:outline-none focus:border-[#4A4D54] w-48"
+            />
+          </div>
         </div>
       </div>
 
       {displayedVideos.length === 0 ? (
         <div className="py-16 text-center text-xs text-[#8E918F]">
           <Film className="w-8 h-8 mx-auto mb-2 opacity-40" />
-          <p>No videos found in this view.</p>
+          <p>No videos yet. Generate a scene or upload your own MP4/WebM to edit.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -566,7 +742,6 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
               key={video.id}
               onClick={() => {
                 setSelectedVideo(video);
-                setIsPlaying(true);
                 setRightTab('preview');
               }}
               className="rounded-xl overflow-hidden bg-[#18191B] border border-[#27292D] hover:border-[#42454C] transition-colors cursor-pointer flex flex-col"
@@ -574,7 +749,7 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
               <div className="relative aspect-video bg-black">
                 <video
                   src={video.videoUrl}
-                  poster={video.posterUrl}
+                  poster={video.posterUrl || undefined}
                   muted
                   loop
                   playsInline
@@ -594,9 +769,11 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
               <div className="p-3 space-y-1.5">
                 <p className="text-xs text-[#E3E3E3] line-clamp-2">{video.prompt}</p>
                 <div className="flex items-center justify-between text-[11px] text-[#8E918F] tabular-nums">
-                  <span className="truncate">{video.cameraMotion}</span>
+                  <span className="truncate">
+                    {video.operationType || video.mode} · v{video.version || 1}
+                  </span>
                   <span>
-                    {video.duration}s · {video.fps}fps
+                    {video.duration.toFixed(1)}s · {video.fps}fps
                   </span>
                 </div>
               </div>
@@ -607,260 +784,337 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
     </div>
   );
 
-  const editDrawerContent = (
-    <div className="space-y-4">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleImageUpload}
-        className="hidden"
-      />
-
-      <div>
-        <label className="text-xs font-medium text-[#C4C7C5] block mb-1.5">
-          Generation Mode
-        </label>
-        <div className="grid grid-cols-2 gap-1 bg-[#1B1C1E] p-1 rounded-lg border border-[#2C2D30]">
-          <button
-            onClick={() => setGenerationMode('text-to-video')}
-            className={`py-1.5 rounded text-xs font-medium ${
-              generationMode === 'text-to-video'
-                ? 'bg-[#2B2D30] text-white'
-                : 'text-[#8E918F] hover:text-white'
-            }`}
-          >
-            Text to Video
-          </button>
-          <button
-            onClick={() => setGenerationMode('image-to-video')}
-            className={`py-1.5 rounded text-xs font-medium ${
-              generationMode === 'image-to-video'
-                ? 'bg-[#2B2D30] text-white'
-                : 'text-[#8E918F] hover:text-white'
-            }`}
-          >
-            Image to Video
-          </button>
-        </div>
-      </div>
-
-      {generationMode === 'image-to-video' && (
-        <div className="p-3 rounded-lg bg-[#1E1F20] border border-dashed border-[#383A40] text-center">
-          {referenceImage ? (
-            <div className="space-y-2">
-              <img
-                src={referenceImage}
-                alt="Reference keyframe"
-                className="w-full h-24 object-cover rounded"
-              />
-              <button
-                onClick={() => setReferenceImage(null)}
-                className="text-xs text-red-400 hover:underline"
-              >
-                Remove Keyframe
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full py-2 flex flex-col items-center gap-1 text-xs text-[#9AA0A6] hover:text-white"
-            >
-              <Upload className="w-4 h-4" />
-              <span>Upload Reference Keyframe</span>
-            </button>
-          )}
-        </div>
-      )}
-
-      <div>
-        <label className="text-xs font-medium text-[#C4C7C5] block mb-1.5">
-          Camera Trajectory
-        </label>
-        <select
-          value={selectedCamera}
-          onChange={(e) => setSelectedCamera(e.target.value)}
-          className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
-        >
-          {CAMERA_MOTIONS.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <div className="flex justify-between text-xs mb-1">
-          <span className="text-[#C4C7C5]">Motion Strength</span>
-          <span className="font-mono text-[#8AB4F8] tabular-nums">{motionStrength} / 10</span>
-        </div>
-        <input
-          type="range"
-          min="1"
-          max="10"
-          value={motionStrength}
-          onChange={(e) => setMotionStrength(Number(e.target.value))}
-          className="w-full accent-[#8AB4F8]"
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-xs font-medium text-[#C4C7C5] block mb-1">
-            Duration
-          </label>
-          <select
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-            className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2 py-1.5 text-xs text-white"
-          >
-            <option value={5}>5 seconds</option>
-            <option value={10}>10 seconds</option>
-          </select>
-        </div>
-        <div>
-          <label className="text-xs font-medium text-[#C4C7C5] block mb-1">
-            Framerate
-          </label>
-          <select
-            value={fps}
-            onChange={(e) => setFps(Number(e.target.value))}
-            className="w-full bg-[#1E1F20] border border-[#2F3135] rounded-lg px-2 py-1.5 text-xs text-white"
-          >
-            <option value={24}>24 fps</option>
-            <option value={30}>30 fps</option>
-            <option value={60}>60 fps</option>
-          </select>
-        </div>
-      </div>
-
-      <div>
-        <label className="text-xs font-medium text-[#C4C7C5] block mb-1.5">
-          Aspect Ratio
-        </label>
-        <div className="grid grid-cols-2 gap-1.5">
-          {ASPECT_RATIOS.map((ar) => (
-            <button
-              key={ar.id}
-              onClick={() => setSelectedAspect(ar.id)}
-              className={`py-1.5 rounded-lg border text-xs tabular-nums ${
-                selectedAspect === ar.id
-                  ? 'bg-[#2B2D30] border-[#4A4D54] text-white'
-                  : 'bg-[#1E1F20] border-[#2C2D30] text-[#8E918F] hover:text-white'
-              }`}
-            >
-              {ar.id}
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-
   const composerAddContent = (
-    <div className="space-y-2.5">
+    <div className="space-y-3">
       <div className="flex flex-wrap gap-1.5">
         <button
-          onClick={handleEnhancePrompt}
-          disabled={!prompt.trim() || isEnhancing}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3] disabled:opacity-50"
+          type="button"
+          onClick={() => quickImageInputRef.current?.click()}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
         >
-          <Wand2 className="w-3.5 h-3.5 text-[#8AB4F8]" />
-          <span>{isEnhancing ? 'Enhancing...' : 'Enhance Video Prompt'}</span>
+          <ImageIcon className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>Attach Keyframe Image</span>
         </button>
 
         <button
+          type="button"
+          onClick={() => quickVideoUploadRef.current?.click()}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
+        >
+          <Upload className="w-3.5 h-3.5 text-[#8AB4F8]" />
+          <span>Upload Video to Edit</span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => {
             setPrompt(
-              RANDOM_VIDEO_PROMPTS[
-                Math.floor(Math.random() * RANDOM_VIDEO_PROMPTS.length)
-              ]
+              RANDOM_VIDEO_PROMPTS[Math.floor(Math.random() * RANDOM_VIDEO_PROMPTS.length)]
             );
           }}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
         >
           <Dices className="w-3.5 h-3.5 text-[#8AB4F8]" />
-          <span>Inspiration</span>
+          <span>Director Sample</span>
         </button>
+      </div>
 
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#252629] hover:bg-[#2E3034] border border-[#35373B] text-xs text-[#E3E3E3]"
-        >
-          <Upload className="w-3.5 h-3.5 text-[#8AB4F8]" />
-          <span>Keyframe Image</span>
-        </button>
+      <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+        {(
+          [
+            { id: 'text-to-video', label: 'Text to Video' },
+            { id: 'image-to-video', label: 'Keyframe I2V' },
+            { id: 'video-edit', label: 'Text-to-Video Edit' },
+            { id: 'storyboard', label: 'Storyboard Refs' },
+          ] as const
+        ).map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setConfig((prev) => ({ ...prev, mode: m.id }))}
+            className={`py-1.5 px-2 rounded-lg border text-left ${
+              config.mode === m.id
+                ? 'bg-[#2B2D30] border-[#4A4D54] text-white'
+                : 'bg-[#18191B] border-[#2C2D30] text-[#9AA0A6]'
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
       </div>
     </div>
   );
 
+  const composerExtraFooter = (
+    <div className="space-y-1.5 mb-2">
+      {(startKeyframe || endKeyframe || storyboardRefs.length > 0) && (
+        <div className="flex flex-wrap items-center gap-1.5 px-1">
+          {startKeyframe && (
+            <div className="relative w-11 h-8 rounded overflow-hidden border border-[#383A40]">
+              <img src={startKeyframe} alt="Start frame" className="w-full h-full object-cover" />
+              <button
+                type="button"
+                onClick={() => setStartKeyframe(null)}
+                className="absolute top-0 right-0 bg-black/75 text-white p-0.5"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </div>
+          )}
+          {endKeyframe && (
+            <div className="relative w-11 h-8 rounded overflow-hidden border border-[#383A40]">
+              <img src={endKeyframe} alt="End frame" className="w-full h-full object-cover" />
+              <button
+                type="button"
+                onClick={() => setEndKeyframe(null)}
+                className="absolute top-0 right-0 bg-black/75 text-white p-0.5"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </div>
+          )}
+          {storyboardRefs.map((src, idx) => (
+            <div key={idx} className="relative w-11 h-8 rounded overflow-hidden border border-[#383A40]">
+              <img src={src} alt={`Ref ${idx + 1}`} className="w-full h-full object-cover" />
+              <button
+                type="button"
+                onClick={() => setStoryboardRefs((prev) => prev.filter((_, i) => i !== idx))}
+                className="absolute top-0 right-0 bg-black/75 text-white p-0.5"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {config.mode === 'video-edit' && selectedVideo && (
+        <div className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-[#1A1C20] border border-[#2D3036] text-[11px] text-[#C4C7C5]">
+          <span className="truncate">
+            Editing active clip · v{selectedVideo.version || 1} ({selectedVideo.dimensions})
+          </span>
+          <button
+            type="button"
+            onClick={() => setConfig((prev) => ({ ...prev, mode: 'text-to-video' }))}
+            className="text-[#8AB4F8] hover:underline shrink-0 ml-2"
+          >
+            New Shot
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <UnifiedStudioWorkspace
-      isOpen={isOpen}
-      onBackToStart={onClose}
-      moduleName="RaOne Cinema Studio"
-      workspaceTitle={
-        selectedVideo ? selectedVideo.prompt.slice(0, 56) : 'Untitled Workspace'
-      }
-      modelOptions={T2V_MODELS}
-      selectedModel={selectedModel}
-      onSelectModel={setSelectedModel}
-      prompt={prompt}
-      onPromptChange={setPrompt}
-      onSubmitPrompt={handleGenerate}
-      isGenerating={isLoading}
-      turns={turns}
-      onResetWorkspace={() => {
-        setSelectedVideo(null);
-        setTurns([]);
-        setPrompt('');
-        setRightTab('preview');
-        showToast('Started empty workspace.');
-      }}
-      rightTab={rightTab}
-      onRightTabChange={setRightTab}
-      routePath={selectedVideo ? `/cinema/${selectedVideo.id}` : '/'}
-      onRefresh={fetchVideoHistory}
-      onRemix={() => {
-        if (selectedVideo) {
-          setPrompt(selectedVideo.prompt);
-          setSelectedModel(selectedVideo.model);
-          setSelectedCamera(selectedVideo.cameraMotion);
-          showToast('Video parameters loaded for remix.');
-        } else {
-          setPrompt(RANDOM_VIDEO_PROMPTS[0]);
-          showToast('Sample prompt loaded.');
+    <>
+      <input
+        ref={quickImageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (!f) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            if (typeof ev.target?.result === 'string') {
+              setStartKeyframe(ev.target.result);
+              setConfig((prev) => ({ ...prev, mode: 'image-to-video' }));
+              showToast('Start keyframe attached.');
+            }
+          };
+          reader.readAsDataURL(f);
+        }}
+      />
+      <input
+        ref={quickVideoUploadRef}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleUploadSourceVideo(f);
+        }}
+      />
+
+      <UnifiedStudioWorkspace
+        isOpen={isOpen}
+        onBackToStart={onClose}
+        moduleName="RaOne Cinema Studio"
+        workspaceTitle={
+          selectedVideo ? selectedVideo.prompt.slice(0, 56) : 'Untitled Cinema Scene'
         }
-      }}
-      onShare={() => {
-        if (selectedVideo) {
-          navigator.clipboard?.writeText(selectedVideo.prompt).catch(() => {});
-          showToast('Video prompt copied.');
-        } else {
-          showToast('Workspace ready.');
+        modelOptions={T2V_MODELS}
+        selectedModel={config.model}
+        onSelectModel={(model) => setConfig((prev) => ({ ...prev, model }))}
+        prompt={prompt}
+        onPromptChange={setPrompt}
+        onSubmitPrompt={handleSubmitMainComposer}
+        isGenerating={isLoading || isPostBusy}
+        turns={turns}
+        onResetWorkspace={() => {
+          setSelectedVideo(null);
+          setTurns([]);
+          setPrompt('');
+          setStartKeyframe(null);
+          setEndKeyframe(null);
+          setStoryboardRefs([]);
+          setConfig(DEFAULT_CINEMA_CONFIG);
+          setRightTab('preview');
+          showToast('Started fresh cinema workspace.');
+        }}
+        rightTab={rightTab}
+        onRightTabChange={setRightTab}
+        routePath={selectedVideo ? `/cinema/${selectedVideo.id}` : '/cinema'}
+        onRefresh={fetchVideoHistory}
+        onRemix={() => {
+          if (selectedVideo) {
+            setPrompt(selectedVideo.prompt);
+            setConfig((prev) => ({
+              ...prev,
+              ...(selectedVideo.configSnapshot || {}),
+              mode: 'text-to-video',
+            }));
+            showToast('Shot configuration loaded for remix.');
+          } else {
+            setPrompt(RANDOM_VIDEO_PROMPTS[0]);
+            showToast('Sample director prompt loaded.');
+          }
+        }}
+        onShare={() => {
+          if (selectedVideo) {
+            handleShareVideo(selectedVideo.id);
+          } else {
+            showToast('Generate or upload a clip first.');
+          }
+        }}
+        onPublish={() => {
+          if (selectedVideo) {
+            downloadVideo(selectedVideo);
+          } else {
+            showToast('Generate or select a video first.');
+          }
+        }}
+        publishLabel="Download"
+        filesCount={videoFeed.length}
+        hasActiveItem={!!selectedVideo}
+        extraToolbarActions={
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => quickVideoUploadRef.current?.click()}
+              disabled={isPostBusy || isLoading}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1E1F20] hover:bg-[#28292C] border border-[#323438] text-xs font-medium text-[#E3E3E3] whitespace-nowrap disabled:opacity-50"
+              title="Upload your own video for AI Text-to-Video Editing"
+            >
+              <Upload className="w-3.5 h-3.5 text-[#8AB4F8]" />
+              <span className="hidden sm:inline">Upload Video</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setConfig((prev) => ({
+                  ...prev,
+                  mode: prev.mode === 'video-edit' ? 'text-to-video' : 'video-edit',
+                }))
+              }
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium whitespace-nowrap transition-colors ${
+                config.mode === 'video-edit'
+                  ? 'bg-[#2B2D30] border-[#8AB4F8]/50 text-white'
+                  : 'bg-[#1E1F20] hover:bg-[#28292C] border-[#323438] text-[#C4C7C5]'
+              }`}
+              title="Toggle Text-to-Video Edit Mode"
+            >
+              <Scissors className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Edit Mode</span>
+            </button>
+          </div>
         }
-      }}
-      onPublish={() => {
-        if (selectedVideo) {
-          downloadVideo(selectedVideo);
-        } else {
-          showToast('Generate or select a video first.');
+        composerInlineActions={
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => handleEnhancePrompt()}
+              disabled={!prompt.trim() || isEnhancing}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#252629] hover:bg-[#303236] border border-[#35373B] text-[11px] font-medium text-[#E3E3E3] disabled:opacity-45 whitespace-nowrap"
+              title="Expand even 2 words into a full director cinema prompt"
+            >
+              <Wand2 className="w-3 h-3 text-[#8AB4F8]" />
+              <span>{isEnhancing ? 'Enhancing...' : 'Enhance'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setPrompt(
+                  RANDOM_VIDEO_PROMPTS[Math.floor(Math.random() * RANDOM_VIDEO_PROMPTS.length)]
+                )
+              }
+              className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#2A2B2E]"
+              title="Load sample director prompt"
+            >
+              <Dices className="w-3.5 h-3.5" />
+            </button>
+
+            <span className="hidden sm:inline text-[11px] text-[#8E918F] pl-1 whitespace-nowrap">
+              {config.aspectRatio} · {config.duration}s
+            </span>
+          </div>
         }
-      }}
-      publishLabel="Download"
-      filesCount={videoFeed.length}
-      hasActiveItem={!!selectedVideo}
-      previewContent={previewContent}
-      codeContent={codeContent}
-      filesContent={filesContent}
-      editDrawerContent={editDrawerContent}
-      composerAddContent={composerAddContent}
-      emptyStateTitle="Empty Workspace"
-      emptyStateSubtitle="Describe a cinematic video scene on the left, or browse saved renders."
-      emptyStateActionLabel="Open Files"
-      onEmptyStateAction={() => setRightTab('files')}
-      toastMessage={toastMessage}
-    />
+        composerExtraFooter={composerExtraFooter}
+        previewContent={
+          selectedVideo ? (
+            <CinemaVideoStage
+              video={selectedVideo}
+              allVersions={versionTree}
+              onSelectVersion={(v) => setSelectedVideo(v)}
+              onApplyTextEdit={handleApplyTextEdit}
+              onApplyMotionBrush={handleApplyMotionBrush}
+              onExtendVideo={handleExtendVideo}
+              onTrimVideo={handleTrimVideo}
+              onInterpolate60Fps={() => handlePostProcess('interpolate', '60 FPS Optical Flow')}
+              onUpscale4k={() =>
+                handlePostProcess('upscale', '4K Super-Resolution', { targetTier: '4k' })
+              }
+              onAudioSync={handleAudioSync}
+              onGrabKeyframe={(dataUrl) => {
+                setStartKeyframe(dataUrl);
+                setConfig((prev) => ({ ...prev, mode: 'image-to-video' }));
+                showToast('Captured current frame as Start Keyframe!');
+              }}
+              onToggleFavorite={(id) => handleToggleFavorite(id)}
+              onShare={handleShareVideo}
+              onDownload={downloadVideo}
+              onDelete={handleDelete}
+              isBusy={isLoading || isPostBusy}
+            />
+          ) : null
+        }
+        codeContent={codeContent}
+        filesContent={filesContent}
+        editDrawerContent={
+          <CinemaConfigDrawer
+            config={config}
+            onChange={setConfig}
+            startKeyframe={startKeyframe}
+            endKeyframe={endKeyframe}
+            storyboardRefs={storyboardRefs}
+            onStartKeyframeChange={setStartKeyframe}
+            onEndKeyframeChange={setEndKeyframe}
+            onStoryboardRefsChange={setStoryboardRefs}
+            onUploadSourceVideo={handleUploadSourceVideo}
+            hasSelectedVideo={!!selectedVideo}
+          />
+        }
+        composerAddContent={composerAddContent}
+        emptyStateTitle="RaOne Cinema Studio"
+        emptyStateSubtitle="Type a short 2-word idea and click Enhance, generate any T2V/Keyframe shot, or upload a video for Text-to-Video editing."
+        emptyStateActionLabel="Open Clip Library"
+        onEmptyStateAction={() => setRightTab('files')}
+        toastMessage={toastMessage}
+        universalSettingsSection="cinema_studio"
+      />
+    </>
   );
 };

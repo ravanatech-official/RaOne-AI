@@ -60,6 +60,10 @@ import {
   streamLocalLlmFromBrowser,
   type LocalLlmConfig,
 } from '../utils/localLlmClient';
+import {
+  fetchUniversalSettings,
+  subscribeUniversalSettings,
+} from '../utils/settingsClient.ts';
 
 export interface StudioVersionSnapshot {
   version: number;
@@ -256,7 +260,40 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
         }
       })
       .catch(() => {});
+
+    fetchUniversalSettings()
+      .then((profile) => {
+        if (profile?.studioDefaults?.code) {
+          const { enhanceDepth: savedDepth, autoAuditOnBuild: _a, ...projDefaults } =
+            profile.studioDefaults.code;
+          setProjectConfig((prev) => ({ ...prev, ...projDefaults }));
+          if (savedDepth) setEnhanceDepth(savedDepth);
+        }
+      })
+      .catch(() => {});
+
+    return subscribeUniversalSettings((profile) => {
+      if (profile?.studioDefaults?.code) {
+        const { enhanceDepth: savedDepth, autoAuditOnBuild: _a, ...projDefaults } =
+          profile.studioDefaults.code;
+        setProjectConfig((prev) => ({ ...prev, ...projDefaults }));
+        if (savedDepth) setEnhanceDepth(savedDepth);
+      }
+    });
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || savedApps.length === 0) return;
+    const pending = (window as any).__RAONE_PENDING_ASSET__;
+    if (pending && pending.studio === 'code' && pending.rawId) {
+      const match = savedApps.find((a) => a.id === pending.rawId);
+      if (match) {
+        setBuiltApp(match);
+        setRightTab('preview');
+        delete (window as any).__RAONE_PENDING_ASSET__;
+      }
+    }
+  }, [isOpen, savedApps]);
 
   // Sync draftFiles when builtApp updates
   useEffect(() => {
@@ -1690,6 +1727,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       onEmptyStateAction={() => setRightTab('files')}
       toastMessage={toastMessage}
       modalOverlay={publishModal}
+      universalSettingsSection="code_studio"
     />
   );
 };

@@ -26,6 +26,8 @@ import {
   flushSseBuffer,
   extractSseTextDelta,
 } from './utils/sseParser.ts';
+import type { SettingsSectionId } from './types/settings.ts';
+import { subscribeUniversalSettings } from './utils/settingsClient.ts';
 
 const SettingsModal = React.lazy(() =>
   import('./components/SettingsModal.tsx').then((m) => ({ default: m.SettingsModal }))
@@ -56,6 +58,9 @@ const DocumentAIStudio = React.lazy(() =>
 );
 const LibraryWindow = React.lazy(() =>
   import('./components/LibraryWindow.tsx').then((m) => ({ default: m.LibraryWindow }))
+);
+const PluginsWindow = React.lazy(() =>
+  import('./components/PluginsWindow.tsx').then((m) => ({ default: m.PluginsWindow }))
 );
 
 function getConversationsStorageKey(uid?: string | null): string {
@@ -115,7 +120,9 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isOutputsOpen, setIsOutputsOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSectionId | undefined>('general');
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState<boolean>(false);
+  const hasAppliedStartupWorkspaceRef = useRef<boolean>(false);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-4-hydrogen');
   const [activeProvider, setActiveProvider] = useState<'auto' | 'gemini' | 'groq' | 'local'>('auto');
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -134,6 +141,8 @@ export default function App() {
   const [isAudioStudioOpen, setIsAudioStudioOpen] = useState<boolean>(false);
   const [isDocumentStudioOpen, setIsDocumentStudioOpen] = useState<boolean>(false);
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
+  const [isPluginsOpen, setIsPluginsOpen] = useState<boolean>(false);
+  const [openPluginsCustomBuilder, setOpenPluginsCustomBuilder] = useState<boolean>(false);
   const [currentPlan, setCurrentPlan] = useState<'free' | 'plus' | 'ultimate'>('free');
   const [searchTrigger, setSearchTrigger] = useState<number>(0);
   const [inputFocusTrigger, setInputFocusTrigger] = useState<number>(0);
@@ -254,6 +263,19 @@ export default function App() {
         if (data?.selectedModel && typeof data.selectedModel === 'string') {
           setSelectedModel(data.selectedModel);
         }
+        if (data?.dataControls?.temporaryChatDefault === true && tenantCached.length === 0) {
+          setIsTemporaryChat(true);
+        }
+        if (!hasAppliedStartupWorkspaceRef.current && data?.defaultWorkspace) {
+          hasAppliedStartupWorkspaceRef.current = true;
+          if (data.defaultWorkspace === 'library') setIsLibraryOpen(true);
+          else if (data.defaultWorkspace === 'plugins') setIsPluginsOpen(true);
+          else if (data.defaultWorkspace === 'code_studio') setIsGoogleAIStudioOpen(true);
+          else if (data.defaultWorkspace === 'vision_studio') setIsVisionStudioOpen(true);
+          else if (data.defaultWorkspace === 'cinema_studio') setIsMotionStudioOpen(true);
+          else if (data.defaultWorkspace === 'music_studio') setIsAudioStudioOpen(true);
+          else if (data.defaultWorkspace === 'document_studio') setIsDocumentStudioOpen(true);
+        }
       })
       .catch((err) => console.warn('Settings hydration note:', err));
 
@@ -302,6 +324,28 @@ export default function App() {
       setCurrentUser(user);
     });
     return () => unsubscribe();
+  }, []);
+
+  // Universal Settings jump events & live broadcast synchronization
+  useEffect(() => {
+    const onOpenSettingsEvent = (e: Event) => {
+      const detail = (e as CustomEvent<{ section?: SettingsSectionId }>).detail;
+      setSettingsInitialSection(detail?.section || 'general');
+      setIsSettingsOpen(true);
+    };
+    window.addEventListener('raone:open-settings', onOpenSettingsEvent);
+    const unsubSettings = subscribeUniversalSettings((next) => {
+      if (next?.activeProvider && ['auto', 'gemini', 'groq', 'local'].includes(next.activeProvider)) {
+        setActiveProvider(next.activeProvider);
+      }
+      if (next?.selectedModel && typeof next.selectedModel === 'string') {
+        setSelectedModel(next.selectedModel);
+      }
+    });
+    return () => {
+      window.removeEventListener('raone:open-settings', onOpenSettingsEvent);
+      unsubSettings();
+    };
   }, []);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -917,6 +961,7 @@ export default function App() {
   // New Chat action (Exact ChatGPT behavior)
   const handleNewChat = () => {
     setIsLibraryOpen(false);
+    setIsPluginsOpen(false);
     if (isTemporaryChat) {
       setTemporaryMessages([]);
     } else {
@@ -977,6 +1022,7 @@ export default function App() {
         activeConversationId={activeId}
         onSelectConversation={(id) => {
           setIsLibraryOpen(false);
+          setIsPluginsOpen(false);
           if (isTemporaryChat) {
             setIsTemporaryChat(false);
             setTemporaryMessages([]);
@@ -996,7 +1042,10 @@ export default function App() {
           }).catch(() => {});
         }}
         onPinConversation={handlePinConversation}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsInitialSection('general');
+          setIsSettingsOpen(true);
+        }}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
         currentUser={currentUser}
@@ -1015,19 +1064,38 @@ export default function App() {
         onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
         onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
         isLibraryOpen={isLibraryOpen}
-        onOpenLibrary={() => setIsLibraryOpen(true)}
+        onOpenLibrary={() => {
+          setIsPluginsOpen(false);
+          setIsLibraryOpen(true);
+        }}
+        isPluginsOpen={isPluginsOpen}
+        onOpenPlugins={() => {
+          setIsLibraryOpen(false);
+          setOpenPluginsCustomBuilder(false);
+          setIsPluginsOpen(true);
+        }}
         projects={projects}
         activeProjectId={activeProjectId}
         onSelectProject={(id) => {
           setIsLibraryOpen(false);
+          setIsPluginsOpen(false);
           setActiveProjectId(id);
         }}
         onCreateProject={handleCreateProject}
         onDeleteProject={handleDeleteProject}
       />
 
-      {/* Main Chat Workspace or Library Window */}
-      {isLibraryOpen ? (
+      {/* Main Chat Workspace, Library Window, or Plugins Window */}
+      {isPluginsOpen ? (
+        <Suspense fallback={null}>
+          <PluginsWindow
+            isSidebarOpen={isSidebarOpen}
+            onOpenSidebar={() => setIsSidebarOpen(true)}
+            initialOpenCustomBuilder={openPluginsCustomBuilder}
+            onConsumeInitialBuilder={() => setOpenPluginsCustomBuilder(false)}
+          />
+        </Suspense>
+      ) : isLibraryOpen ? (
         <Suspense fallback={null}>
           <LibraryWindow
             isSidebarOpen={isSidebarOpen}
@@ -1055,7 +1123,10 @@ export default function App() {
           onStopSpeaking={voice.stopSpeaking}
           onOpenVoice={() => setIsVoiceModalOpen(true)}
           isContinuousWakeListening={voice.isContinuousWakeListening}
-          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsInitialSection('general');
+            setIsSettingsOpen(true);
+          }}
           isTemporaryChat={isTemporaryChat}
           onToggleTemporaryChat={handleToggleTemporaryChat}
           currentPlan={currentPlan}
@@ -1110,7 +1181,15 @@ export default function App() {
                 if (tab) setStudioHubTab(tab);
                 setIsStudioHubOpen(true);
               }}
-              onOpenLibrary={() => setIsLibraryOpen(true)}
+              onOpenLibrary={() => {
+                setIsPluginsOpen(false);
+                setIsLibraryOpen(true);
+              }}
+              onOpenPlugins={(openCustom) => {
+                setIsLibraryOpen(false);
+                setOpenPluginsCustomBuilder(Boolean(openCustom));
+                setIsPluginsOpen(true);
+              }}
               isCenterState={true}
               inputFocusTrigger={inputFocusTrigger}
               isTemporary={isTemporaryChat}
@@ -1186,7 +1265,15 @@ export default function App() {
                 if (tab) setStudioHubTab(tab);
                 setIsStudioHubOpen(true);
               }}
-              onOpenLibrary={() => setIsLibraryOpen(true)}
+              onOpenLibrary={() => {
+                setIsPluginsOpen(false);
+                setIsLibraryOpen(true);
+              }}
+              onOpenPlugins={(openCustom) => {
+                setIsLibraryOpen(false);
+                setOpenPluginsCustomBuilder(Boolean(openCustom));
+                setIsPluginsOpen(true);
+              }}
               inputFocusTrigger={inputFocusTrigger}
               isTemporary={isTemporaryChat}
             />
@@ -1204,12 +1291,13 @@ export default function App() {
         }
       />
 
-      {/* Settings Modal (100% ChatGPT Settings Center) */}
+      {/* RaOne Universal Settings Center */}
       <Suspense fallback={null}>
         {isSettingsOpen && (
           <SettingsModal
             isOpen={isSettingsOpen}
             onClose={() => setIsSettingsOpen(false)}
+            initialSection={settingsInitialSection}
             uid={activeUid}
             selectedModel={selectedModel}
             onSelectModel={setSelectedModel}
@@ -1225,6 +1313,15 @@ export default function App() {
             onClearAllChats={() => {
               setConversations([]);
               setActiveId('new');
+            }}
+            onOpenLibrary={() => {
+              setIsPluginsOpen(false);
+              setIsLibraryOpen(true);
+            }}
+            onOpenPlugins={() => {
+              setIsLibraryOpen(false);
+              setOpenPluginsCustomBuilder(false);
+              setIsPluginsOpen(true);
             }}
           />
         )}

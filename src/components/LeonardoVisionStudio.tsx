@@ -47,6 +47,11 @@ import {
   BEGINNER_TEMPLATES,
   DEFAULT_DARKROOM,
 } from '../data/visionPresets.ts';
+import {
+  fetchUniversalSettings,
+  subscribeUniversalSettings,
+} from '../utils/settingsClient.ts';
+import type { VisionStudioDefaults } from '../types/settings.ts';
 
 interface LeonardoVisionStudioProps {
   isOpen: boolean;
@@ -151,10 +156,50 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
   };
 
   useEffect(() => {
-    if (isOpen) {
-      fetchHistory();
-    }
+    if (!isOpen) return;
+    fetchHistory();
+
+    const applyVisionDefaults = (v?: VisionStudioDefaults) => {
+      if (!v) return;
+      if (v.model) setSelectedModel(v.model);
+      if (v.style) setSelectedStyle(v.style);
+      if (v.aspectRatio) setSelectedAspect(v.aspectRatio);
+      if (v.resolution) setResolution(v.resolution);
+      if (typeof v.imageCount === 'number') setImageCount(v.imageCount);
+      if (typeof v.cfgScale === 'number') setCfgScale(v.cfgScale);
+      if (typeof v.steps === 'number') setSteps(v.steps);
+      if (typeof v.photoReal === 'boolean') setPhotoReal(v.photoReal);
+      if (typeof v.alchemy === 'boolean') setAlchemy(v.alchemy);
+      if (typeof v.promptMagic === 'boolean') setPromptMagic(v.promptMagic);
+      if (typeof v.googleSearchGrounding === 'boolean') {
+        setGoogleSearchGrounding(v.googleSearchGrounding);
+      }
+      if (v.enhancerMode) setEnhancerMode(v.enhancerMode);
+      if (typeof v.negativePrompt === 'string') setNegativePrompt(v.negativePrompt);
+      if (v.exportFormat) setExportFormat(v.exportFormat);
+    };
+
+    fetchUniversalSettings()
+      .then((profile) => applyVisionDefaults(profile?.studioDefaults?.vision))
+      .catch(() => {});
+
+    return subscribeUniversalSettings((profile) => {
+      applyVisionDefaults(profile?.studioDefaults?.vision);
+    });
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || galleryItems.length === 0) return;
+    const pending = (window as any).__RAONE_PENDING_ASSET__;
+    if (pending && pending.studio === 'vision' && pending.rawId) {
+      const match = galleryItems.find((i) => i.id === pending.rawId);
+      if (match) {
+        setSelectedImage(match);
+        setRightTab('preview');
+        delete (window as any).__RAONE_PENDING_ASSET__;
+      }
+    }
+  }, [isOpen, galleryItems]);
 
   // Active source image for Text-to-Image editing (either explicitly uploaded photo or selected generated image)
   const activeEditBaseUrl = uploadedSourceImage || selectedImage?.imageUrl || null;
@@ -1552,6 +1597,7 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
       emptyStateActionLabel="Open Files"
       onEmptyStateAction={() => setRightTab('files')}
       toastMessage={toastMessage}
+      universalSettingsSection="vision_studio"
     />
   );
 };

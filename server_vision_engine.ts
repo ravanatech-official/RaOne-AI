@@ -7,6 +7,11 @@ import { callGroqChat } from './server_groq_service.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import {
+  deleteAssetFromCloud,
+  ensureAssetOnLocalDisk,
+  syncAssetBufferToCloud,
+} from './server_cloud_persistence.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -156,6 +161,26 @@ export function resolveTenantVisionAssetPath(tenantId: string, filename: string)
   return resolved;
 }
 
+export async function ensureTenantVisionAssetPath(tenantId: string, filename: string): Promise<string | null> {
+  const localPath = resolveTenantVisionAssetPath(tenantId, filename);
+  return ensureAssetOnLocalDisk(tenantId, 'vision_assets', path.basename(String(filename || '')), localPath);
+}
+
+export async function deleteTenantVisionAssets(
+  tenantId: string,
+  filenames: Array<string | undefined | null>
+): Promise<void> {
+  for (const name of filenames) {
+    if (!name) continue;
+    const clean = path.basename(String(name).trim());
+    const p = resolveTenantVisionAssetPath(tenantId, clean);
+    if (p && fs.existsSync(p)) {
+      await fs.promises.unlink(p).catch(() => {});
+    }
+    await deleteAssetFromCloud(tenantId, 'vision_assets', clean);
+  }
+}
+
 export async function saveTenantVisionAsset(
   tenantId: string,
   imageId: string,
@@ -167,12 +192,14 @@ export async function saveTenantVisionAsset(
     : mimeType.includes('webp')
     ? 'webp'
     : 'png';
+  const resolvedMime = ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
   const cleanId = imageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
   const assetFilename = `${cleanId}.${ext}`;
   const dir = getTenantVisionAssetsDir(tenantId);
   const filePath = path.join(dir, assetFilename);
   const buffer = Buffer.from(base64Data, 'base64');
   await fs.promises.writeFile(filePath, buffer);
+  await syncAssetBufferToCloud(tenantId, 'vision_assets', assetFilename, buffer, resolvedMime);
   return {
     assetFilename,
     imageUrl: `/api/vision/assets/${assetFilename}`,
@@ -202,10 +229,10 @@ export async function resolveImageInputToInlinePart(
     return { mimeType: parsedData.mimeType, data: parsedData.base64 };
   }
 
-  // 2. Local tenant asset URL (/api/vision/assets/<filename>)
+  // 2. Local tenant asset URL (/api/vision/assets/<filename>) with GCS hydration
   const assetMatch = trimmed.match(/^\/api\/vision\/assets\/([a-zA-Z0-9._-]+)$/);
   if (assetMatch) {
-    const filePath = resolveTenantVisionAssetPath(tenantId, assetMatch[1]);
+    const filePath = await ensureTenantVisionAssetPath(tenantId, assetMatch[1]);
     if (filePath && fs.existsSync(filePath)) {
       const buf = await fs.promises.readFile(filePath);
       const ext = path.extname(filePath).toLowerCase();

@@ -3,6 +3,12 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { encryptSecret, decryptSecret } from './server_security.ts';
+import {
+  isCloudFirestoreActive,
+  purgeTenantCloudData,
+  readCloudCollection,
+  writeCloudCollection,
+} from './server_cloud_persistence.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,13 +55,42 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
   await fs.promises.rename(tmpPath, filePath);
 }
 
+async function readCollectionData<T>(
+  scope: 'tenant' | 'shared',
+  scopeId: string,
+  collectionName: string,
+  filePath: string,
+  fallback: T
+): Promise<T> {
+  if (isCloudFirestoreActive()) {
+    const cloud = await readCloudCollection<T>(scope, scopeId, collectionName);
+    if (cloud.found) {
+      return cloud.data;
+    }
+  }
+  return readJsonFile<T>(filePath, fallback);
+}
+
+async function writeCollectionData(
+  scope: 'tenant' | 'shared',
+  scopeId: string,
+  collectionName: string,
+  filePath: string,
+  data: unknown
+): Promise<void> {
+  if (isCloudFirestoreActive()) {
+    await writeCloudCollection(scope, scopeId, collectionName, data);
+  }
+  await atomicWriteJson(filePath, data);
+}
+
 export async function readTenantCollection<T>(
   tenantId: string,
   collectionName: string,
   fallback: T
 ): Promise<T> {
   const filePath = getTenantFile(tenantId, `${collectionName}.json`);
-  return readJsonFile<T>(filePath, fallback);
+  return readCollectionData<T>('tenant', tenantId, collectionName, filePath, fallback);
 }
 
 export async function mutateTenantCollection<T>(
@@ -66,9 +101,9 @@ export async function mutateTenantCollection<T>(
 ): Promise<T> {
   const filePath = getTenantFile(tenantId, `${collectionName}.json`);
   return withFileLock(filePath, async () => {
-    const current = await readJsonFile<T>(filePath, fallback);
+    const current = await readCollectionData<T>('tenant', tenantId, collectionName, filePath, fallback);
     const updated = await mutator(current);
-    await atomicWriteJson(filePath, updated);
+    await writeCollectionData('tenant', tenantId, collectionName, filePath, updated);
     return updated;
   });
 }
@@ -84,7 +119,7 @@ function getSharedFile(filename: string): string {
 
 export async function readSharedCollection<T>(collectionName: string, fallback: T): Promise<T> {
   const filePath = getSharedFile(`${collectionName}.json`);
-  return readJsonFile<T>(filePath, fallback);
+  return readCollectionData<T>('shared', '__shared__', collectionName, filePath, fallback);
 }
 
 export async function mutateSharedCollection<T>(
@@ -94,9 +129,9 @@ export async function mutateSharedCollection<T>(
 ): Promise<T> {
   const filePath = getSharedFile(`${collectionName}.json`);
   return withFileLock(filePath, async () => {
-    const current = await readJsonFile<T>(filePath, fallback);
+    const current = await readCollectionData<T>('shared', '__shared__', collectionName, filePath, fallback);
     const updated = await mutator(current);
-    await atomicWriteJson(filePath, updated);
+    await writeCollectionData('shared', '__shared__', collectionName, filePath, updated);
     return updated;
   });
 }
@@ -215,7 +250,7 @@ export async function getTenantCreditBalance(tenantId: string): Promise<{
 }> {
   const filePath = getTenantFile(tenantId, 'credit_ledger.json');
   return withFileLock(filePath, async () => {
-    let entries = await readJsonFile<CreditLedgerEntry[]>(filePath, []);
+    let entries = await readCollectionData<CreditLedgerEntry[]>('tenant', tenantId, 'credit_ledger', filePath, []);
     if (entries.length === 0) {
       const plan = await getTenantPlan(tenantId);
       entries = [
@@ -228,7 +263,7 @@ export async function getTenantCreditBalance(tenantId: string): Promise<{
           createdAt: new Date().toISOString(),
         },
       ];
-      await atomicWriteJson(filePath, entries);
+      await writeCollectionData('tenant', tenantId, 'credit_ledger', filePath, entries);
     }
     const balance = entries.reduce((sum, e) => sum + e.amount, 0);
     return { balance, entries };
@@ -247,7 +282,7 @@ export async function reserveCredits(
   }
   const filePath = getTenantFile(tenantId, 'credit_ledger.json');
   return withFileLock(filePath, async () => {
-    const entries = await readJsonFile<CreditLedgerEntry[]>(filePath, []);
+    const entries = await readCollectionData<CreditLedgerEntry[]>('tenant', tenantId, 'credit_ledger', filePath, []);
     if (entries.length === 0) {
       const plan = await getTenantPlan(tenantId);
       entries.push({
@@ -276,7 +311,7 @@ export async function reserveCredits(
       referenceId,
       createdAt: new Date().toISOString(),
     });
-    await atomicWriteJson(filePath, entries);
+    await writeCollectionData('tenant', tenantId, 'credit_ledger', filePath, entries);
     return { ok: true, balance: currentBalance - cost };
   });
 }
@@ -293,7 +328,7 @@ export async function refundCredits(
   }
   const filePath = getTenantFile(tenantId, 'credit_ledger.json');
   return withFileLock(filePath, async () => {
-    const entries = await readJsonFile<CreditLedgerEntry[]>(filePath, []);
+    const entries = await readCollectionData<CreditLedgerEntry[]>('tenant', tenantId, 'credit_ledger', filePath, []);
     if (entries.some((e) => e.referenceId === referenceId && e.kind === 'refund')) {
       return entries.reduce((s, e) => s + e.amount, 0);
     }
@@ -305,7 +340,7 @@ export async function refundCredits(
       referenceId,
       createdAt: new Date().toISOString(),
     });
-    await atomicWriteJson(filePath, entries);
+    await writeCollectionData('tenant', tenantId, 'credit_ledger', filePath, entries);
     return entries.reduce((s, e) => s + e.amount, 0);
   });
 }
@@ -377,5 +412,6 @@ export async function purgeAllTenantData(tenantId: string): Promise<void> {
     if (fs.existsSync(dir)) {
       await fs.promises.rm(dir, { recursive: true, force: true });
     }
+    await purgeTenantCloudData(tenantId);
   });
 }

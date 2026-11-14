@@ -12,14 +12,11 @@ import {
 } from '../utils/localLlmClient';
 import {
   X,
-  User,
   Settings,
   Volume2,
   Sparkles,
   Check,
-  Key,
   ShieldCheck,
-  Lock,
   Database,
   Sliders,
   CreditCard,
@@ -33,16 +30,36 @@ import {
   Eye,
   EyeOff,
   Zap,
-  Globe,
   FileText,
   Cpu,
   RefreshCw,
   Square,
+  Search,
+  Code2,
+  Image as ImageIcon,
+  Film,
+  Music,
+  HardDrive,
+  PlugZap,
+  Activity,
 } from 'lucide-react';
+import {
+  DEFAULT_UNIVERSAL_SETTINGS,
+  type SettingsSectionId,
+  type UniversalDiagnosticsSnapshot,
+  type UniversalSettingsProfile,
+} from '../types/settings.ts';
+import {
+  fetchUniversalSettings,
+  resetUniversalSection,
+  saveUniversalSettingsPatch,
+} from '../utils/settingsClient.ts';
+import { SettingsStudioPanels } from './SettingsStudioPanels.tsx';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialSection?: SettingsSectionId;
   uid?: string | null;
   isContinuousWakeListening: boolean;
   onToggleContinuousWake: () => void;
@@ -53,11 +70,60 @@ interface SettingsModalProps {
   currentPlan?: 'free' | 'plus' | 'ultimate';
   onOpenUpgrade?: () => void;
   onClearAllChats?: () => void;
+  onOpenPlugins?: () => void;
+  onOpenLibrary?: () => void;
 }
+
+type NavGroupItem = {
+  id: SettingsSectionId;
+  label: string;
+  keywords: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badge?: string;
+};
+
+const NAV_GROUPS: Array<{ title: string; items: NavGroupItem[] }> = [
+  {
+    title: 'Core Platform',
+    items: [
+      { id: 'general', label: 'General & Workspace', keywords: 'theme language workspace density code archived', icon: Sliders },
+      { id: 'personalization', label: 'Personalization & Memory', keywords: 'custom instructions memory bilingual sinhala', icon: Sparkles },
+      { id: 'models', label: 'AI Models, Local & Keys', keywords: 'gemini groq openai anthropic deepseek comet llama gguf byok provider failover enhancer', icon: Cpu },
+      { id: 'speech', label: 'Voice & Speech', keywords: 'voice speech wake word playback reduced motion', icon: Volume2 },
+    ],
+  },
+  {
+    title: '5 Studio Modules',
+    items: [
+      { id: 'code_studio', label: 'Code Studio Defaults', keywords: 'react nextjs express database docker tests deploy audit typescript', icon: Code2 },
+      { id: 'vision_studio', label: 'Vision Studio Defaults', keywords: 'image photoreal alchemy aspect resolution cfg negative prompt', icon: ImageIcon },
+      { id: 'cinema_studio', label: 'Cinema Studio Defaults', keywords: 'video veo sora kling fps 4k camera lens gimbal film stock', icon: Film },
+      { id: 'music_studio', label: 'Music Studio Defaults', keywords: 'lyria suno vocal sinhala bpm mastering lufs wav mp3 cover', icon: Music },
+      { id: 'document_studio', label: 'Document Studio Defaults', keywords: 'report slides prd spreadsheet grounding author tone', icon: FileText },
+    ],
+  },
+  {
+    title: '2 Libraries',
+    items: [
+      { id: 'files_library', label: 'Files Library Governance', keywords: 'grid list sort trash retention zip ocr vault', icon: HardDrive },
+      { id: 'plugins_library', label: 'Plugins Library Policies', keywords: 'ssrf webhook sync byok connector vault', icon: PlugZap },
+    ],
+  },
+  {
+    title: 'Trust & System',
+    items: [
+      { id: 'datacontrols', label: 'Data & Privacy Controls', keywords: 'training history temporary chat export delete account', icon: Database },
+      { id: 'security', label: 'Security & Policies', keywords: 'mfa session privacy terms safety policy aes256', icon: ShieldCheck },
+      { id: 'account', label: 'Account & Subscription', keywords: 'plan billing upgrade credits', icon: CreditCard },
+      { id: 'diagnostics', label: 'Diagnostics & Backup', keywords: 'ffmpeg ffprobe llama server storage footprint json export import factory reset', icon: Activity },
+    ],
+  },
+];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
+  initialSection = 'general',
   uid,
   isContinuousWakeListening,
   onToggleContinuousWake,
@@ -68,10 +134,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   currentPlan = 'free',
   onOpenUpgrade,
   onClearAllChats,
+  onOpenPlugins,
+  onOpenLibrary,
 }) => {
-  const [activeTab, setActiveTab] = useState<
-    'general' | 'personalization' | 'speech' | 'datacontrols' | 'security' | 'connectedapps' | 'account'
-  >('general');
+  const [activeTab, setActiveTab] = useState<SettingsSectionId>(initialSection);
+  const [sectionSearch, setSectionSearch] = useState<string>('');
+  const [universalProfile, setUniversalProfile] = useState<UniversalSettingsProfile>(DEFAULT_UNIVERSAL_SETTINGS);
+  const [diagnostics, setDiagnostics] = useState<UniversalDiagnosticsSnapshot | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState<boolean>(false);
 
   // General Settings State
   const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('dark');
@@ -82,19 +152,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Personalization State
   const [aboutUser, setAboutUser] = useState<string>(
-    'Software Engineer & Builder, prefers precise, complete, and high-level architectural solutions.'
+    DEFAULT_UNIVERSAL_SETTINGS.customInstructions.aboutUser
   );
   const [responseStyle, setResponseStyle] = useState<string>(
-    'Address me with high clarity and formidable capability. Support both Sinhala and English fluently. Sign responses with RaOne AI by RavanaTec — Think. Create. Act.'
+    DEFAULT_UNIVERSAL_SETTINGS.customInstructions.responseStyle
   );
   const [customInstructionsEnabled, setCustomInstructionsEnabled] = useState<boolean>(true);
   const [memoryEnabled, setMemoryEnabled] = useState<boolean>(true);
-  const [memories, setMemories] = useState<string[]>([
-    'Lives in Sri Lanka and prefers Colombo/IST timezone',
-    'Prefers clean React 19 + TypeScript + Tailwind CSS code',
-    'Communicates bilingually in Sinhala and English (Singlish supported)',
-    'Prefers Dark Mode UI with high contrast',
-  ]);
+  const [memories, setMemories] = useState<string[]>(DEFAULT_UNIVERSAL_SETTINGS.memory.items);
   const [newMemoryInput, setNewMemoryInput] = useState<string>('');
   const [isMemoryManagerOpen, setIsMemoryManagerOpen] = useState<boolean>(false);
 
@@ -104,7 +169,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isPlayingSample, setIsPlayingSample] = useState<boolean>(false);
 
   // Data Controls State
-  const [historyAndTraining, setHistoryAndTraining] = useState<boolean>(true);
+  const [historyAndTraining, setHistoryAndTraining] = useState<boolean>(false);
   const [isConfirmDeleteAccountOpen, setIsConfirmDeleteAccountOpen] = useState<boolean>(false);
 
   // Security State (Read from actual Firebase enrolled multi-factor state)
@@ -176,6 +241,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
+  const applyProfileToState = (data: UniversalSettingsProfile) => {
+    setUniversalProfile(data);
+    if (data.theme) setTheme(data.theme);
+    if (data.language) setLanguage(data.language);
+    if (typeof data.alwaysShowCode === 'boolean') setAlwaysShowCode(data.alwaysShowCode);
+    if (data.activeProvider && ['auto', 'gemini', 'groq', 'local'].includes(data.activeProvider)) {
+      setProviderMode(data.activeProvider);
+    }
+    if (data.customInstructions) {
+      setAboutUser(data.customInstructions.aboutUser || '');
+      setResponseStyle(data.customInstructions.responseStyle || '');
+      setCustomInstructionsEnabled(data.customInstructions.enabled ?? true);
+    }
+    if (data.memory) {
+      setMemoryEnabled(data.memory.enabled ?? true);
+      if (Array.isArray(data.memory.items)) setMemories(data.memory.items);
+    }
+    if (data.voice) {
+      if (data.voice.selectedVoice) setSelectedVoice(data.voice.selectedVoice);
+      if (data.voice.speechLanguage) setSpeechLanguage(data.voice.speechLanguage);
+    }
+    if (data.dataControls) {
+      setHistoryAndTraining(data.dataControls.historyAndTraining ?? false);
+    }
+  };
+
+  const loadDiagnostics = async () => {
+    setDiagnosticsLoading(true);
+    try {
+      const res = await fetch(resolveApiUrl('/api/settings/diagnostics'));
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success && data.diagnostics) {
+        setDiagnostics(data.diagnostics);
+      }
+    } catch {
+      // ignore transient error
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && initialSection) {
+      setActiveTab(initialSection);
+    }
+  }, [isOpen, initialSection]);
+
+  useEffect(() => {
+    if (isOpen && (activeTab === 'diagnostics' || activeTab === 'plugins_library')) {
+      void loadDiagnostics();
+    }
+  }, [isOpen, activeTab]);
+
   // Fetch settings & keys from Backend API on open
   useEffect(() => {
     if (isOpen) {
@@ -198,33 +316,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setMfaFactorCount(0);
       }
 
-      fetch('/api/user/settings')
-        .then((res) => (res.ok ? res.json() : null))
+      fetchUniversalSettings(true)
         .then((data) => {
-          if (data) {
-            if (data.theme) setTheme(data.theme);
-            if (data.language) setLanguage(data.language);
-            if (typeof data.alwaysShowCode === 'boolean') setAlwaysShowCode(data.alwaysShowCode);
-            if (data.activeProvider && ['auto', 'gemini', 'groq', 'local'].includes(data.activeProvider)) {
-              setProviderMode(data.activeProvider);
-            }
-            if (data.customInstructions) {
-              setAboutUser(data.customInstructions.aboutUser || '');
-              setResponseStyle(data.customInstructions.responseStyle || '');
-              setCustomInstructionsEnabled(data.customInstructions.enabled ?? true);
-            }
-            if (data.memory) {
-              setMemoryEnabled(data.memory.enabled ?? true);
-              if (Array.isArray(data.memory.items)) setMemories(data.memory.items);
-            }
-            if (data.voice) {
-              if (data.voice.selectedVoice) setSelectedVoice(data.voice.selectedVoice);
-              if (data.voice.speechLanguage) setSpeechLanguage(data.voice.speechLanguage);
-            }
-            if (data.dataControls) {
-              setHistoryAndTraining(data.dataControls.historyAndTraining ?? true);
-            }
-          }
+          applyProfileToState(data);
         })
         .catch(() => {});
 
@@ -475,16 +569,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  // Save Settings to Backend API
+  // Save Settings to Backend API (deep-merge + broadcast to all 5 studios & 2 libraries)
   const handleSave = async () => {
     try {
       const payload = {
+        ...universalProfile,
         theme,
         language,
         alwaysShowCode,
         activeProvider: providerMode,
         selectedModel,
         customInstructions: {
+          ...universalProfile.customInstructions,
           aboutUser,
           responseStyle,
           enabled: customInstructionsEnabled,
@@ -494,26 +590,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           items: memories,
         },
         voice: {
+          ...universalProfile.voice,
           selectedVoice,
           speechLanguage,
           wakeWordEnabled: isContinuousWakeListening,
         },
         dataControls: {
+          ...universalProfile.dataControls,
           historyAndTraining,
         },
       };
 
-      const settingsRes = await fetch('/api/user/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!settingsRes.ok) {
-        const errData = await settingsRes.json().catch(() => ({}));
-        setStatusNotice(errData?.error || 'Could not save settings.');
+      const saveRes = await saveUniversalSettingsPatch(payload);
+      if (!saveRes.ok || !saveRes.settings) {
+        setStatusNotice(saveRes.error || 'Could not save settings.');
         setTimeout(() => setStatusNotice(null), 3500);
         return;
       }
+      applyProfileToState(saveRes.settings);
 
       if (onSelectProvider) onSelectProvider(providerMode);
 
@@ -583,9 +677,74 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setTimeout(() => {
         setSavedSuccess(false);
         onClose();
-      }, 800);
+      }, 700);
     } catch (err: any) {
       setStatusNotice(err?.message || 'Could not save settings.');
+      setTimeout(() => setStatusNotice(null), 3500);
+    }
+  };
+
+  const handleResetSection = async (section: SettingsSectionId | 'all') => {
+    const res = await resetUniversalSection(section);
+    if (res.ok && res.settings) {
+      applyProfileToState(res.settings);
+      setStatusNotice(
+        section === 'all'
+          ? 'All workspace settings restored to factory defaults.'
+          : `Section "${section.replace('_', ' ')}" reset to defaults.`
+      );
+      setTimeout(() => setStatusNotice(null), 3000);
+    } else {
+      setStatusNotice(res.error || 'Could not reset section.');
+      setTimeout(() => setStatusNotice(null), 3000);
+    }
+  };
+
+  const handleExportProfile = async () => {
+    try {
+      const res = await fetch(resolveApiUrl('/api/user/settings/profile-export'));
+      if (!res.ok) {
+        setStatusNotice('Failed to export universal settings profile.');
+        setTimeout(() => setStatusNotice(null), 3000);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'raone-universal-settings.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setStatusNotice('Portable settings profile exported (secrets omitted).');
+      setTimeout(() => setStatusNotice(null), 3000);
+    } catch {
+      setStatusNotice('Could not export settings JSON.');
+      setTimeout(() => setStatusNotice(null), 3000);
+    }
+  };
+
+  const handleImportProfileFile = async (file: File) => {
+    try {
+      const rawText = await file.text();
+      const parsed = JSON.parse(rawText);
+      const res = await fetch(resolveApiUrl('/api/user/settings/profile-import'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(parsed),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.settings) {
+        setStatusNotice(data?.error || 'Invalid Universal Settings JSON file.');
+        setTimeout(() => setStatusNotice(null), 3500);
+        return;
+      }
+      applyProfileToState(data.settings);
+      setStatusNotice('Universal settings profile imported & synced across all studios.');
+      setTimeout(() => setStatusNotice(null), 3500);
+    } catch {
+      setStatusNotice('Failed to parse settings JSON file.');
       setTimeout(() => setStatusNotice(null), 3500);
     }
   };
@@ -704,18 +863,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     fetch('/api/user/settings/memory/clear', { method: 'POST' }).catch(() => {});
   };
 
+  const normalizedSearch = sectionSearch.trim().toLowerCase();
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-150 select-none">
-      <div className="relative w-full max-w-3xl bg-[#171717] border border-[#2d2d2d] rounded-2xl sm:rounded-3xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header */}
-        <div className="h-14 px-6 border-b border-[#262626] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2.5">
-            <Settings className="w-5 h-5 text-white" />
-            <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">Settings</h2>
+    <div className="fixed inset-0 z-[140] flex items-center justify-center p-2 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-150 select-none">
+      <div className="relative w-full max-w-5xl bg-[#161719] border border-[#252629] rounded-2xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col max-h-[92vh]">
+        {/* Header with Global Search */}
+        <div className="h-14 px-5 border-b border-[#252629] flex items-center justify-between gap-4 shrink-0 bg-[#131416]">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <Settings className="w-4 h-4 text-[#8AB4F8]" />
+            <div>
+              <h2 className="text-sm sm:text-base font-semibold text-white tracking-tight">
+                RaOne Universal Settings Center
+              </h2>
+            </div>
           </div>
+
+          <div className="relative flex-1 max-w-sm">
+            <Search className="w-3.5 h-3.5 text-[#9AA0A6] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={sectionSearch}
+              onChange={(e) => setSectionSearch(e.target.value)}
+              placeholder="Jump to studio, library, model, or key setting..."
+              className="w-full bg-[#0E0F10] border border-[#252629] rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#5F6368] focus:outline-none focus:border-[#8AB4F8]"
+            />
+          </div>
+
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-[#8e8e8e] hover:text-white hover:bg-[#262626] transition-colors"
+            className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#1E1F22] transition-colors shrink-0"
+            title="Close Settings"
           >
             <X className="w-5 h-5" />
           </button>
@@ -723,119 +901,81 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Status notification toast */}
         {statusNotice && (
-          <div className="mx-6 mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2 animate-in fade-in shrink-0">
+          <div className="mx-5 mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2 animate-in fade-in shrink-0">
             <Check className="w-4 h-4 text-amber-400 shrink-0" />
             <span>{statusNotice}</span>
           </div>
         )}
 
-        {/* Content with 7 ChatGPT Tabs */}
-        <div className="flex-1 flex overflow-hidden min-h-[460px]">
-          {/* Left Navigation Tabs */}
-          <div className="w-52 sm:w-56 bg-[#141414] border-r border-[#262626] p-2 space-y-0.5 shrink-0 overflow-y-auto chat-scroll-area">
-            <button
-              onClick={() => setActiveTab('general')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'general'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <Sliders className="w-4 h-4" />
-              <span>General</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('personalization')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'personalization'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>Personalization</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('speech')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'speech'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <Volume2 className="w-4 h-4" />
-              <span>Speech</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('datacontrols')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'datacontrols'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <Database className="w-4 h-4" />
-              <span>Data controls</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('security')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'security'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Security</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('connectedapps')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'connectedapps'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <Key className="w-4 h-4 text-amber-400" />
-              <span>Connected apps & APIs</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('account')}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl transition-colors text-left ${
-                activeTab === 'account'
-                  ? 'bg-[#262626] text-white shadow-sm'
-                  : 'text-[#8e8e8e] hover:text-white hover:bg-[#1c1c1c]'
-              }`}
-            >
-              <CreditCard className="w-4 h-4" />
-              <div className="flex items-center justify-between w-full">
-                <span>Account</span>
-                <span
-                  className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
-                    currentPlan === 'ultimate'
-                      ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
-                      : currentPlan === 'plus'
-                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                      : 'bg-[#222] text-[#8e8e8e]'
-                  }`}
-                >
-                  {currentPlan}
-                </span>
-              </div>
-            </button>
+        {/* Content: Grouped Sidebar + Scrollable Architectural Workspace */}
+        <div className="flex-1 flex overflow-hidden min-h-[500px]">
+          {/* Left Navigation Rail */}
+          <div className="w-56 sm:w-64 bg-[#111214] border-r border-[#252629] p-2.5 space-y-4 shrink-0 overflow-y-auto chat-scroll-area">
+            {NAV_GROUPS.map((group) => {
+              const filteredItems = group.items.filter((item) => {
+                if (!normalizedSearch) return true;
+                return (
+                  item.label.toLowerCase().includes(normalizedSearch) ||
+                  item.keywords.toLowerCase().includes(normalizedSearch) ||
+                  group.title.toLowerCase().includes(normalizedSearch)
+                );
+              });
+              if (filteredItems.length === 0) return null;
+              return (
+                <div key={group.title} className="space-y-0.5">
+                  <div className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[#6E7075]">
+                    {group.title}
+                  </div>
+                  {filteredItems.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeTab === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setActiveTab(item.id)}
+                        className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 text-xs rounded-lg transition-colors text-left ${
+                          isActive
+                            ? 'bg-[#1E1F22] text-white font-medium border border-[#2C2E33]'
+                            : 'text-[#9AA0A6] hover:text-white hover:bg-[#17181B] border border-transparent'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2.5 truncate">
+                          <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-[#8AB4F8]' : ''}`} />
+                          <span className="truncate">{item.label}</span>
+                        </span>
+                        {item.id === 'account' && (
+                          <span className="font-mono text-[10px] uppercase text-[#8AB4F8]">
+                            {currentPlan}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
           </div>
 
           {/* Right Tab Content Panel */}
-          <div className="flex-1 p-6 overflow-y-auto chat-scroll-area text-xs text-[#ececec] space-y-6">
+          <div className="flex-1 p-5 sm:p-6 overflow-y-auto chat-scroll-area text-xs text-[#ececec] space-y-6 bg-[#161719]">
             {/* 1. GENERAL TAB */}
             {activeTab === 'general' && (
               <div className="space-y-5">
+                <div className="flex items-start justify-between gap-3 pb-4 border-b border-[#252629]">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">General &amp; Workspace Preferences</h3>
+                    <p className="text-[11px] text-[#9AA0A6] mt-0.5">Theme, language, default startup module, and UI density.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSection('general')}
+                    className="px-2.5 py-1.5 rounded-lg border border-[#2C2E33] bg-[#141517] hover:bg-[#1E1F22] text-[11px] text-[#C4C7C5] hover:text-white flex items-center gap-1.5 shrink-0"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset Section</span>
+                  </button>
+                </div>
                 {/* Theme Selector */}
                 <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
                   <div>
@@ -873,6 +1013,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <option value="ja">Japanese</option>
                     <option value="zh">Chinese</option>
                   </select>
+                </div>
+
+                {/* Default Launch Workspace */}
+                <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Default Launch Workspace</div>
+                    <div className="text-[11px] text-[#8e8e8e]">Choose which workspace opens on startup</div>
+                  </div>
+                  <select
+                    value={universalProfile.defaultWorkspace}
+                    onChange={(e) =>
+                      setUniversalProfile((p) => ({ ...p, defaultWorkspace: e.target.value as any }))
+                    }
+                    className="bg-[#242424] border border-[#383838] rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none"
+                  >
+                    <option value="chat">Unified AI Chat</option>
+                    <option value="library">Files Library Vault</option>
+                    <option value="plugins">Plugins Library Vault</option>
+                    <option value="code_studio">RaOne Code Studio</option>
+                    <option value="vision_studio">RaOne Vision Studio</option>
+                    <option value="cinema_studio">RaOne Cinema Studio</option>
+                    <option value="music_studio">RaOne Music Studio</option>
+                    <option value="document_studio">RaOne Document Studio</option>
+                  </select>
+                </div>
+
+                {/* Compact Layout Density */}
+                <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Compact UI Density</div>
+                    <div className="text-[11px] text-[#8e8e8e]">Reduce padding across lists and studios</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setUniversalProfile((p) => ({ ...p, compactDensity: !p.compactDensity }))
+                    }
+                    className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                      universalProfile.compactDensity ? 'bg-[#8AB4F8]' : 'bg-[#333333]'
+                    }`}
+                  >
+                    <div
+                      className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                        universalProfile.compactDensity ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
                 </div>
 
                 {/* Always Show Code Toggle */}
@@ -928,13 +1115,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 2. PERSONALIZATION TAB */}
             {activeTab === 'personalization' && (
               <div className="space-y-5">
+                <div className="flex items-start justify-between gap-3 pb-4 border-b border-[#252629]">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Personalization &amp; Persistent Memory</h3>
+                    <p className="text-[11px] text-[#9AA0A6] mt-0.5">Custom instructions, bilingual Sinhala+English preferences, and memory.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSection('personalization')}
+                    className="px-2.5 py-1.5 rounded-lg border border-[#2C2E33] bg-[#141517] hover:bg-[#1E1F22] text-[11px] text-[#C4C7C5] hover:text-white flex items-center gap-1.5 shrink-0"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset Section</span>
+                  </button>
+                </div>
+
                 {/* Custom Instructions Accordion/Section */}
                 <div className="p-4 rounded-2xl bg-[#1c1c1c] border border-[#2a2a2a] space-y-4">
                   <div className="flex items-center justify-between pb-2 border-b border-[#262626]">
                     <div>
                       <div className="text-sm font-semibold text-white">Custom instructions</div>
                       <div className="text-[11px] text-[#8e8e8e]">
-                        What would you like ChatGPT to know about you to provide better responses?
+                        Tailor how RaOne AI understands your context and formats responses
                       </div>
                     </div>
                     <button
@@ -954,7 +1156,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-semibold text-[#b4b4b4] mb-1.5">
-                      What would you like ChatGPT to know about you to provide better responses?
+                      What would you like RaOne AI to know about you?
                     </label>
                     <textarea
                       rows={3}
@@ -968,7 +1170,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-semibold text-[#b4b4b4] mb-1.5">
-                      How would you like ChatGPT to respond?
+                      How would you like RaOne AI to respond?
                     </label>
                     <textarea
                       rows={3}
@@ -979,6 +1181,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     />
                     <div className="text-[10px] text-[#737373] text-right mt-1">{responseStyle.length}/1500</div>
                   </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-[#262626]">
+                    <div>
+                      <div className="text-xs font-semibold text-white">Native Bilingual Mode (English + සිංහල)</div>
+                      <div className="text-[11px] text-[#8e8e8e]">Understand Singlish &amp; Sinhala seamlessly across prompts and enhancers</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setUniversalProfile((p) => ({
+                          ...p,
+                          customInstructions: {
+                            ...p.customInstructions,
+                            bilingualMode: !p.customInstructions.bilingualMode,
+                          },
+                        }))
+                      }
+                      className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                        universalProfile.customInstructions.bilingualMode ? 'bg-[#8AB4F8]' : 'bg-[#333333]'
+                      }`}
+                    >
+                      <div
+                        className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                          universalProfile.customInstructions.bilingualMode ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Memory Section */}
@@ -986,7 +1216,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="max-w-[75%]">
                     <div className="text-sm font-semibold text-white">Memory</div>
                     <div className="text-[11px] text-[#8e8e8e] leading-relaxed mt-0.5">
-                      ChatGPT will remember details you share across conversations to provide personalized context.
+                      RaOne AI remembers details you share across conversations to provide personalized context.
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1067,7 +1297,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 {/* Always-on Wake Word */}
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
                   <div>
                     <div className="text-sm font-semibold text-white">Always-On Wake Word Detection</div>
                     <div className="text-[11px] text-[#8e8e8e]">
@@ -1087,12 +1317,95 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     />
                   </button>
                 </div>
+
+                {/* Auto-Speak Responses */}
+                <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Auto-Speak Chat Responses</div>
+                    <div className="text-[11px] text-[#8e8e8e]">Read assistant replies aloud automatically when voice mode is active</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setUniversalProfile((p) => ({
+                        ...p,
+                        voice: { ...p.voice, autoSpeakResponses: !p.voice.autoSpeakResponses },
+                      }))
+                    }
+                    className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                      universalProfile.voice.autoSpeakResponses ? 'bg-[#8AB4F8]' : 'bg-[#333333]'
+                    }`}
+                  >
+                    <div
+                      className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                        universalProfile.voice.autoSpeakResponses ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Reduced Motion */}
+                <div className="flex items-center justify-between pt-1">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Reduced Motion Accessibility</div>
+                    <div className="text-[11px] text-[#8e8e8e]">Minimize canvas &amp; transition animations across studios</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setUniversalProfile((p) => ({
+                        ...p,
+                        voice: { ...p.voice, reducedMotion: !p.voice.reducedMotion },
+                      }))
+                    }
+                    className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                      universalProfile.voice.reducedMotion ? 'bg-[#8AB4F8]' : 'bg-[#333333]'
+                    }`}
+                  >
+                    <div
+                      className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                        universalProfile.voice.reducedMotion ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
             )}
 
             {/* 4. DATA CONTROLS TAB */}
             {activeTab === 'datacontrols' && (
               <div className="space-y-5">
+                {/* Temporary Private Default */}
+                <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
+                  <div className="max-w-[75%]">
+                    <div className="text-sm font-semibold text-white">Start new chats in Temporary Private Mode</div>
+                    <div className="text-[11px] text-[#8e8e8e] leading-relaxed mt-0.5">
+                      When enabled, new chats default to zero server persistence.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setUniversalProfile((p) => ({
+                        ...p,
+                        dataControls: {
+                          ...p.dataControls,
+                          temporaryChatDefault: !p.dataControls.temporaryChatDefault,
+                        },
+                      }))
+                    }
+                    className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                      universalProfile.dataControls.temporaryChatDefault ? 'bg-[#8AB4F8]' : 'bg-[#333333]'
+                    }`}
+                  >
+                    <div
+                      className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                        universalProfile.dataControls.temporaryChatDefault ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
                 {/* Chat History & Training */}
                 <div className="flex items-center justify-between pb-4 border-b border-[#262626]">
                   <div className="max-w-[75%]">
@@ -1277,19 +1590,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            {/* 6. CONNECTED APPS & APIS TAB */}
-            {activeTab === 'connectedapps' && (
+            {/* 6. AI MODELS, LOCAL ENGINE & BYOK KEYS */}
+            {activeTab === 'models' && (
               <div className="space-y-5">
+                {/* Global Orchestration Controls */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 rounded-xl bg-[#131416] border border-[#252629]">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-semibold text-white">Auto Failover on Rate Limit</div>
+                      <div className="text-[10px] text-[#9AA0A6]">Switch seamlessly to Groq LPU on 429/quota spikes</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setUniversalProfile((p) => ({ ...p, fallbackOnRateLimit: !p.fallbackOnRateLimit }))
+                      }
+                      className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors shrink-0 ${
+                        universalProfile.fallbackOnRateLimit ? 'bg-[#8AB4F8]' : 'bg-[#2C2E33]'
+                      }`}
+                    >
+                      <span
+                        className={`w-4 h-4 rounded-full bg-[#0E0F10] transform transition-transform ${
+                          universalProfile.fallbackOnRateLimit ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] text-[#9AA0A6] block mb-1">Global Prompt Enhancer Depth</label>
+                    <select
+                      value={universalProfile.globalEnhancerDepth}
+                      onChange={(e) =>
+                        setUniversalProfile((p) => ({ ...p, globalEnhancerDepth: e.target.value as any }))
+                      }
+                      className="w-full bg-[#0E0F10] border border-[#252629] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#8AB4F8]"
+                    >
+                      <option value="quick">Quick Iteration</option>
+                      <option value="fullstack">Balanced Production</option>
+                      <option value="enterprise">Enterprise Architectural</option>
+                    </select>
+                  </div>
+                </div>
+
                 {/* Primary Streaming Provider Switcher */}
                 <div className="p-4 rounded-2xl bg-[#1c1c1c] border border-[#2d2d2d] space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-sm font-semibold text-white">Chat Streaming Provider</div>
                       <div className="text-[11px] text-[#8e8e8e]">
-                        Switch seamlessly between Google Gemini and Groq LPU (Meta Llama)
+                        Switch seamlessly between Google Gemini, Groq LPU, and Local AI
                       </div>
                     </div>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium uppercase">
+                    <span className="font-mono text-[10px] text-[#8AB4F8] uppercase">
                       {providerMode === 'auto' ? 'Auto Failover' : providerMode}
                     </span>
                   </div>
@@ -1924,20 +2277,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 {/* Cloud Connectors */}
                 <div className="pt-3 border-t border-[#262626] space-y-2">
-                  <div className="text-sm font-semibold text-white">Workspace Apps</div>
-                  <div className="grid grid-cols-3 gap-2 pt-1">
-                    <div className="p-2.5 rounded-xl bg-[#1c1c1c] border border-[#2a2a2a] text-center">
-                      <div className="font-semibold text-white text-xs">Google Drive</div>
-                      <div className="text-[10px] text-emerald-400 mt-0.5">Connected</div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-white">3rd-Party Platforms & Studio Plugins</div>
+                      <p className="text-[11px] text-[#8e8e8e]">
+                        Connect GitHub, Firebase, Vercel, Notion, Hugging Face, ElevenLabs & webhooks in the encrypted vault.
+                      </p>
                     </div>
-                    <div className="p-2.5 rounded-xl bg-[#1c1c1c] border border-[#2a2a2a] text-center">
-                      <div className="font-semibold text-white text-xs">OneDrive</div>
-                      <div className="text-[10px] text-[#737373] mt-0.5">Not linked</div>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-[#1c1c1c] border border-[#2a2a2a] text-center">
-                      <div className="font-semibold text-white text-xs">GitHub</div>
-                      <div className="text-[10px] text-emerald-400 mt-0.5">Connected</div>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenPlugins?.();
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-[#242424] hover:bg-[#303030] border border-[#383838] text-xs font-medium text-white shrink-0 transition-colors"
+                    >
+                      Open Plugins Library
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2006,22 +2362,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
             )}
+
+            {/* ALL 5 STUDIOS, 2 LIBRARIES & SYSTEM DIAGNOSTICS */}
+            <SettingsStudioPanels
+              activeTab={activeTab}
+              settings={universalProfile}
+              onChangeSettings={setUniversalProfile}
+              onResetSection={handleResetSection}
+              diagnostics={diagnostics}
+              diagnosticsLoading={diagnosticsLoading}
+              onRefreshDiagnostics={loadDiagnostics}
+              onExportProfile={handleExportProfile}
+              onImportProfileFile={handleImportProfileFile}
+              onOpenLibrary={() => {
+                onClose();
+                onOpenLibrary?.();
+              }}
+              onOpenPlugins={() => {
+                onClose();
+                onOpenPlugins?.();
+              }}
+            />
           </div>
         </div>
 
         {/* Footer */}
-        <div className="h-14 px-6 border-t border-[#262626] flex items-center justify-between bg-[#141414] shrink-0">
-          <span className="text-[11px] text-[#737373]">RaOne AI Settings Center · 100% ChatGPT Compliant</span>
+        <div className="h-14 px-6 border-t border-[#252629] flex items-center justify-between bg-[#131416] shrink-0">
+          <span className="text-[11px] text-[#9AA0A6]">
+            RaOne Universal Settings Center · Synced to Workspace Vault
+          </span>
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-[#b4b4b4] hover:text-white hover:bg-[#262626] transition-colors"
+              className="px-3.5 py-1.5 rounded-lg text-xs font-medium text-[#C4C7C5] hover:text-white hover:bg-[#1E1F22] transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={handleSave}
-              className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-white hover:bg-slate-200 text-slate-950 transition-colors flex items-center gap-1.5 shadow-md"
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-[#8AB4F8] hover:bg-[#AECBFA] text-[#0E0F10] transition-colors flex items-center gap-1.5"
             >
               {savedSuccess ? (
                 <>
@@ -2029,7 +2408,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <span>Saved</span>
                 </>
               ) : (
-                <span>Save</span>
+                <span>Save &amp; Sync</span>
               )}
             </button>
           </div>
@@ -2038,7 +2417,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* Sub-modal: Memory Manager */}
       {isMemoryManagerOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-lg bg-[#1a1a1a] border border-[#333] rounded-2xl shadow-2xl p-5 flex flex-col max-h-[80vh]">
             <div className="flex items-center justify-between pb-3 border-b border-[#2a2a2a]">
               <div>
@@ -2113,7 +2492,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* Sub-modal: Confirm Delete All Chats */}
       {isConfirmDeleteAllChatsOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-sm bg-[#1a1a1a] border border-[#333] rounded-2xl shadow-2xl p-5 space-y-3">
             <div className="flex items-center gap-2.5 text-red-400">
               <AlertTriangle className="w-5 h-5 shrink-0" />
@@ -2142,7 +2521,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* Sub-modal: Archived Chats */}
       {isArchivedChatsOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-md bg-[#1a1a1a] border border-[#333] rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-[#2a2a2a]">
               <h3 className="text-sm font-bold text-white">Archived Chats</h3>
@@ -2167,7 +2546,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* Sub-modal: Delete Account Confirmation */}
       {isConfirmDeleteAccountOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-sm bg-[#1a1a1a] border border-[#333] rounded-2xl shadow-2xl p-5 space-y-3">
             <div className="flex items-center gap-2.5 text-red-400">
               <AlertTriangle className="w-5 h-5 shrink-0" />

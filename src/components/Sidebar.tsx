@@ -47,6 +47,8 @@ interface SidebarProps {
   onOpenDocumentStudio?: () => void;
   isLibraryOpen?: boolean;
   onOpenLibrary?: () => void;
+  isPluginsOpen?: boolean;
+  onOpenPlugins?: () => void;
   projects?: ProjectItem[];
   activeProjectId?: string | null;
   onSelectProject?: (id: string | null) => void;
@@ -78,6 +80,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenDocumentStudio,
   isLibraryOpen = false,
   onOpenLibrary,
+  isPluginsOpen = false,
+  onOpenPlugins,
   projects = [],
   activeProjectId = null,
   onSelectProject,
@@ -306,8 +310,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* RaOne Plugins Library Button */}
         <button
-          onClick={onOpenSettings}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
+          onClick={() => (onOpenPlugins ? onOpenPlugins() : onOpenSettings())}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors group ${
+            isPluginsOpen
+              ? 'bg-[#171717] text-white font-medium'
+              : 'text-[#ececec] hover:bg-[#171717]'
+          }`}
           title="RaOne Plugins Library — Extensions, API Connectors & Tools"
         >
           <img

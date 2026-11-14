@@ -36,6 +36,7 @@ interface ChatInputDockProps {
   onSelectModel?: (model: string) => void;
   onOpenStudioHub?: (tab?: 'image' | 'music' | 'video' | 'transcribe') => void;
   onOpenLibrary?: () => void;
+  onOpenPlugins?: (openCustomBuilder?: boolean) => void;
   isCenterState?: boolean;
   inputFocusTrigger?: number;
   isTemporary?: boolean;
@@ -56,6 +57,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   onOpenVoice,
   onOpenStudioHub,
   onOpenLibrary,
+  onOpenPlugins,
   isCenterState = false,
   inputFocusTrigger = 0,
   isTemporary = false,
@@ -352,7 +354,8 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       setActiveItemIndex(-1);
       textareaRef.current?.focus();
     } else if (action === 'plugin') {
-      if (onOpenStudioHub) onOpenStudioHub('image');
+      if (onOpenPlugins) onOpenPlugins(true);
+      else if (onOpenStudioHub) onOpenStudioHub('image');
       setIsDropdownOpen(false);
       setActiveItemIndex(-1);
     }

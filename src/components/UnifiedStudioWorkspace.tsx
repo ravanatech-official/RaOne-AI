@@ -27,7 +27,10 @@ import {
   Check,
   X,
   Pause,
+  Sliders,
 } from 'lucide-react';
+import type { SettingsSectionId } from '../types/settings.ts';
+import { openUniversalSettingsAt } from '../utils/settingsClient.ts';
 
 export interface WorkspaceTurn {
   id: string;
@@ -94,6 +97,7 @@ interface UnifiedStudioWorkspaceProps {
   streamingFeedCard?: React.ReactNode;
   composerExtraFooter?: React.ReactNode;
   modalOverlay?: React.ReactNode;
+  universalSettingsSection?: SettingsSectionId;
 }
 
 export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
@@ -142,6 +146,7 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
   streamingFeedCard,
   composerExtraFooter,
   modalOverlay,
+  universalSettingsSection,
 }) => {
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
@@ -881,13 +886,32 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 chat-scroll-area text-xs text-[#C4C7C5]">
+                <div className="flex-1 overflow-y-auto p-4 chat-scroll-area text-xs text-[#C4C7C5] space-y-4">
                   {settingsContent || (
                     <div className="space-y-3">
                       <div className="p-3 rounded-xl bg-[#1E1F20] border border-[#2C2D30]">
                         <div className="font-medium text-white mb-1">Active Engine</div>
                         <div className="text-[#8E918F]">{currentModelObj.label}</div>
                       </div>
+                    </div>
+                  )}
+
+                  {universalSettingsSection && (
+                    <div className="p-3.5 rounded-xl bg-[#131416] border border-[#2C2E33] space-y-2">
+                      <div className="flex items-center gap-2 text-white font-medium">
+                        <Sliders className="w-3.5 h-3.5 text-[#8AB4F8]" />
+                        <span>Universal Settings Center</span>
+                      </div>
+                      <p className="text-[11px] text-[#9AA0A6] leading-relaxed">
+                        Customize default presets, quality tiers, export formats, and automation hooks for {moduleName}.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => openUniversalSettingsAt(universalSettingsSection)}
+                        className="w-full py-2 px-3 rounded-lg bg-[#8AB4F8] hover:bg-[#AECBFA] text-[#0E0F10] text-xs font-semibold transition-colors"
+                      >
+                        Configure {moduleName} Defaults
+                      </button>
                     </div>
                   )}
                 </div>

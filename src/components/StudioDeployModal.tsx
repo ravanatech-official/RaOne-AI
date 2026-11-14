@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Globe,
   Flame,
@@ -13,7 +13,9 @@ import {
   Download,
   Rocket,
   CheckCircle2,
+  ShieldCheck,
 } from 'lucide-react';
+import { resolveApiUrl } from '../utils/api';
 import type { DeployTargetId, StudioProjectConfig } from '../types/studio';
 
 interface StudioDeployModalProps {
@@ -79,6 +81,32 @@ export const StudioDeployModal: React.FC<StudioDeployModalProps> = ({
   const [isPushingGh, setIsPushingGh] = useState(false);
   const [prepResult, setPrepResult] = useState<{ commands: string[]; checklist: string[] } | null>(null);
   const [ghResult, setGhResult] = useState<{ repoUrl: string; pushedCount: number } | null>(null);
+  const [hasGitHubVaultPlugin, setHasGitHubVaultPlugin] = useState(false);
+  const [ghVaultAccount, setGhVaultAccount] = useState<string | null>(null);
+  const [hasWebhookPlugin, setHasWebhookPlugin] = useState(false);
+  const [webhookStatus, setWebhookStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch(resolveApiUrl('/api/plugins?studio=code&connected=true'))
+      .then((r) => r.json())
+      .then((json) => {
+        if (!json?.success || !Array.isArray(json.plugins)) return;
+        const gh = json.plugins.find((p: any) => p.id === 'github' && p.enabled && p.enabledStudios?.includes('code'));
+        setHasGitHubVaultPlugin(Boolean(gh));
+        setGhVaultAccount(gh?.verifiedAccount || gh?.publicFields?.defaultOwner || null);
+        if (gh?.publicFields?.defaultOwner && !githubRepo) {
+          const slug = appTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'raone-app';
+          setGithubRepo(`${gh.publicFields.defaultOwner}/${slug}`);
+        }
+        const fb = json.plugins.find((p: any) => p.id === 'firebase' && p.enabled);
+        if (fb?.publicFields?.projectId) setFirebaseProjectId(fb.publicFields.projectId);
+        if (fb?.publicFields?.region) setGcpRegion(fb.publicFields.region);
+        const wh = json.plugins.find((p: any) => p.id === 'slack_discord' && p.enabled && p.enabledStudios?.includes('code'));
+        setHasWebhookPlugin(Boolean(wh));
+      })
+      .catch(() => {});
+  }, [isOpen, appTitle]);
 
   if (!isOpen) return null;
 
@@ -105,14 +133,14 @@ export const StudioDeployModal: React.FC<StudioDeployModalProps> = ({
   };
 
   const handleGitHubPush = async () => {
-    if (!githubRepo.trim() || !githubToken.trim()) return;
+    if (!githubRepo.trim() || (!githubToken.trim() && !hasGitHubVaultPlugin)) return;
     setIsPushingGh(true);
     setGhResult(null);
     try {
       const res = await onPushToGitHub({
         repo: githubRepo.trim(),
         branch: githubBranch.trim() || 'main',
-        token: githubToken.trim(),
+        token: githubToken.trim() || '__USE_VAULT__',
       });
       if (res) {
         setGhResult(res);
@@ -120,6 +148,29 @@ export const StudioDeployModal: React.FC<StudioDeployModalProps> = ({
       }
     } finally {
       setIsPushingGh(false);
+    }
+  };
+
+  const handleSendDeployWebhook = async () => {
+    setWebhookStatus('Sending...');
+    try {
+      const res = await fetch(resolveApiUrl('/api/plugins/webhook-dispatch'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pluginId: 'slack_discord',
+          studio: 'code',
+          eventTitle: `Code Studio Deploy: ${appTitle}`,
+          summary: fullShareUrl
+            ? `Live app published from RaOne Code Studio.`
+            : `Build artifacts prepared for ${githubRepo || firebaseProjectId || cloudRunService}.`,
+          url: fullShareUrl || ghResult?.repoUrl || undefined,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      setWebhookStatus(json?.ok ? 'Notified team channel.' : json?.error || 'Webhook failed.');
+    } catch {
+      setWebhookStatus('Webhook dispatch failed.');
     }
   };
 
@@ -299,14 +350,26 @@ export const StudioDeployModal: React.FC<StudioDeployModalProps> = ({
               </div>
             </div>
             <div>
-              <label className="text-[11px] text-[#9AA0A6] block mb-1">
-                GitHub Personal Access Token (in-memory push only, never stored)
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] text-[#9AA0A6]">
+                  GitHub Personal Access Token
+                </label>
+                {hasGitHubVaultPlugin && (
+                  <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3" />
+                    <span>Vault Active {ghVaultAccount ? `(${ghVaultAccount})` : ''}</span>
+                  </span>
+                )}
+              </div>
               <input
                 type="password"
                 value={githubToken}
                 onChange={(e) => setGithubToken(e.target.value)}
-                placeholder="ghp_... or github_pat_..."
+                placeholder={
+                  hasGitHubVaultPlugin
+                    ? 'Leave blank to use encrypted GitHub plugin token'
+                    : 'ghp_... or github_pat_...'
+                }
                 className="w-full bg-[#121315] border border-[#2F3135] rounded-lg px-2.5 py-1.5 font-mono text-xs text-white focus:outline-none focus:border-[#8AB4F8]"
               />
             </div>
@@ -322,11 +385,11 @@ export const StudioDeployModal: React.FC<StudioDeployModalProps> = ({
               </button>
               <button
                 onClick={handleGitHubPush}
-                disabled={isPushingGh || !githubRepo.trim() || !githubToken.trim()}
+                disabled={isPushingGh || !githubRepo.trim() || (!githubToken.trim() && !hasGitHubVaultPlugin)}
                 className="py-2 rounded-lg bg-[#8AB4F8] hover:bg-[#AECBFA] text-[#0E0F10] font-medium flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 {isPushingGh && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                <span>Push Code to GitHub</span>
+                <span>{githubToken.trim() || !hasGitHubVaultPlugin ? 'Push Code to GitHub' : 'Push via GitHub Plugin'}</span>
               </button>
             </div>
 
@@ -369,22 +432,35 @@ export const StudioDeployModal: React.FC<StudioDeployModalProps> = ({
           </div>
         )}
 
-        {/* Universal ZIP & HTML Export Footer */}
-        <div className="pt-2 border-t border-[#252629] grid grid-cols-2 gap-2 text-xs">
-          <button
-            onClick={onDownloadZip}
-            className="py-2 rounded-lg bg-[#222428] hover:bg-[#2C2E33] border border-[#323438] text-[#E3E3E3] flex items-center justify-center gap-1.5"
-          >
-            <FolderArchive className="w-3.5 h-3.5" />
-            <span>Export Full Repo ZIP</span>
-          </button>
-          <button
-            onClick={onDownloadHtml}
-            className="py-2 rounded-lg bg-[#222428] hover:bg-[#2C2E33] border border-[#323438] text-[#E3E3E3] flex items-center justify-center gap-1.5"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export HTML Bundle</span>
-          </button>
+        {/* Webhook Notification Bridge & Universal ZIP / HTML Export Footer */}
+        <div className="pt-2 border-t border-[#252629] space-y-2 text-xs">
+          {hasWebhookPlugin && (
+            <div className="flex items-center justify-between gap-2 pb-1">
+              <button
+                onClick={handleSendDeployWebhook}
+                className="px-3 py-1.5 rounded-lg bg-[#1E1F22] hover:bg-[#2C2E33] border border-[#323438] text-[#8AB4F8] font-medium"
+              >
+                Notify Connected Team Webhook
+              </button>
+              {webhookStatus && <span className="text-[11px] text-[#9AA0A6]">{webhookStatus}</span>}
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={onDownloadZip}
+              className="py-2 rounded-lg bg-[#222428] hover:bg-[#2C2E33] border border-[#323438] text-[#E3E3E3] flex items-center justify-center gap-1.5"
+            >
+              <FolderArchive className="w-3.5 h-3.5" />
+              <span>Export Full Repo ZIP</span>
+            </button>
+            <button
+              onClick={onDownloadHtml}
+              className="py-2 rounded-lg bg-[#222428] hover:bg-[#2C2E33] border border-[#323438] text-[#E3E3E3] flex items-center justify-center gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export HTML Bundle</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

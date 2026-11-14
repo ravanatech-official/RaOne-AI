@@ -223,27 +223,77 @@ export interface ImageGenerationOptions {
   referenceImage?: string | null;
 }
 
+import type {
+  CinemaConfig,
+  CinemaOperationType,
+} from './cinema.ts';
+
+export type {
+  CinemaConfig,
+  CinemaOperationType,
+  CinemaGenerationMode,
+  CinemaEnhancerMode,
+  CinemaResolutionTier,
+  CinemaEditPreset,
+  CinemaCameraRig,
+  CinemaLookSpec,
+  CinemaAudioSpec,
+  CinemaEditSpec,
+  CinemaEnhanceBreakdown,
+} from './cinema.ts';
+
 export interface GeneratedVideoItem {
   id: string;
+  parentId?: string | null;
+  rootId?: string | null;
+  version?: number;
+  operationType?: CinemaOperationType;
   prompt: string;
+  compiledPrompt?: string;
+  enhancedFrom?: string;
+  editInstruction?: string;
   negativePrompt?: string;
   model: string;
+  engineModelUsed?: string;
+  interactionId?: string | null;
   cameraMotion: string;
   motionStrength: number;
-  duration: number; // in seconds, e.g. 5, 10
+  duration: number; // in seconds
   fps: number; // 24, 30, 60
   aspectRatio: string;
   dimensions: string;
+  resolution?: string;
+  width?: number;
+  height?: number;
+  fileSizeBytes?: number;
+  hasAudio?: boolean;
   videoUrl: string;
   posterUrl: string;
-  mode: 'text-to-video' | 'image-to-video';
+  sourceVideoUrl?: string;
+  assetFilename?: string;
+  posterFilename?: string;
+  mimeType?: string;
+  mode: 'text-to-video' | 'image-to-video' | 'video-edit' | 'storyboard';
   referenceImage?: string | null;
+  referenceImages?: string[];
+  endKeyframeImage?: string | null;
   seed: number;
   createdAt: string;
   isFavorite?: boolean;
   upscaled?: boolean;
   extended?: boolean;
   interpolated?: boolean;
+  audioSynced?: boolean;
+  trimmed?: boolean;
+  trimRange?: { start: number; end: number };
+  aiNotes?: string;
+  configSnapshot?: Partial<CinemaConfig>;
+  publishMeta?: {
+    isPublished: boolean;
+    shareId?: string;
+    shareUrl?: string;
+    publishedAt?: string;
+  };
 }
 
 export interface VideoGenerationOptions {
@@ -256,29 +306,74 @@ export interface VideoGenerationOptions {
   fps?: number;
   aspectRatio?: string;
   dimensions?: string;
-  mode?: 'text-to-video' | 'image-to-video';
+  mode?: 'text-to-video' | 'image-to-video' | 'video-edit' | 'storyboard';
   referenceImage?: string | null;
   seed?: number;
+  cinemaConfig?: CinemaConfig;
 }
+
+import type {
+  MusicConfig,
+  MusicOperationType,
+} from './music.ts';
+
+export type {
+  MusicConfig,
+  MusicOperationType,
+  MusicGenerationMode,
+  MusicEnhancerMode,
+  MusicEditPreset,
+  MusicDspSettings,
+  MusicVocalConfig,
+  MusicProductionConfig,
+  MusicEnhanceBreakdown,
+} from './music.ts';
 
 export interface GeneratedAudioItem {
   id: string;
+  parentId?: string | null;
+  rootId?: string | null;
+  version?: number;
+  operationType?: MusicOperationType;
   title: string;
   prompt: string;
+  compiledPrompt?: string;
+  enhancedFrom?: string;
+  editInstruction?: string;
+  negativePrompt?: string;
   lyrics?: string;
   styleTags: string[];
   model: string;
+  engineModelUsed?: string;
   isInstrumental: boolean;
-  duration: number; // in seconds, e.g. 120, 240
+  duration: number; // in seconds
   bpm?: number;
   keySignature?: string;
+  timeSignature?: string;
+  mood?: string;
+  instruments?: string[];
   audioUrl: string;
+  sourceAudioUrl?: string;
   coverUrl: string;
+  assetFilename?: string;
+  coverFilename?: string;
+  mimeType?: string;
+  format?: string;
+  sampleRate?: number;
+  channels?: number;
+  bitrateKbps?: number;
+  fileSizeBytes?: number;
   vocalStemUrl?: string;
   instrumentalStemUrl?: string;
   bassStemUrl?: string;
   drumsStemUrl?: string;
   otherStemUrl?: string;
+  stemFilenames?: {
+    vocals?: string;
+    instrumental?: string;
+    bass?: string;
+    drums?: string;
+  };
   stemsSeparated?: boolean;
   clonedVoiceName?: string;
   clonedVoiceTimbre?: string;
@@ -291,7 +386,19 @@ export interface GeneratedAudioItem {
   createdAt: string;
   isFavorite?: boolean;
   extended?: boolean;
+  trimmed?: boolean;
+  mastered?: boolean;
+  trimRange?: { start: number; end: number };
   playCount?: number;
+  seed?: number;
+  aiNotes?: string;
+  configSnapshot?: Partial<MusicConfig>;
+  publishMeta?: {
+    isPublished: boolean;
+    shareId?: string;
+    shareUrl?: string;
+    publishedAt?: string;
+  };
 }
 
 export interface ClonedVoiceProfile {
@@ -319,7 +426,38 @@ export interface AudioGenerationOptions {
   keySignature?: string;
   clonedVoiceId?: string;
   clonedVoiceName?: string;
+  musicConfig?: MusicConfig;
 }
+
+import type {
+  DocumentAuditReport,
+  DocumentCategory,
+  DocumentConfig,
+  DocumentOperationType,
+} from './document.ts';
+
+export type {
+  DocumentCategory,
+  DocumentTone,
+  DocumentLanguage,
+  DocumentLengthPreset,
+  DocumentCitationStyle,
+  DocumentPageSize,
+  DocumentOrientation,
+  DocumentVisualTheme,
+  DocumentEnhancerMode,
+  DocumentEditPreset,
+  DocumentOperationType,
+  DocumentStructureConfig,
+  DocumentBrandingConfig,
+  DocumentDeckConfig,
+  DocumentAudioConfig,
+  DocumentConfig,
+  DocumentEnhanceBreakdown,
+  DocumentAuditIssue,
+  DocumentAuditReport,
+} from './document.ts';
+export { DEFAULT_DOCUMENT_CONFIG } from './document.ts';
 
 export interface DocumentSlide {
   id: string;
@@ -328,6 +466,7 @@ export interface DocumentSlide {
   subtitle?: string;
   bulletPoints: string[];
   callout?: string;
+  speakerNotes?: string;
   themeColor?: string;
 }
 
@@ -347,29 +486,52 @@ export interface GraphEntityNode {
 
 export interface DocumentItem {
   id: string;
+  parentId?: string | null;
+  rootId?: string | null;
+  version?: number;
+  operationType?: DocumentOperationType;
   title: string;
   docType: 'report' | 'presentation' | 'spreadsheet' | 'notebook' | 'summary';
+  docCategory?: DocumentCategory;
   prompt: string;
-  content: string; // Markdown / HTML formatted
+  compiledPrompt?: string;
+  enhancedFrom?: string;
+  editInstruction?: string;
+  content: string; // Markdown formatted
   summary?: string;
   slides?: DocumentSlide[];
   citations?: DocumentCitation[];
-  audioOverviewUrl?: string; // NotebookLM deep dive podcast URL
+  audioOverviewUrl?: string;
+  audioOverviewFilename?: string;
   audioOverviewTranscript?: string;
   model: string;
+  language?: string;
   tags: string[];
   pageCount?: number;
   wordCount?: number;
   createdAt: string;
+  updatedAt?: string;
   isFavorite?: boolean;
   sourceFile?: string;
   ocrEngine?: string;
   ragArchitecture?: string;
   graphEntities?: GraphEntityNode[];
+  auditReport?: DocumentAuditReport;
+  configSnapshot?: Partial<DocumentConfig>;
+  aiNotes?: string;
   officeExportUrls?: {
     docx?: string;
     pptx?: string;
     xlsx?: string;
+    pdf?: string;
+    html?: string;
+    md?: string;
+  };
+  publishMeta?: {
+    isPublished: boolean;
+    shareId?: string;
+    shareUrl?: string;
+    publishedAt?: string;
   };
 }
 
@@ -381,7 +543,9 @@ export interface DocumentGenerationOptions {
   sourceText?: string;
   includeSlides?: boolean;
   includeAudioOverview?: boolean;
+  documentConfig?: DocumentConfig;
 }
+
 
 
 
