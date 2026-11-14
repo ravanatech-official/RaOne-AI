@@ -75,12 +75,9 @@ import {
   synthesizeDeployArtifacts,
 } from './server_studio_auditor.ts';
 import type { StudioProjectConfig, DeployTargetId, PromptEnhanceDepth } from './src/types/studio.ts';
-import { getCloudPersistenceStatus } from './server_cloud_persistence.ts';
 import {
   saveTenantVisionAsset,
   resolveTenantVisionAssetPath,
-  ensureTenantVisionAssetPath,
-  deleteTenantVisionAssets,
   resolveImageInputToInlinePart,
   computeVisionDimensions,
   selectGeminiImageEngine,
@@ -97,7 +94,6 @@ import {
 } from './server_vision_engine.ts';
 import {
   resolveTenantCinemaAssetPath,
-  ensureTenantCinemaAssetPath,
   deleteTenantCinemaAssets,
   streamCinemaAssetWithRange,
   probeVideoFile,
@@ -120,7 +116,6 @@ import {
 } from './server_cinema_engine.ts';
 import {
   resolveTenantMusicAssetPath,
-  ensureTenantMusicAssetPath,
   deleteTenantMusicAssets,
   saveTenantMusicAssetBuffer,
   streamMusicAssetWithRange,
@@ -150,7 +145,6 @@ import {
 import { extractTextFromUploadedBase64 } from './server_uploads.ts';
 import {
   resolveTenantDocAssetPath,
-  ensureTenantDocAssetPath,
   deleteTenantDocAssets,
   streamDocAssetWithRange,
   normalizeDocumentConfig,
@@ -834,7 +828,6 @@ app.get('/api/health', async (req, res) => {
       requireFirebaseAuth: process.env.REQUIRE_FIREBASE_AUTH === 'true',
       byokEncryption: 'AES-256-GCM (Per-Tenant Isolated)',
     },
-    persistence: getCloudPersistenceStatus(),
   };
 
   if (req.query.verify === 'true') {
@@ -1011,7 +1004,6 @@ app.get('/api/capabilities', (_req, res) => {
       inbuiltLlamaServerSupported: isLocalProcessSpawnAllowed() && Boolean(findLlamaServerBinary()),
       managedProcessRunning: getManagedLlamaState().running,
     },
-    persistence: getCloudPersistenceStatus(),
   });
 });
 
@@ -5354,9 +5346,9 @@ app.post('/api/ai/transcribe', apiHeavyAiLimiter, async (req, res) => {
 // ==========================================
 // 🎨 RAONE VISION STUDIO (Silicon Valley Grade T2I + Multimodal Edit + Binary Asset Storage)
 // ==========================================
-app.get('/api/vision/assets/:filename', async (req, res) => {
+app.get('/api/vision/assets/:filename', (req, res) => {
   const tenantId = getReqTenant(req);
-  const filePath = await ensureTenantVisionAssetPath(tenantId, String(req.params.filename || ''));
+  const filePath = resolveTenantVisionAssetPath(tenantId, String(req.params.filename || ''));
   if (!filePath || !fs.existsSync(filePath)) {
     return res.status(404).send('Vision asset not found.');
   }
@@ -5933,7 +5925,10 @@ app.post('/api/vision/delete', async (req, res) => {
       return list.filter((item) => item.id !== id);
     });
     if (removedAsset) {
-      await deleteTenantVisionAssets(tenantId, [removedAsset]);
+      const assetPath = resolveTenantVisionAssetPath(tenantId, removedAsset);
+      if (assetPath && fs.existsSync(assetPath)) {
+        fs.promises.unlink(assetPath).catch(() => {});
+      }
     }
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
@@ -5961,9 +5956,9 @@ app.post('/api/vision/lora/train', (req, res) => {
 // ==========================================
 // 🎬 RAONE CINEMA STUDIO (Silicon Valley Grade T2V + I2V + Text-to-Video Edit + FFmpeg Post-Prod + Lyria Audio)
 // ==========================================
-app.get('/api/motion/assets/:filename', async (req, res) => {
+app.get('/api/motion/assets/:filename', (req, res) => {
   const tenantId = getReqTenant(req);
-  const filePath = await ensureTenantCinemaAssetPath(tenantId, String(req.params.filename || ''));
+  const filePath = resolveTenantCinemaAssetPath(tenantId, String(req.params.filename || ''));
   if (!filePath || !fs.existsSync(filePath)) {
     return res.status(404).send('Cinema asset not found.');
   }
@@ -6356,7 +6351,7 @@ app.post('/api/motion/edit', apiHeavyAiLimiter, async (req, res) => {
     });
 
     const localVideoPath = sourceItem.assetFilename
-      ? await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename)
+      ? resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename)
       : null;
 
     const omniEdit = await runGeminiOmniVideoEditOrExtend({
@@ -6439,7 +6434,7 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
   try {
     const cfg = normalizeCinemaConfig(sourceItem.configSnapshot);
     const localVideoPath = sourceItem.assetFilename
-      ? await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename)
+      ? resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename)
       : null;
 
     const omniExt = await runGeminiOmniVideoEditOrExtend({
@@ -6508,7 +6503,7 @@ app.post('/api/motion/trim', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Local video asset not found for trimming.');
   }
-  const sourcePath = await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file does not exist on disk.');
   }
@@ -6562,7 +6557,7 @@ app.post('/api/motion/interpolate', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for 60fps interpolation.');
   }
-  const sourcePath = await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
   }
@@ -6613,7 +6608,7 @@ app.post('/api/motion/upscale', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for 4K upscaling.');
   }
-  const sourcePath = await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
   }
@@ -6693,7 +6688,7 @@ app.post('/api/motion/motion-brush', apiHeavyAiLimiter, async (req, res) => {
     const maskPart = await resolveCinemaImageInlinePart(tenantId, String(maskImage));
     const promptText = String(instruction || `Animate ONLY the masked region moving with "${direction}" while keeping surrounding scene steady.`).trim();
     const compiled = compileCinemaEditPrompt(promptText, cfg, { hasMask: Boolean(maskPart) });
-    const localVideoPath = sourceItem.assetFilename ? await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename) : null;
+    const localVideoPath = sourceItem.assetFilename ? resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename) : null;
 
     const omni = await runGeminiOmniVideoEditOrExtend({
       client: tenantClient,
@@ -6744,7 +6739,7 @@ app.post('/api/motion/audio-sync', apiHeavyAiLimiter, async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for audio synchronization.');
   }
-  const sourcePath = await ensureTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
   }
@@ -6898,7 +6893,7 @@ app.get('/api/motion/share/:shareId/stream', async (req, res) => {
     const list = await readTenantCollection<CinemaPublishedSnapshot[]>('__public__', 'cinema_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Stream not found.');
-    const filePath = await ensureTenantCinemaAssetPath(snap.tenantId, snap.videoFilename);
+    const filePath = resolveTenantCinemaAssetPath(snap.tenantId, snap.videoFilename);
     if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Video asset not found.');
     return streamCinemaAssetWithRange(req, res, filePath);
   } catch (err: any) {
@@ -6955,10 +6950,10 @@ app.post('/api/motion/delete', async (req, res) => {
 // ==========================================
 // 🎵 RAONE MUSIC STUDIO (Lyria 3 Synthesis, Text-to-Music Edit, FFmpeg DSP & 4-Stem Isolation)
 // ==========================================
-app.get('/api/audio/assets/:filename', async (req, res) => {
+app.get('/api/audio/assets/:filename', (req, res) => {
   try {
     const tenantId = getReqTenant(req);
-    const filePath = await ensureTenantMusicAssetPath(tenantId, req.params.filename);
+    const filePath = resolveTenantMusicAssetPath(tenantId, req.params.filename);
     if (!filePath || !fs.existsSync(filePath)) {
       return sendApiError(req, res, 404, 'AUDIO_ASSET_NOT_FOUND', 'Audio asset not found.');
     }
@@ -7303,7 +7298,7 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Source audio track not found for editing.');
   }
 
-  const sourcePath = await ensureTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio asset file is missing.');
   }
@@ -7451,7 +7446,7 @@ app.post('/api/audio/master', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found for mastering.');
   }
-  const sourcePath = await ensureTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
   }
@@ -7515,7 +7510,7 @@ app.post('/api/audio/trim', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found for trimming.');
   }
-  const sourcePath = await ensureTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
   }
@@ -7573,7 +7568,7 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track not found for extension.');
   }
-  const sourcePath = await ensureTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
   }
@@ -7647,7 +7642,7 @@ app.post('/api/audio/separate-stems', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found for stem isolation.');
   }
-  const sourcePath = await ensureTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
   }
@@ -7710,7 +7705,7 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found.');
   }
-  const sourcePath = await ensureTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
+  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
     return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
   }
@@ -7858,7 +7853,7 @@ app.get('/api/audio/share/:shareId/stream', async (req, res) => {
     const list = await readTenantCollection<MusicPublishedSnapshot[]>('__public__', 'music_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Audio stream not found.');
-    const filePath = await ensureTenantMusicAssetPath(snap.tenantId, snap.audioFilename);
+    const filePath = resolveTenantMusicAssetPath(snap.tenantId, snap.audioFilename);
     if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Audio asset missing.');
     return streamMusicAssetWithRange(req, res, filePath);
   } catch (err: any) {
@@ -7934,9 +7929,9 @@ app.post('/api/audio/play', async (req, res) => {
 // ==========================================
 // 📄 RAONE DOCUMENT STUDIO (Text-to-Document Gen, Text-to-Document Edit, OCR Upload, TTS Podcast & Office Exports)
 // ==========================================
-app.get('/api/documents/assets/:filename', async (req, res) => {
+app.get('/api/documents/assets/:filename', (req, res) => {
   try {
-    const filePath = await ensureTenantDocAssetPath(getReqTenant(req), req.params.filename);
+    const filePath = resolveTenantDocAssetPath(getReqTenant(req), req.params.filename);
     if (!filePath || !fs.existsSync(filePath)) {
       return sendApiError(req, res, 404, 'DOC_ASSET_NOT_FOUND', 'Document media asset not found.');
     }
@@ -8458,7 +8453,7 @@ app.get('/api/documents/share/:shareId/audio', async (req, res) => {
     const list = await readTenantCollection<DocumentPublishedSnapshot[]>('__public__', 'documents_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap || !snap.audioFilename) return res.status(404).send('Podcast audio not found.');
-    const filePath = await ensureTenantDocAssetPath(snap.tenantId, snap.audioFilename);
+    const filePath = resolveTenantDocAssetPath(snap.tenantId, snap.audioFilename);
     if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Audio file missing.');
     return streamDocAssetWithRange(req, res, filePath);
   } catch (err: any) {
