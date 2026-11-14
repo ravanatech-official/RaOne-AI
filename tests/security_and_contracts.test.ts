@@ -331,3 +331,81 @@ test('studioCompiler creates valid PK ZIP archives and injects preview telemetry
   assert.ok(buf.length > 150);
 });
 
+test('Vision Studio engine compiles camera/lighting specs, enhances 2-word prompts, routes Nano Banana tiers, and secures assets', async () => {
+  const fs = await import('fs');
+  const path = await import('path');
+  const {
+    compileVisionPrompt,
+    compileVisionEditInstruction,
+    fallbackEnhanceVisionPrompt,
+    selectGeminiImageEngine,
+    normalizeAspectRatioForGemini,
+    computeVisionDimensions,
+    resolveTenantVisionAssetPath,
+    saveTenantVisionAsset,
+  } = await import('../server_vision_engine.ts');
+
+  const compiled = compileVisionPrompt({
+    prompt: 'golden cybernetic lion',
+    negativePrompt: 'blurry, watermark',
+    model: 'Flux 1.1 Pro (LDM)',
+    style: 'Cinematic Photoreal',
+    aspectRatio: '16:9',
+    photoReal: true,
+    alchemy: true,
+    cameraSpec: {
+      shotType: 'Low-Angle Hero',
+      lens: '85mm Portrait Telephoto',
+      aperture: 'f/1.8 Shallow Depth',
+      lighting: 'Golden Hour Warm Sun',
+      colorGrade: 'Kodak Portra 400 Warm',
+    },
+  });
+  assert.ok(compiled.includes('golden cybernetic lion'));
+  assert.ok(compiled.includes('85mm Portrait Telephoto'));
+  assert.ok(compiled.includes('Golden Hour Warm Sun'));
+  assert.ok(compiled.includes('blurry, watermark'));
+
+  const editInstr = compileVisionEditInstruction({
+    instruction: 'change jacket to black leather',
+    operationType: 'inpaint',
+    hasMask: true,
+    hasReferenceImages: false,
+    preservationStrength: 85,
+  });
+  assert.ok(editInstr.includes('INPAINT'));
+  assert.ok(editInstr.includes('painted edit mask'));
+  assert.ok(editInstr.includes('85%'));
+
+  const enhanced = fallbackEnhanceVisionPrompt('red car', { mode: 'product', style: 'Commercial Product Studio' });
+  assert.ok(enhanced.enhancedPrompt.includes('red car'));
+  assert.ok(enhanced.enhancedPrompt.length > 60);
+  assert.ok(enhanced.suggestedNegativePrompt.length > 10);
+
+  assert.equal(
+    selectGeminiImageEngine({ modelProfile: 'Nano Banana Flash Lite', resolution: '1K', aspectRatio: '16:9' }),
+    'gemini-3.1-flash-lite-image'
+  );
+  assert.equal(
+    selectGeminiImageEngine({ modelProfile: 'Nano Banana Flash Lite', resolution: '4K', aspectRatio: '16:9' }),
+    'gemini-nano-banana-2.1'
+  );
+  assert.equal(normalizeAspectRatioForGemini('21:9', 'gemini-nano-banana-2.1'), '4:1');
+  assert.equal(computeVisionDimensions('1:1', '2K'), '1536x1536');
+
+  // Path traversal guard + asset write/cleanup
+  assert.equal(resolveTenantVisionAssetPath('test_vision_t', '../../etc/passwd'), null);
+  const testId = `test-vis-${Date.now()}`;
+  const saved = await saveTenantVisionAsset(
+    'test_vision_t',
+    testId,
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64'),
+    'image/png'
+  );
+  assert.ok(saved.imageUrl.startsWith('/api/vision/assets/'));
+  const resolved = resolveTenantVisionAssetPath('test_vision_t', saved.assetFilename);
+  assert.ok(resolved && fs.existsSync(resolved));
+  fs.rmSync(path.join(process.cwd(), 'data', 'tenants', 'test_vision_t'), { recursive: true, force: true });
+});
+
+

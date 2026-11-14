@@ -67,6 +67,23 @@ import {
   type PublishedSnapshotRecord,
 } from './server_studio_engine.ts';
 import {
+  saveTenantVisionAsset,
+  resolveTenantVisionAssetPath,
+  resolveImageInputToInlinePart,
+  computeVisionDimensions,
+  selectGeminiImageEngine,
+  compileVisionPrompt,
+  compileVisionEditInstruction,
+  enhanceVisionPromptServer,
+  runGeminiImageContentCall,
+  buildPublishedVisionHtml,
+  type VisionResolutionTier,
+  type VisionOperationType,
+  type VisionEnhancerMode,
+  type VisionImageRecord,
+  type VisionPublishedSnapshot,
+} from './server_vision_engine.ts';
+import {
   generateTrueDocxBuffer,
   generateTruePptxBuffer,
   generateTrueXlsxBuffer,
@@ -201,10 +218,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Payload size guards (tight 2mb default; larger body only on explicit upload extraction route)
+// Payload size guards (tight 2mb default; larger body only on explicit upload extraction and vision image editing routes)
+const LARGE_BODY_ROUTES = new Set([
+  '/api/uploads/extract',
+  '/api/vision/generate',
+  '/api/vision/edit',
+  '/api/vision/upscale',
+  '/api/vision/publish',
+]);
 app.use('/api/uploads/extract', express.json({ limit: '16mb' }));
+app.use(['/api/vision/generate', '/api/vision/edit', '/api/vision/upscale', '/api/vision/publish'], express.json({ limit: '25mb' }));
 app.use((req, res, next) => {
-  if (req.path === '/api/uploads/extract') return next();
+  if (LARGE_BODY_ROUTES.has(req.path)) return next();
   return express.json({ limit: '2mb' })(req, res, next);
 });
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
@@ -4410,8 +4435,23 @@ app.post('/api/ai/transcribe', apiHeavyAiLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 🎨 RAONE VISION STUDIO (Per-Tenant Persistent Store & Real AI / Worker Boundaries - A03, A09, A12, A13)
+// 🎨 RAONE VISION STUDIO (Silicon Valley Grade T2I + Multimodal Edit + Binary Asset Storage)
 // ==========================================
+app.get('/api/vision/assets/:filename', (req, res) => {
+  const tenantId = getReqTenant(req);
+  const filePath = resolveTenantVisionAssetPath(tenantId, String(req.params.filename || ''));
+  if (!filePath || !fs.existsSync(filePath)) {
+    return res.status(404).send('Vision asset not found.');
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  res.setHeader(
+    'Content-Type',
+    ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png'
+  );
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  return fs.createReadStream(filePath).pipe(res);
+});
+
 app.get(['/api/vision/history', '/api/vision/gallery'], async (req, res) => {
   try {
     const list = await readTenantCollection<any[]>(getReqTenant(req), 'vision_images', []);
@@ -4423,62 +4463,34 @@ app.get(['/api/vision/history', '/api/vision/gallery'], async (req, res) => {
 
 app.post('/api/vision/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, style = 'Cinematic Photoreal' } = req.body || {};
-    if (!prompt) {
+    const {
+      prompt,
+      style = 'Cinematic Photoreal',
+      mode = 'auto',
+      cameraSpec,
+    } = req.body || {};
+    if (!prompt || !String(prompt).trim()) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required.');
     }
 
     const { client: tenantClient, byok } = await getTenantGeminiClient(req);
-    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    const result = await enhanceVisionPromptServer({
+      prompt: String(prompt),
+      mode: mode as VisionEnhancerMode,
+      style: String(style),
+      cameraSpec,
+      geminiClient: tenantClient,
+      byok,
+      fallbackGroqKey: GROQ_API_KEY,
+    });
 
-    const enhanceVisionInstruction = `You are an elite prompt engineer specialized in latent diffusion prompt syntax.
-Transform the following basic user prompt into a hyper-detailed visual prompt matching style "${style}".
-Include camera lenses, volumetric cinematic lighting, texture details, and color grading.
-Respond ONLY with the final prompt text.
-
-User prompt: ${prompt}`;
-
-    if (tenantClient) {
-      try {
-        const response = await tenantClient.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: { role: 'user', parts: [{ text: enhanceVisionInstruction }] },
-          config: {
-            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
-              provider: 'Google Gemini API',
-              model: 'gemini-4-hydrogen',
-              subsystem: 'RaOne Vision Studio Prompt Enhancer',
-            }),
-          },
-        });
-        const enhanced = (response.text || '').trim();
-        if (enhanced) {
-          return res.json({ success: true, enhancedPrompt: enhanced });
-        }
-      } catch (err: any) {
-        console.warn('Prompt enhancement warning:', err.message);
-      }
-    }
-
-    if (activeGroqKey) {
-      try {
-        const groqVision = await callGroqChat(
-          activeGroqKey,
-          'raone-llama3-70b',
-          [{ role: 'user', content: enhanceVisionInstruction }],
-          `${SYSTEM_PROMPT}\n\n[VISION PROMPT ENHANCER]\nOutput ONLY the enhanced image prompt string.`,
-          1024
-        );
-        const enhanced = (groqVision.text || '').trim();
-        if (enhanced) {
-          return res.json({ success: true, enhancedPrompt: enhanced, modelUsed: groqVision.modelUsed });
-        }
-      } catch (groqErr: any) {
-        console.warn('Groq vision enhance warning:', groqErr?.message || groqErr);
-      }
-    }
-
-    return sendApiError(req, res, 503, 'VISION_ENHANCE_UNAVAILABLE', 'No AI text provider is currently available to enhance the prompt.');
+    return res.json({
+      success: true,
+      enhancedPrompt: result.enhancedPrompt,
+      suggestedNegativePrompt: result.suggestedNegativePrompt,
+      providerUsed: result.providerUsed,
+      breakdown: result.breakdown,
+    });
   } catch (err: any) {
     return sendApiError(req, res, 500, 'VISION_ENHANCE_ERROR', err.message);
   }
@@ -4488,21 +4500,25 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
   const tenantId = getReqTenant(req);
   const {
     prompt,
+    enhancedFrom,
     negativePrompt = '',
     model = 'Flux 1.1 Pro (LDM)',
     style = 'Cinematic Photoreal',
     aspectRatio = '16:9',
-    dimensions = '1344x768',
+    resolution = '1K',
     cfgScale = 7.5,
     steps = 40,
     seed = Math.floor(Math.random() * 99999999) + 10000000,
     alchemy = true,
     photoReal = true,
     promptMagic = true,
+    googleSearchGrounding = false,
+    cameraSpec,
+    referenceImages = [],
     count = 1,
   } = req.body || {};
 
-  if (!prompt) {
+  if (!prompt || !String(prompt).trim()) {
     return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for image generation.');
   }
 
@@ -4517,9 +4533,17 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
     );
   }
 
+  const resTier: VisionResolutionTier =
+    resolution === '4K' || resolution === '2K' ? resolution : '1K';
   const numToGenerate = Math.min(Math.max(1, Number(count) || 1), 4);
-  const creditCost = numToGenerate * 2;
-  const reservation = await reserveCredits(tenantId, creditCost, 'vision_generate', req.requestId || `vis_${Date.now()}`);
+  const tierMultiplier = resTier === '4K' ? 4 : resTier === '2K' ? 3 : 2;
+  const creditCost = numToGenerate * tierMultiplier;
+  const reservation = await reserveCredits(
+    tenantId,
+    creditCost,
+    'vision_generate',
+    req.requestId || `vis_${Date.now()}`
+  );
   if (!reservation.ok) {
     return sendApiError(
       req,
@@ -4531,42 +4555,101 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
   }
 
   try {
-    const generatedItems: any[] = [];
-    const apiAspect = ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '16:9';
+    const refParts: Array<{ inlineData: { data: string; mimeType: string } }> = [];
+    if (Array.isArray(referenceImages)) {
+      for (const refImg of referenceImages.slice(0, 3)) {
+        const inline = await resolveImageInputToInlinePart(tenantId, String(refImg || ''));
+        if (inline) refParts.push({ inlineData: inline });
+      }
+    }
+
+    const compiledPrompt = compileVisionPrompt({
+      prompt: String(prompt),
+      negativePrompt: String(negativePrompt || ''),
+      model: String(model),
+      style: String(style),
+      aspectRatio: String(aspectRatio),
+      resolution: resTier,
+      cfgScale: Number(cfgScale),
+      steps: Number(steps),
+      alchemy: Boolean(alchemy),
+      photoReal: Boolean(photoReal),
+      promptMagic: Boolean(promptMagic),
+      cameraSpec,
+    });
+
+    const engineModel = selectGeminiImageEngine({
+      modelProfile: String(model),
+      resolution: resTier,
+      aspectRatio: String(aspectRatio),
+      googleSearchGrounding: Boolean(googleSearchGrounding),
+      isEditOrUpscale: refParts.length > 0,
+    });
+
+    const dimensions = computeVisionDimensions(String(aspectRatio), resTier);
+    const generatedItems: VisionImageRecord[] = [];
 
     for (let i = 0; i < numToGenerate; i++) {
       const currentSeed = Number(seed) + i;
-      const imageResponse = await tenantClient.models.generateImages({
-        model: 'gemini-nano-banana-2.1',
-        prompt: `${prompt}${style ? `, style: ${style}` : ''}`,
-        config: {
-          numberOfImages: 1,
-          outputMimeType: 'image/jpeg',
-          aspectRatio: apiAspect as any,
+      const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
+        ...refParts,
+        {
+          text:
+            refParts.length > 0
+              ? `Using the attached reference image(s) for style, visual traits, or subject consistency: ${compiledPrompt}`
+              : compiledPrompt,
         },
+      ];
+
+      const callResult = await runGeminiImageContentCall({
+        client: tenantClient,
+        engineModel,
+        parts,
+        aspectRatio: String(aspectRatio),
+        resolution: resTier,
+        seed: currentSeed,
+        googleSearchGrounding: Boolean(googleSearchGrounding),
       });
 
-      const base64Data = imageResponse.generatedImages?.[0]?.image?.imageBytes;
-      if (!base64Data) continue;
+      const id = `gen-${Date.now()}-${Math.random().toString(36).substring(2, 7)}-${i}`;
+      const asset = await saveTenantVisionAsset(
+        tenantId,
+        id,
+        callResult.base64Data,
+        callResult.mimeType
+      );
 
       generatedItems.push({
-        id: `gen-${Date.now()}-${Math.random().toString(36).substring(2, 7)}-${i}`,
-        prompt,
-        negativePrompt,
-        model,
-        style,
-        aspectRatio,
+        id,
+        parentId: null,
+        rootId: id,
+        version: 1,
+        operationType: 'generate',
+        prompt: String(prompt).trim(),
+        compiledPrompt,
+        enhancedFrom: enhancedFrom ? String(enhancedFrom) : undefined,
+        negativePrompt: String(negativePrompt || ''),
+        model: String(model),
+        engineModelUsed: callResult.engineModelUsed,
+        style: String(style),
+        aspectRatio: String(aspectRatio),
         dimensions,
+        resolution: resTier,
         cfgScale: Number(cfgScale),
         steps: Number(steps),
         seed: currentSeed,
-        imageUrl: `data:image/jpeg;base64,${base64Data}`,
+        imageUrl: asset.imageUrl,
+        assetFilename: asset.assetFilename,
+        mimeType: callResult.mimeType,
         createdAt: new Date().toISOString(),
         isFavorite: false,
         alchemy: Boolean(alchemy),
         photoReal: Boolean(photoReal),
         promptMagic: Boolean(promptMagic),
-        upscaled: false,
+        googleSearchGrounding: Boolean(googleSearchGrounding),
+        upscaled: resTier === '4K',
+        aiNotes: callResult.aiNotes,
+        cameraSpec,
       });
     }
 
@@ -4590,6 +4673,312 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
     await refundCredits(tenantId, creditCost, 'vision_generate_failed', req.requestId || `vis_err_${Date.now()}`);
     console.error('Vision Generation Error:', err);
     return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', err?.message || 'Image synthesis failed. Credits refunded.');
+  }
+});
+
+app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
+  const tenantId = getReqTenant(req);
+  const {
+    instruction,
+    sourceImage,
+    parentId,
+    rootId,
+    parentVersion = 1,
+    maskImage,
+    referenceImages = [],
+    operationType = 'edit',
+    preservationStrength = 75,
+    model = 'Nano Banana 2.1 Ultra',
+    style = 'Cinematic Photoreal',
+    aspectRatio = '16:9',
+    resolution = '1K',
+    negativePrompt = '',
+    seed = Math.floor(Math.random() * 99999999) + 10000000,
+    cameraSpec,
+  } = req.body || {};
+
+  if (!instruction || !String(instruction).trim()) {
+    return sendApiError(req, res, 400, 'INVALID_INSTRUCTION', 'Edit instruction prompt is required.');
+  }
+  if (!sourceImage) {
+    return sendApiError(req, res, 400, 'SOURCE_IMAGE_REQUIRED', 'A base generated or uploaded image is required for editing.');
+  }
+
+  const { client: tenantClient } = await getTenantGeminiClient(req);
+  if (!tenantClient) {
+    return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', 'Image editing requires an active Gemini API key.');
+  }
+
+  const baseInline = await resolveImageInputToInlinePart(tenantId, String(sourceImage));
+  if (!baseInline) {
+    return sendApiError(req, res, 400, 'INVALID_SOURCE_IMAGE', 'Could not decode source image. Upload a valid PNG, JPEG, or WebP.');
+  }
+
+  const resTier: VisionResolutionTier =
+    resolution === '4K' || resolution === '2K' ? resolution : '1K';
+  const creditCost = resTier === '4K' ? 4 : resTier === '2K' ? 3 : 2;
+  const reservation = await reserveCredits(tenantId, creditCost, 'vision_edit', req.requestId || `vised_${Date.now()}`);
+  if (!reservation.ok) {
+    return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for image editing (required: ${creditCost}, remaining: ${reservation.balance}).`);
+  }
+
+  try {
+    const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
+      { inlineData: baseInline },
+    ];
+
+    let hasMask = false;
+    if (maskImage) {
+      const maskInline = await resolveImageInputToInlinePart(tenantId, String(maskImage));
+      if (maskInline) {
+        parts.push({ inlineData: maskInline });
+        hasMask = true;
+      }
+    }
+
+    let hasRef = false;
+    if (Array.isArray(referenceImages)) {
+      for (const refImg of referenceImages.slice(0, 2)) {
+        const refInline = await resolveImageInputToInlinePart(tenantId, String(refImg || ''));
+        if (refInline) {
+          parts.push({ inlineData: refInline });
+          hasRef = true;
+        }
+      }
+    }
+
+    const opType: VisionOperationType = hasMask ? 'inpaint' : (operationType as VisionOperationType) || 'edit';
+    const compiledPrompt = compileVisionEditInstruction({
+      instruction: String(instruction).trim(),
+      operationType: opType,
+      hasMask,
+      hasReferenceImages: hasRef,
+      preservationStrength: Number(preservationStrength) || 75,
+      style: String(style),
+      cameraSpec,
+      negativePrompt: String(negativePrompt || ''),
+    });
+
+    parts.push({ text: compiledPrompt });
+
+    const callResult = await runGeminiImageContentCall({
+      client: tenantClient,
+      engineModel: 'gemini-nano-banana-2.1',
+      parts,
+      aspectRatio: String(aspectRatio),
+      resolution: resTier,
+      seed: Number(seed),
+    });
+
+    const id = `edit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const asset = await saveTenantVisionAsset(tenantId, id, callResult.base64Data, callResult.mimeType);
+    const dimensions = computeVisionDimensions(String(aspectRatio), resTier);
+
+    const editedRecord: VisionImageRecord = {
+      id,
+      parentId: parentId || null,
+      rootId: rootId || parentId || id,
+      version: Math.max(2, Number(parentVersion) + 1),
+      operationType: opType,
+      prompt: String(instruction).trim(),
+      compiledPrompt,
+      negativePrompt: String(negativePrompt || ''),
+      model: String(model),
+      engineModelUsed: callResult.engineModelUsed,
+      style: String(style),
+      aspectRatio: String(aspectRatio),
+      dimensions,
+      resolution: resTier,
+      cfgScale: 7.5,
+      steps: 40,
+      seed: Number(seed),
+      imageUrl: asset.imageUrl,
+      sourceImageUrl: typeof sourceImage === 'string' && sourceImage.startsWith('/api/vision/') ? sourceImage : undefined,
+      assetFilename: asset.assetFilename,
+      mimeType: callResult.mimeType,
+      createdAt: new Date().toISOString(),
+      isFavorite: false,
+      alchemy: true,
+      photoReal: true,
+      promptMagic: true,
+      upscaled: resTier === '4K',
+      aiNotes: callResult.aiNotes,
+      cameraSpec,
+    };
+
+    await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (existing) => [
+      editedRecord,
+      ...existing,
+    ]);
+
+    return res.json({
+      success: true,
+      item: editedRecord,
+      creditsBalance: reservation.balance,
+    });
+  } catch (err: any) {
+    await refundCredits(tenantId, creditCost, 'vision_edit_failed', req.requestId || `vised_err_${Date.now()}`);
+    console.error('Vision Edit Error:', err);
+    return sendApiError(req, res, 503, 'VISION_EDIT_FAILED', err?.message || 'Image edit failed. Credits refunded.');
+  }
+});
+
+app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
+  const tenantId = getReqTenant(req);
+  const { id, targetResolution = '4K', sourceImage } = req.body || {};
+
+  const { client: tenantClient } = await getTenantGeminiClient(req);
+  if (!tenantClient) {
+    return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', '4K AI Upscaling requires an active Gemini API key.');
+  }
+
+  const list = await readTenantCollection<any[]>(tenantId, 'vision_images', []);
+  const targetItem = id ? list.find((item) => item.id === id) : null;
+  const imgInput = sourceImage || targetItem?.imageUrl;
+  if (!imgInput) {
+    return sendApiError(req, res, 404, 'IMAGE_NOT_FOUND', 'Source image not found for upscaling.');
+  }
+
+  const baseInline = await resolveImageInputToInlinePart(tenantId, String(imgInput));
+  if (!baseInline) {
+    return sendApiError(req, res, 400, 'INVALID_SOURCE_IMAGE', 'Could not read image asset for upscaling.');
+  }
+
+  const resTier: VisionResolutionTier = targetResolution === '2K' ? '2K' : '4K';
+  const creditCost = resTier === '4K' ? 4 : 3;
+  const reservation = await reserveCredits(tenantId, creditCost, 'vision_upscale', req.requestId || `visup_${Date.now()}`);
+  if (!reservation.ok) {
+    return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for ${resTier} upscale.`);
+  }
+
+  try {
+    const aspectRatio = targetItem?.aspectRatio || '16:9';
+    const upscalePrompt = compileVisionEditInstruction({
+      instruction: `Upscale and remaster to crisp ${resTier} ultra-high resolution clarity. Sharpen micro-textures, eyes, foliage, fabric weave, and edges while keeping exact subject identity and composition unchanged.`,
+      operationType: 'upscale',
+      hasMask: false,
+      hasReferenceImages: false,
+      preservationStrength: 95,
+      style: targetItem?.style || 'Cinematic Photoreal',
+    });
+
+    const callResult = await runGeminiImageContentCall({
+      client: tenantClient,
+      engineModel: 'gemini-nano-banana-2.1',
+      parts: [{ inlineData: baseInline }, { text: upscalePrompt }],
+      aspectRatio,
+      resolution: resTier,
+      seed: targetItem?.seed,
+    });
+
+    const newId = `up-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const asset = await saveTenantVisionAsset(tenantId, newId, callResult.base64Data, callResult.mimeType);
+    const dimensions = computeVisionDimensions(aspectRatio, resTier);
+
+    const upscaledRecord: VisionImageRecord = {
+      id: newId,
+      parentId: targetItem?.id || null,
+      rootId: targetItem?.rootId || targetItem?.id || newId,
+      version: Math.max(2, Number(targetItem?.version || 1) + 1),
+      operationType: 'upscale',
+      prompt: targetItem?.prompt || '4K Ultra Clarity Upscale',
+      compiledPrompt: upscalePrompt,
+      negativePrompt: targetItem?.negativePrompt || '',
+      model: targetItem?.model || 'Nano Banana 2.1 Ultra',
+      engineModelUsed: callResult.engineModelUsed,
+      style: targetItem?.style || 'Cinematic Photoreal',
+      aspectRatio,
+      dimensions,
+      resolution: resTier,
+      cfgScale: targetItem?.cfgScale || 7.5,
+      steps: targetItem?.steps || 40,
+      seed: targetItem?.seed || Math.floor(Math.random() * 90000000),
+      imageUrl: asset.imageUrl,
+      sourceImageUrl: targetItem?.imageUrl,
+      assetFilename: asset.assetFilename,
+      mimeType: callResult.mimeType,
+      createdAt: new Date().toISOString(),
+      isFavorite: Boolean(targetItem?.isFavorite),
+      alchemy: true,
+      photoReal: true,
+      promptMagic: true,
+      upscaled: true,
+      aiNotes: callResult.aiNotes,
+      cameraSpec: targetItem?.cameraSpec,
+    };
+
+    await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (existing) => [
+      upscaledRecord,
+      ...existing,
+    ]);
+
+    return res.json({
+      success: true,
+      item: upscaledRecord,
+      creditsBalance: reservation.balance,
+    });
+  } catch (err: any) {
+    await refundCredits(tenantId, creditCost, 'vision_upscale_failed', req.requestId || `visup_err_${Date.now()}`);
+    return sendApiError(req, res, 503, 'VISION_UPSCALE_FAILED', err?.message || 'Upscale failed. Credits refunded.');
+  }
+});
+
+app.post('/api/vision/publish', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const { id } = req.body || {};
+    if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'Image ID is required to publish.');
+
+    const list = await readTenantCollection<any[]>(tenantId, 'vision_images', []);
+    const item = list.find((i) => i.id === id);
+    if (!item) return sendApiError(req, res, 404, 'IMAGE_NOT_FOUND', 'Image not found.');
+
+    const inline = await resolveImageInputToInlinePart(tenantId, String(item.imageUrl || ''));
+    const imageDataUrl = inline ? `data:${inline.mimeType};base64,${inline.data}` : String(item.imageUrl || '');
+    const shareId =
+      item.publishMeta?.shareId ||
+      `vis_${crypto.createHash('sha256').update(`${tenantId}:${id}`).digest('hex').slice(0, 10)}`;
+    const now = new Date().toISOString();
+
+    const snapshot: VisionPublishedSnapshot = {
+      shareId,
+      tenantId,
+      imageId: id,
+      title: String(item.prompt || 'RaOne Vision Render').slice(0, 80),
+      prompt: item.prompt,
+      compiledPrompt: item.compiledPrompt || item.prompt,
+      negativePrompt: item.negativePrompt || '',
+      model: item.model,
+      style: item.style,
+      aspectRatio: item.aspectRatio,
+      dimensions: item.dimensions,
+      resolution: item.resolution || '1K',
+      seed: item.seed,
+      cameraSpec: item.cameraSpec,
+      imageDataUrl,
+      publishedAt: now,
+    };
+
+    await mutateSharedCollection<Record<string, VisionPublishedSnapshot>>(
+      'vision_published',
+      {},
+      (map) => ({ ...map, [shareId]: snapshot })
+    );
+
+    const publishMeta = {
+      isPublished: true,
+      shareId,
+      shareUrl: `/vision/shared/${shareId}`,
+      publishedAt: now,
+    };
+
+    await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (existing) =>
+      existing.map((entry) => (entry.id === id ? { ...entry, publishMeta } : entry))
+    );
+
+    return res.json({ success: true, publishMeta });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'VISION_PUBLISH_ERROR', err.message);
   }
 });
 
@@ -4619,33 +5008,35 @@ app.post('/api/vision/delete', async (req, res) => {
   try {
     const { id } = req.body || {};
     if (!id) return sendApiError(req, res, 400, 'INVALID_ID', 'ID is required.');
-    const filtered = await mutateTenantCollection<any[]>(getReqTenant(req), 'vision_images', [], (list) =>
-      list.filter((item) => item.id !== id)
-    );
+    const tenantId = getReqTenant(req);
+    let removedAsset: string | undefined;
+    const filtered = await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (list) => {
+      const target = list.find((item) => item.id === id);
+      removedAsset = target?.assetFilename;
+      return list.filter((item) => item.id !== id);
+    });
+    if (removedAsset) {
+      const assetPath = resolveTenantVisionAssetPath(tenantId, removedAsset);
+      if (assetPath && fs.existsSync(assetPath)) {
+        fs.promises.unlink(assetPath).catch(() => {});
+      }
+    }
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
     return sendApiError(req, res, 500, 'VISION_DELETE_ERROR', err.message);
   }
 });
 
-// Advanced GPU Diffusion Pipelines require a connected ComfyUI / Replicate / Fal GPU worker (Honest 501 - A13)
-app.post('/api/vision/upscale', (req, res) => {
-  if (!process.env.VISION_WORKER_URL) {
-    return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', '4x ESRGAN image upscaling requires a connected GPU worker (VISION_WORKER_URL).');
-  }
-  return sendApiError(req, res, 501, 'WORKER_DISPATCH_UNIMPLEMENTED', 'GPU worker dispatch handler is not wired.');
-});
-
 app.post('/api/vision/controlnet/generate', (req, res) => {
-  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'ControlNet / OpenPose conditioned diffusion requires an external GPU diffusion worker (VISION_WORKER_URL).');
+  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'Use Reference Image Lock or Mask Inpaint directly via /api/vision/edit for multimodal conditioning.');
 });
 
 app.post('/api/vision/ip-adapter/generate', (req, res) => {
-  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'IP-Adapter Face Lock conditioning requires an external GPU diffusion worker (VISION_WORKER_URL).');
+  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'Use Multi-Reference attachments directly in /api/vision/generate or /api/vision/edit.');
 });
 
 app.post('/api/vision/inpaint', (req, res) => {
-  return sendApiError(req, res, 501, 'WORKER_NOT_CONNECTED', 'Mask-guided pixel inpainting requires an external GPU diffusion worker (VISION_WORKER_URL).');
+  return sendApiError(req, res, 501, 'USE_VISION_EDIT', 'Mask-guided pixel inpainting is served via /api/vision/edit.');
 });
 
 app.post('/api/vision/lora/train', (req, res) => {
@@ -5327,6 +5718,26 @@ app.get('/published/:shareId', async (req, res) => {
     return res.send(record.code);
   } catch (err: any) {
     return res.status(500).send('Failed to serve published application.');
+  }
+});
+
+// Public Standalone Hosted Preview for Published RaOne Vision Studio Renders
+app.get('/vision/shared/:shareId', async (req, res) => {
+  try {
+    const shareId = String(req.params.shareId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!shareId) {
+      return res.status(404).send('Shared artwork not found.');
+    }
+    const publishedMap = await readSharedCollection<Record<string, VisionPublishedSnapshot>>('vision_published', {});
+    const record = publishedMap[shareId];
+    if (!record || !record.imageDataUrl) {
+      return res.status(404).send('Shared Vision Studio artwork was not found.');
+    }
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(buildPublishedVisionHtml(record));
+  } catch {
+    return res.status(500).send('Failed to render shared artwork.');
   }
 });
 

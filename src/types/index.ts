@@ -132,24 +132,74 @@ export interface StudioApp {
   version?: number;
 }
 
+export interface VisionDarkroomAdjustments {
+  brightness: number; // 100 default (50-150)
+  contrast: number; // 100 default (50-150)
+  saturation: number; // 100 default (0-200)
+  warmth: number; // 0 default (-50 to 50)
+  sharpness: number; // 0 default (0 to 100)
+  vignette: number; // 0 default (0 to 80)
+  flipH: boolean;
+  flipV: boolean;
+}
+
+export interface VisionCameraSpec {
+  shotType?: string;
+  lens?: string;
+  aperture?: string;
+  lighting?: string;
+  atmosphere?: string;
+  colorGrade?: string;
+  composition?: string;
+}
+
 export interface GeneratedImageItem {
   id: string;
+  parentId?: string | null;
+  rootId?: string | null;
+  version?: number;
+  operationType?:
+    | 'generate'
+    | 'edit'
+    | 'inpaint'
+    | 'background_swap'
+    | 'object_remove'
+    | 'restyle'
+    | 'outpaint'
+    | 'upscale'
+    | 'variation';
   prompt: string;
+  compiledPrompt?: string;
+  enhancedFrom?: string;
   negativePrompt?: string;
   model: string;
+  engineModelUsed?: string;
   style: string;
   aspectRatio: string;
   dimensions: string;
+  resolution?: '1K' | '2K' | '4K';
   cfgScale: number;
   steps: number;
   seed: number;
   imageUrl: string;
+  sourceImageUrl?: string;
+  assetFilename?: string;
+  mimeType?: string;
   createdAt: string;
   isFavorite?: boolean;
   alchemy?: boolean;
   photoReal?: boolean;
   promptMagic?: boolean;
+  googleSearchGrounding?: boolean;
   upscaled?: boolean;
+  aiNotes?: string;
+  cameraSpec?: VisionCameraSpec;
+  publishMeta?: {
+    isPublished: boolean;
+    shareId?: string;
+    shareUrl?: string;
+    publishedAt?: string;
+  };
 }
 
 export interface ImageGenerationOptions {
@@ -159,6 +209,7 @@ export interface ImageGenerationOptions {
   style?: string;
   aspectRatio?: string;
   dimensions?: string;
+  resolution?: '1K' | '2K' | '4K';
   cfgScale?: number;
   steps?: number;
   seed?: number;
@@ -166,6 +217,9 @@ export interface ImageGenerationOptions {
   alchemy?: boolean;
   photoReal?: boolean;
   promptMagic?: boolean;
+  googleSearchGrounding?: boolean;
+  cameraSpec?: VisionCameraSpec;
+  referenceImages?: string[];
   referenceImage?: string | null;
 }
 
