@@ -8,6 +8,7 @@ import {
   Globe,
   Folder,
   Compass,
+  Check,
 } from 'lucide-react';
 
 interface ChatInputDockProps {
@@ -402,15 +403,35 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
           }}
           onKeyDown={handleKeyDown}
           placeholder={
-            isTemporary ? 'Ask anything privately (Temporary Chat)...' : 'Ask ChatGPT'
+            isTemporary
+              ? 'Ask anything privately (Temporary Chat)...'
+              : isSearchActive
+              ? 'Search the web in real time with RaOne...'
+              : 'Ask ChatGPT'
           }
           className="w-full bg-transparent text-[#ECECEC] placeholder-[#8E8E8E] text-[15px] focus:outline-none resize-none px-1 py-1 max-h-40 leading-normal font-normal"
         />
 
         {/* Right side controls */}
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Web Search Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setIsSearchActive(!isSearchActive)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
+              isSearchActive
+                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                : 'text-[#8E8E8E] hover:text-white hover:bg-white/5'
+            }`}
+            title="Search the web for real-time information"
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>Search</span>
+          </button>
+
           {/* Think Button */}
           <button
+            type="button"
             onClick={() => setIsThinkingActive(!isThinkingActive)}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
               isThinkingActive
@@ -459,6 +480,9 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
         >
           {menuItems.map((item, index) => {
             const isHighlighted = activeItemIndex === index;
+            const isItemActive =
+              (item.id === 'search' && isSearchActive) ||
+              (item.id === 'thinking' && isThinkingActive);
             return (
               <button
                 key={item.id}
@@ -475,6 +499,9 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
                   </span>
                   <span className="text-xs text-[#8e8e8e] truncate">{item.desc}</span>
                 </div>
+                {isItemActive && (
+                  <Check className="w-4 h-4 text-sky-400 shrink-0" />
+                )}
               </button>
             );
           })}

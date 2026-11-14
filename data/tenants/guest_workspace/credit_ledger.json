@@ -1,0 +1,10 @@
+[
+  {
+    "id": "led-30405020-10f9-4076-ad24-b036dd7ac9c3",
+    "kind": "grant",
+    "amount": 200,
+    "action": "initial_plan_allowance",
+    "referenceId": "init",
+    "createdAt": "2026-11-14T03:31:03.494Z"
+  }
+]

@@ -73,6 +73,34 @@ export async function mutateTenantCollection<T>(
   });
 }
 
+const SHARED_DATA_ROOT = path.join(__dirname, 'data', 'shared');
+
+function getSharedFile(filename: string): string {
+  if (!fs.existsSync(SHARED_DATA_ROOT)) {
+    fs.mkdirSync(SHARED_DATA_ROOT, { recursive: true });
+  }
+  return path.join(SHARED_DATA_ROOT, filename);
+}
+
+export async function readSharedCollection<T>(collectionName: string, fallback: T): Promise<T> {
+  const filePath = getSharedFile(`${collectionName}.json`);
+  return readJsonFile<T>(filePath, fallback);
+}
+
+export async function mutateSharedCollection<T>(
+  collectionName: string,
+  fallback: T,
+  mutator: (current: T) => T | Promise<T>
+): Promise<T> {
+  const filePath = getSharedFile(`${collectionName}.json`);
+  return withFileLock(filePath, async () => {
+    const current = await readJsonFile<T>(filePath, fallback);
+    const updated = await mutator(current);
+    await atomicWriteJson(filePath, updated);
+    return updated;
+  });
+}
+
 // =========================================================================
 // Encrypted Per-Tenant BYOK Provider Keys (A04 & A07)
 // =========================================================================

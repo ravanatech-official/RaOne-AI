@@ -267,11 +267,17 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
 
       {/* Grounding Sources (Search & Maps) */}
       {((message.groundingSources && message.groundingSources.length > 0) ||
-        (message.mapsSources && message.mapsSources.length > 0)) && (
+        (message.mapsSources && message.mapsSources.length > 0) ||
+        (message.searchQueries && message.searchQueries.length > 0)) && (
         <div className="mt-3.5 pt-3 border-t border-[#2F2F2F]">
-          <div className="text-[11px] font-semibold text-[#8E8E8E] mb-2 flex items-center gap-1.5">
+          <div className="text-[11px] font-semibold text-[#8E8E8E] mb-2 flex items-center gap-1.5 flex-wrap">
             <Globe className="w-3 h-3 text-emerald-400" />
             <span>Sources</span>
+            {message.searchQueries && message.searchQueries.length > 0 && (
+              <span className="text-[10px] text-[#737373] font-normal">
+                · Searched: {message.searchQueries.join(' · ')}
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             {message.groundingSources?.map((source, index) => (

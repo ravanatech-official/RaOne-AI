@@ -16,7 +16,7 @@ export function installAuthenticatedApiFetch(): void {
   const originalFetch = window.fetch.bind(window);
   const apiBaseUrl = getApiBaseUrl();
 
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const wrappedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     let targetInput: RequestInfo | URL = input;
     let isApiRequest = false;
 
@@ -82,4 +82,18 @@ export function installAuthenticatedApiFetch(): void {
 
     return originalFetch(targetInput, nextInit);
   };
+
+  try {
+    window.fetch = wrappedFetch;
+  } catch {
+    try {
+      Object.defineProperty(window, 'fetch', {
+        value: wrappedFetch,
+        configurable: true,
+        writable: true,
+      });
+    } catch {
+      // Proceed without fetch wrapper if window.fetch is non-configurable
+    }
+  }
 }

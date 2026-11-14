@@ -25,6 +25,7 @@ export interface ChatMessage {
   thinkingTime?: string;
   thoughtProcess?: string;
   sourcesCount?: number;
+  searchQueries?: string[];
   groundingSources?: GroundingSource[];
   mapsSources?: GroundingSource[];
   generatedImage?: {

@@ -251,3 +251,83 @@ test('parseSseBuffer and flushSseBuffer handle split frames, CRLF boundaries, no
   assert.equal(flushSseBuffer('data: [DONE]\n\n').length, 0);
   assert.equal(extractSseTextDelta({ choices: [{ delta: { content: 'Delta' } }] }), 'Delta');
 });
+
+test('Code Studio engine decomposes, compiles, validates JS syntax via vm.Script, and versions multi-file builds', async () => {
+  const {
+    normalizeStudioMode,
+    decomposeHtmlIntoFiles,
+    compileFilesIntoHtmlBundle,
+    validateStudioProject,
+    materializeProjectFromRawOutput,
+  } = await import('../server_studio_engine.ts');
+
+  assert.equal(normalizeStudioMode('Fullstack mode'), 'Fullstack mode');
+  assert.equal(normalizeStudioMode('mobile'), 'Mobile mode');
+
+  const sampleHtml = `<!DOCTYPE html><html><head><title>Demo</title><style>body{color:#fff}</style></head><body><div id="app">Hi</div><script>const x = 42; console.log(x);</script></body></html>`;
+  const files = decomposeHtmlIntoFiles(sampleHtml, 'Demo App', 'Build demo', 'Fullstack mode');
+  assert.ok(files['index.html'].includes('<div id="app">Hi</div>'));
+  assert.ok(files['styles.css'].includes('color:#fff'));
+  assert.ok(files['app.js'].includes('const x = 42'));
+  assert.ok(files['api_routes.js'].includes('__RAONE_API_ROUTES__'));
+
+  const recompiled = compileFilesIntoHtmlBundle(files);
+  const validDiag = validateStudioProject(files, recompiled);
+  assert.equal(validDiag.syntaxOk, true);
+  assert.equal(validDiag.errors.length, 0);
+
+  const brokenHtml = `<!DOCTYPE html><html><head></head><body><script>function broken( { return ;</script></body></html>`;
+  const brokenDiag = validateStudioProject({ 'index.html': brokenHtml }, brokenHtml);
+  assert.equal(brokenDiag.syntaxOk, false);
+  assert.ok(brokenDiag.errors[0].includes('JavaScript Syntax Error'));
+
+  const jsonModelOut = JSON.stringify({
+    title: 'Sprint Pulse',
+    description: 'Fullstack Kanban',
+    files: {
+      'index.html': '<!DOCTYPE html><html><head></head><body><main>Board</main></body></html>',
+      'styles.css': 'main { padding: 16px; }',
+      'app.js': 'window.__READY__ = true;',
+    },
+  });
+  const mat1 = materializeProjectFromRawOutput({
+    rawText: jsonModelOut,
+    prompt: 'Build Sprint Pulse',
+    category: 'Productivity',
+    mode: 'Fullstack mode',
+    providerUsed: 'gemini',
+    modelUsed: 'gemini-4-hydrogen',
+  });
+  assert.ok(mat1);
+  assert.equal(mat1?.versions?.length, 1);
+  assert.equal(mat1?.currentVersion, 1);
+  assert.equal(mat1?.diagnostics?.syntaxOk, true);
+});
+
+test('studioCompiler creates valid PK ZIP archives and injects preview telemetry bridge', async () => {
+  const { bundleFilesToHtml, injectPreviewTelemetry, createProjectZipBlob } = await import(
+    '../src/utils/studioCompiler.ts'
+  );
+
+  const compiled = bundleFilesToHtml({
+    'index.html': '<!DOCTYPE html><html><head></head><body><h1>App</h1></body></html>',
+    'styles.css': 'h1 { color: red; }',
+    'app.js': 'console.log("ok");',
+  });
+  assert.ok(compiled.includes('<style>'));
+  assert.ok(compiled.includes('console.log("ok")'));
+
+  const instrumented = injectPreviewTelemetry(compiled, true);
+  assert.ok(instrumented.includes('data-raone-telemetry="true"'));
+  assert.ok(instrumented.includes('raone-preview'));
+
+  const zipBlob = createProjectZipBlob('Test Project', {
+    'index.html': compiled,
+    'styles.css': 'h1 { color: red; }',
+    'app.js': 'console.log("ok");',
+  });
+  const buf = Buffer.from(await zipBlob.arrayBuffer());
+  assert.equal(buf.subarray(0, 2).toString('ascii'), 'PK');
+  assert.ok(buf.length > 150);
+});
+

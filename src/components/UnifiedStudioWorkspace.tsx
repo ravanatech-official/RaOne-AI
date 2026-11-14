@@ -87,6 +87,11 @@ interface UnifiedStudioWorkspaceProps {
   hasActiveItem?: boolean;
   bottomDockContent?: React.ReactNode;
   toastMessage?: string | null;
+  diagnosticsBadgeCount?: number;
+  headerCenterExtra?: React.ReactNode;
+  streamingFeedCard?: React.ReactNode;
+  composerExtraFooter?: React.ReactNode;
+  modalOverlay?: React.ReactNode;
 }
 
 export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
@@ -128,6 +133,11 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
   hasActiveItem = false,
   bottomDockContent,
   toastMessage,
+  diagnosticsBadgeCount = 0,
+  headerCenterExtra,
+  streamingFeedCard,
+  composerExtraFooter,
+  modalOverlay,
 }) => {
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
@@ -284,14 +294,15 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
           </div>
         </div>
 
-        {/* Center: Clean Project / Workspace Title */}
-        <div className="hidden sm:flex items-center justify-center min-w-0 flex-1 px-4">
+        {/* Center: Clean Project / Workspace Title + Optional Version Switcher */}
+        <div className="hidden sm:flex items-center justify-center gap-2 min-w-0 flex-1 px-4">
           <span
-            className="text-[13px] font-medium text-[#E3E3E3] truncate max-w-[440px] tracking-tight"
+            className="text-[13px] font-medium text-[#E3E3E3] truncate max-w-[360px] tracking-tight"
             title={workspaceTitle}
           >
             {workspaceTitle}
           </span>
+          {headerCenterExtra}
         </div>
 
         {/* Right: Remix, Share, Publish, Bug/Diagnostics, Settings */}
@@ -337,14 +348,21 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
               setIsSettingsOpen(false);
               setIsDiagnosticsOpen((prev) => !prev);
             }}
-            className={`p-1.5 rounded-lg transition-colors shrink-0 ${
+            className={`relative p-1.5 rounded-lg transition-colors shrink-0 ${
               isDiagnosticsOpen
                 ? 'bg-[#2B2D30] text-white'
+                : diagnosticsBadgeCount > 0
+                ? 'text-red-400 hover:bg-[#1E1F20]'
                 : 'text-[#9AA0A6] hover:text-white hover:bg-[#1E1F20]'
             }`}
             title="Diagnostics & Engine Telemetry"
           >
             <Bug className="w-4 h-4" />
+            {diagnosticsBadgeCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-red-500 text-white text-[9px] font-mono tabular-nums flex items-center justify-center">
+                {diagnosticsBadgeCount > 9 ? '9+' : diagnosticsBadgeCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -469,10 +487,12 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
               )}
 
               {isGenerating && (
-                <div className="flex items-center gap-2 text-xs text-[#9AA0A6] py-1">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#8AB4F8]" />
-                  <span>Generating in {moduleName}...</span>
-                </div>
+                streamingFeedCard || (
+                  <div className="flex items-center gap-2 text-xs text-[#9AA0A6] py-1">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#8AB4F8]" />
+                    <span>Generating in {moduleName}...</span>
+                  </div>
+                )
               )}
 
               <div ref={feedEndRef} />
@@ -497,6 +517,8 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
                   {composerAddContent}
                 </div>
               )}
+
+              {composerExtraFooter}
 
               <div className="rounded-2xl bg-[#1E1F20] border border-[#2F3135] p-3 focus-within:border-[#4A4D54] transition-colors">
                 <textarea
@@ -862,6 +884,7 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
           </div>
         </main>
       </div>
+      {modalOverlay}
     </div>
   );
 };

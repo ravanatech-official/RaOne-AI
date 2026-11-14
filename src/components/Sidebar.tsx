@@ -204,20 +204,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Main Navigation Items list */}
       <div className="px-3 py-1 space-y-0.5">
-
-
-        {/* RaOne Code Studio Button */}
+        {/* RaOne Code Studio Button (Google AI Studio Developer Workbench & Playground) */}
         <button
           onClick={onOpenAIStudio}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne Code Studio — App Builder, Templates, and Prototyping"
+          title="RaOne Code Studio — Google AI Studio Workbench, Model Playground & App Builder"
         >
           <img
             src="/assets/aistudio/RaOne_Code_Studio_4ceb2ebb.png"
-            alt="RaOne Code Logo"
-            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(6,182,212,0.6)] group-hover:scale-110 transition-transform"
+            alt="RaOne Code Studio Logo"
+            className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(56,189,248,0.6)] group-hover:scale-110 transition-transform"
           />
-          <span className="font-medium text-white group-hover:text-cyan-300 transition-colors truncate">
+          <span className="font-medium text-white group-hover:text-sky-300 transition-colors truncate">
             RaOne Code Studio
           </span>
         </button>
@@ -254,39 +252,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </span>
         </button>
 
-        {/* RaOne Suno Audio Button (AI Music, Vocals & Beats Synthesis) */}
+        {/* RaOne Music Studio Button (AI Music, Vocals & Beats Synthesis) */}
         <button
           onClick={onOpenAudioStudio}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne Suno Audio — AI Music, Vocals & Beats Synthesis (Suno v4 Alpha, Udio 130, Google Lyria, ElevenLabs)"
+          title="RaOne Music Studio — AI Music, Vocals & Beats Synthesis (Suno v4 Alpha, Udio 130, Google Lyria, ElevenLabs)"
         >
           <img
             src="/assets/aistudio/RaOne_Music_Studio_25c5e404.png"
-            alt="RaOne Suno Audio Logo"
+            alt="RaOne Music Studio Logo"
             className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(245,158,11,0.6)] group-hover:scale-110 transition-transform"
           />
           <span className="font-medium text-white group-hover:text-amber-300 transition-colors truncate">
-            RaOne Suno Audio
+            RaOne Music Studio
           </span>
         </button>
 
-        {/* RaOne DocuStudio Button (Intelligent Document Processing, NotebookLM, Gamma App & Copilot) */}
+        {/* RaOne Document Studio Button (Intelligent Document Processing, NotebookLM, Gamma App & Copilot) */}
         <button
           onClick={onOpenDocumentStudio}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="RaOne DocuStudio — Intelligent Document Processing, NotebookLM, Gamma App & Copilot (PDFs, Slides, Spreadsheets, Graph-RAG)"
+          title="RaOne Document Studio — Intelligent Document Processing, NotebookLM, Gamma App & Copilot (PDFs, Slides, Spreadsheets, Graph-RAG)"
         >
           <img
             src="/assets/aistudio/RaOne_Document_Studio_a4a1c2ae.png"
-            alt="RaOne DocuStudio Logo"
+            alt="RaOne Document Studio Logo"
             className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(16,185,129,0.6)] group-hover:scale-110 transition-transform"
           />
           <span className="font-medium text-white group-hover:text-emerald-300 transition-colors truncate">
-            RaOne DocuStudio
+            RaOne Document Studio
           </span>
         </button>
 
-        {/* Library Button */}
+        {/* RaOne Files Library Button */}
         <button
           onClick={() => (onOpenLibrary ? onOpenLibrary() : onOpenStudioHub && onOpenStudioHub('transcribe'))}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors group ${
@@ -294,31 +292,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
               ? 'bg-[#171717] text-white font-medium'
               : 'text-[#ececec] hover:bg-[#171717]'
           }`}
-          title="Library — Saved Images, Videos, Audio, Documents & Apps"
+          title="RaOne Files Library — Saved Images, Videos, Audio, Documents & Apps"
         >
           <img
             src="/assets/aistudio/RaOne_Library_4c928d53.png"
-            alt="RaOne Library Logo"
+            alt="RaOne Files Library Logo"
             className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(56,189,248,0.6)] group-hover:scale-110 transition-transform"
           />
           <span className="font-medium text-white group-hover:text-sky-300 transition-colors truncate">
-            Library
+            RaOne Files Library
           </span>
         </button>
 
-        {/* Plugins Button (moved under Library) */}
+        {/* RaOne Plugins Library Button */}
         <button
           onClick={onOpenSettings}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ececec] hover:bg-[#171717] transition-colors group"
-          title="Plugins — Extensions, API Connectors & Tools"
+          title="RaOne Plugins Library — Extensions, API Connectors & Tools"
         >
           <img
             src="/assets/aistudio/RaOne_Plugins_4adb9c36.png"
-            alt="RaOne Plugins Logo"
+            alt="RaOne Plugins Library Logo"
             className="w-4 h-4 object-contain rounded shrink-0 drop-shadow-[0_0_6px_rgba(250,204,21,0.55)] group-hover:scale-110 transition-transform"
           />
           <span className="font-medium text-white group-hover:text-amber-300 transition-colors truncate">
-            Plugins
+            RaOne Plugins Library
           </span>
         </button>
       </div>

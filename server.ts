@@ -37,6 +37,8 @@ import {
 import {
   readTenantCollection,
   mutateTenantCollection,
+  readSharedCollection,
+  mutateSharedCollection,
   getTenantByokKeys,
   saveTenantByokKeys,
   getTenantPlan,
@@ -48,6 +50,22 @@ import {
   PLAN_ALLOWANCES,
   type PlanState,
 } from './server_tenant_store.ts';
+import {
+  normalizeStudioMode,
+  decomposeHtmlIntoFiles,
+  compileFilesIntoHtmlBundle,
+  validateStudioProject,
+  buildStudioGeneratePrompt,
+  buildStudioRefinePrompt,
+  buildStudioAutoFixPrompt,
+  executeStudioAiPrompt,
+  materializeProjectFromRawOutput,
+  fallbackSynthesizeStudioProject,
+  type StudioProviderChoice,
+  type StudioAppAttachment,
+  type RichStudioApp,
+  type PublishedSnapshotRecord,
+} from './server_studio_engine.ts';
 import {
   generateTrueDocxBuffer,
   generateTruePptxBuffer,
@@ -115,13 +133,15 @@ app.use((req, res, next) => {
       isDevPreview
         ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://apis.google.com"
         : "script-src 'self' 'unsafe-inline' blob: https://apis.google.com",
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
       "media-src 'self' data: blob: https:",
       "frame-src 'self' blob: data: https://*.firebaseapp.com https://accounts.google.com",
       "worker-src 'self' blob:",
-      "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://raone-ai-backend-348832701843.asia-southeast1.run.app https://*.run.app",
+      isDevPreview
+        ? "connect-src 'self' ws: wss: http: https:"
+        : "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://raone-ai-backend-348832701843.asia-southeast1.run.app https://*.run.app",
       allowPreviewFraming
         ? isDevPreview || isAiStudioHost
           ? 'frame-ancestors *'
@@ -244,7 +264,7 @@ const DEFAULT_SETTINGS = {
   language: 'auto',
   alwaysShowCode: true,
   activeProvider: 'auto' as AIProviderMode,
-  selectedModel: 'gemini-3.8-flash',
+  selectedModel: 'gemini-4-hydrogen',
   archivedChats: [] as string[],
   customInstructions: {
     aboutUser: '',
@@ -595,7 +615,7 @@ app.get('/api/health', async (req, res) => {
     tagline: 'Think. Create. Act.',
     brandSignature: 'RaOne AI by RavanaTec',
     activeProvider: storedSettings.activeProvider || 'auto',
-    selectedModel: storedSettings.selectedModel || 'gemini-3.8-flash',
+    selectedModel: storedSettings.selectedModel || 'gemini-4-hydrogen',
     hasApiKey: Boolean(apiKey || GROQ_API_KEY || COMET_API_KEY),
     providers: {
       gemini: Boolean(apiKey),
@@ -1473,9 +1493,26 @@ app.post('/api/studio/apps', async (req, res) => {
       return sendApiError(req, res, 400, 'INVALID_APP', 'App title is required');
     }
     const tenantId = getReqTenant(req);
+    const mode = normalizeStudioMode(incomingApp.mode);
+    const compiledCode = incomingApp.files
+      ? compileFilesIntoHtmlBundle(incomingApp.files)
+      : String(incomingApp.code || '');
+    const files = decomposeHtmlIntoFiles(
+      compiledCode,
+      incomingApp.title,
+      incomingApp.description || incomingApp.title,
+      mode,
+      incomingApp.files
+    );
+    const diagnostics = validateStudioProject(files, compiledCode);
+
     const updatedApp = {
       ...incomingApp,
       id: incomingApp.id || `app-${Date.now()}`,
+      mode,
+      code: compiledCode,
+      files,
+      diagnostics,
       createdAt: incomingApp.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1492,6 +1529,52 @@ app.post('/api/studio/apps', async (req, res) => {
   }
 });
 
+app.put('/api/studio/apps/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantId = getReqTenant(req);
+    const patch = req.body || {};
+    let updatedRecord: any = null;
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === id);
+      const base = idx >= 0 ? next[idx] : { id, title: patch.title || 'Workspace App', description: patch.description || '' };
+      const mode = normalizeStudioMode(patch.mode || base.mode);
+      const nextFiles = patch.files ? { ...(base.files || {}), ...patch.files } : base.files;
+      const compiledCode = nextFiles
+        ? compileFilesIntoHtmlBundle(nextFiles)
+        : String(patch.code || base.code || '');
+      const normalizedFiles = decomposeHtmlIntoFiles(
+        compiledCode,
+        patch.title || base.title,
+        patch.description || base.description || '',
+        mode,
+        nextFiles
+      );
+      const diagnostics = validateStudioProject(normalizedFiles, compiledCode);
+
+      updatedRecord = {
+        ...base,
+        ...patch,
+        id,
+        mode,
+        files: normalizedFiles,
+        code: compiledCode,
+        diagnostics,
+        updatedAt: new Date().toISOString(),
+      };
+      if (idx >= 0) next[idx] = updatedRecord;
+      else next.unshift(updatedRecord);
+      return next;
+    });
+
+    res.json({ success: true, app: updatedRecord });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_APPS_UPDATE_ERROR', error.message);
+  }
+});
+
 app.delete('/api/studio/apps/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1505,153 +1588,631 @@ app.delete('/api/studio/apps/:id', async (req, res) => {
 });
 
 app.get('/api/studio/gallery', async (_req, res) => {
+  const enrichedGallery = DEFAULT_GALLERY_APPS.map((g: any) => {
+    const mode = normalizeStudioMode(g.category === 'Build an Android app' ? 'Mobile mode' : 'Default mode');
+    const files = g.files || decomposeHtmlIntoFiles(g.code, g.title, g.description, mode);
+    return {
+      ...g,
+      mode,
+      framework: 'HTML5 + Tailwind + ES6',
+      files,
+      diagnostics: validateStudioProject(files, g.code),
+    };
+  });
   res.json({
     success: true,
-    gallery: DEFAULT_GALLERY_APPS,
+    gallery: enrichedGallery,
   });
 });
 
-// AI App Builder Engine Endpoint — Never mutates global keys (A04) & truthful build telemetry (A25)
+// Remix (Fork) any Saved or Gallery App into the User's My Apps Workspace
+app.post('/api/studio/apps/:id/remix', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantId = getReqTenant(req);
+    const saved = await getStoredStudioApps(tenantId);
+    const sourceApp =
+      saved.find((a: any) => a.id === id) ||
+      DEFAULT_GALLERY_APPS.find((g: any) => g.id === id) ||
+      req.body?.app;
+
+    if (!sourceApp) {
+      return sendApiError(req, res, 404, 'APP_NOT_FOUND', 'Source application not found to remix.');
+    }
+
+    const now = new Date().toISOString();
+    const mode = normalizeStudioMode(sourceApp.mode || (sourceApp.category === 'Build an Android app' ? 'Mobile mode' : 'Default mode'));
+    const title = sourceApp.title?.includes('(Remix)') ? sourceApp.title : `${sourceApp.title} (Remix)`;
+    const files = decomposeHtmlIntoFiles(
+      sourceApp.code,
+      title,
+      sourceApp.description || title,
+      mode,
+      sourceApp.files
+    );
+    const compiledCode = compileFilesIntoHtmlBundle(files);
+    const diagnostics = validateStudioProject(files, compiledCode);
+
+    const forkedApp: RichStudioApp = {
+      ...sourceApp,
+      id: `app-remix-${Date.now()}`,
+      title,
+      mode,
+      framework: sourceApp.framework || 'HTML5 + Tailwind + ES6',
+      providerUsed: sourceApp.providerUsed || 'template',
+      modelUsed: sourceApp.modelUsed || 'remix-fork',
+      createdAt: now,
+      updatedAt: now,
+      code: compiledCode,
+      files,
+      diagnostics,
+      publishMeta: { isPublished: false },
+      currentVersion: 1,
+      versions: [
+        {
+          version: 1,
+          prompt: `Remixed from "${sourceApp.title}"`,
+          mode,
+          providerUsed: 'remix',
+          modelUsed: 'fork',
+          createdAt: now,
+          code: compiledCode,
+          files,
+        },
+      ],
+      turns: [
+        {
+          id: `a_remix_${Date.now()}`,
+          role: 'assistant',
+          modelLabel: 'RaOne Remix Engine',
+          content: `Forked "${sourceApp.title}" into a private editable workspace. Describe any new features or changes below.`,
+          details: [`Mode: ${mode}`, `Files: ${Object.keys(files).join(', ')}`],
+          timestamp: now,
+        },
+      ],
+    };
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => [
+      forkedApp,
+      ...apps,
+    ]);
+
+    res.json({ success: true, app: forkedApp });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_REMIX_ERROR', error.message);
+  }
+});
+
+// Publish App Snapshot to a Standalone Hosted Preview URL (/published/:shareId)
+app.post('/api/studio/apps/:id/publish', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantId = getReqTenant(req);
+    const bodyApp = req.body?.app;
+    const apps = await getStoredStudioApps(tenantId);
+    const targetApp = apps.find((a: any) => a.id === id) || bodyApp;
+
+    if (!targetApp) {
+      return sendApiError(req, res, 404, 'APP_NOT_FOUND', 'Application not found to publish.');
+    }
+
+    const shareId =
+      targetApp.publishMeta?.shareId ||
+      `ra_${crypto.createHash('sha256').update(`${tenantId}:${id}`).digest('hex').slice(0, 10)}`;
+    const now = new Date().toISOString();
+    const compiledCode = targetApp.files
+      ? compileFilesIntoHtmlBundle(targetApp.files)
+      : String(targetApp.code || '');
+
+    const snapshot: PublishedSnapshotRecord = {
+      shareId,
+      tenantId,
+      appId: id,
+      title: targetApp.title || 'RaOne Studio App',
+      description: targetApp.description || '',
+      mode: normalizeStudioMode(targetApp.mode),
+      code: compiledCode,
+      publishedAt: targetApp.publishMeta?.publishedAt || now,
+      updatedAt: now,
+      views: targetApp.publishMeta?.views || 0,
+    };
+
+    await mutateSharedCollection<Record<string, PublishedSnapshotRecord>>(
+      'studio_published',
+      {},
+      (map) => ({
+        ...map,
+        [shareId]: snapshot,
+      })
+    );
+
+    const publishMeta = {
+      isPublished: true,
+      shareId,
+      shareUrl: `/published/${shareId}`,
+      publishedAt: now,
+    };
+
+    let updatedApp = { ...targetApp, publishMeta, updatedAt: now };
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (list) => {
+      const next = [...list];
+      const idx = next.findIndex((a: any) => a.id === id);
+      if (idx >= 0) {
+        updatedApp = { ...next[idx], publishMeta, updatedAt: now };
+        next[idx] = updatedApp;
+      } else {
+        next.unshift(updatedApp);
+      }
+      return next;
+    });
+
+    res.json({ success: true, publishMeta, app: updatedApp });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_PUBLISH_ERROR', error.message);
+  }
+});
+
+// Persist Browser-Direct Built/Refined App (e.g. from client-side Local llama.cpp)
+app.post('/api/studio/apps/persist-direct', async (req, res) => {
+  try {
+    const {
+      rawText,
+      prompt,
+      mode = 'Default mode',
+      category = 'general',
+      modelUsed = 'local-llama-cpp',
+      existingApp,
+      isRefinement = false,
+      turns,
+    } = req.body || {};
+
+    if (!rawText || !prompt) {
+      return sendApiError(req, res, 400, 'INVALID_DIRECT_PAYLOAD', 'rawText and prompt are required.');
+    }
+
+    const tenantId = getReqTenant(req);
+    const normalizedMode = normalizeStudioMode(mode);
+    let materialized = materializeProjectFromRawOutput({
+      rawText: String(rawText),
+      prompt: String(prompt),
+      category: String(category),
+      mode: normalizedMode,
+      providerUsed: 'local',
+      modelUsed: String(modelUsed),
+      existingApp,
+      isRefinement: Boolean(isRefinement),
+    });
+
+    if (!materialized) {
+      materialized = fallbackSynthesizeStudioProject({
+        prompt: String(prompt),
+        category: String(category),
+        mode: normalizedMode,
+        existingApp,
+        isRefinement: Boolean(isRefinement),
+      });
+    }
+
+    if (Array.isArray(turns)) {
+      materialized.turns = turns;
+    }
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === materialized!.id);
+      if (idx >= 0) next[idx] = materialized!;
+      else next.unshift(materialized!);
+      return next;
+    });
+
+    res.json({ success: true, app: materialized });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_PERSIST_DIRECT_ERROR', error.message);
+  }
+});
+
+// Shared Helper to Resolve Tenant AI Credentials for Studio Operations
+async function resolveStudioAiContext(req: express.Request, bodyApiKey?: string) {
+  const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
+  const providedKey = typeof bodyApiKey === 'string' ? bodyApiKey.trim() : '';
+  const scopedGeminiClient =
+    providedKey.length > 10
+      ? new GoogleGenAI({ apiKey: providedKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
+      : tenantGeminiClient;
+
+  return {
+    geminiClient: scopedGeminiClient,
+    byok,
+    serverKeys: {
+      groqApiKey: GROQ_API_KEY,
+      openAiApiKey: OPENAI_API_KEY,
+      anthropicApiKey: ANTHROPIC_API_KEY,
+      deepSeekApiKey: DEEPSEEK_API_KEY,
+      cometApiKey: COMET_API_KEY,
+      cometApiBaseUrl: COMET_API_BASE_URL,
+    },
+  };
+}
+
+function writeSseFrame(res: express.Response, payload: Record<string, any>) {
+  if (res.writableEnded) return;
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+// Silicon Valley Grade Streaming Build Endpoint (SSE + Mode-Aware + Multi-Provider + Validator)
+app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  try {
+    const {
+      prompt,
+      mode = 'Default mode',
+      category = 'general',
+      provider = 'auto',
+      model,
+      attachments = [],
+      turns = [],
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
+
+    if (!prompt || typeof prompt !== 'string') {
+      writeSseFrame(res, { type: 'error', error: 'App description prompt is required.' });
+      return res.end();
+    }
+
+    const tenantId = getReqTenant(req);
+    const normalizedMode = normalizeStudioMode(mode);
+    const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+
+    writeSseFrame(res, {
+      type: 'phase',
+      phase: 'Analyzing Architecture',
+      detail: `Mode: ${normalizedMode} · Provider preference: ${providerChoice}`,
+    });
+
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
+    const buildPrompt = buildStudioGeneratePrompt({
+      prompt,
+      mode: normalizedMode,
+      attachments: Array.isArray(attachments) ? (attachments as StudioAppAttachment[]) : [],
+    });
+
+    let lastProgressSent = 0;
+    const aiOut = await executeStudioAiPrompt({
+      providerChoice,
+      requestedModel: typeof model === 'string' ? model : undefined,
+      userPromptText: buildPrompt,
+      systemInstruction: SYSTEM_PROMPT,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+      onStatus: (provLabel, modLabel) => {
+        writeSseFrame(res, {
+          type: 'phase',
+          phase: 'Synthesizing Code',
+          provider: provLabel,
+          model: modLabel,
+          detail: `Streaming multi-file source from ${provLabel} (${modLabel})...`,
+        });
+      },
+      onDelta: (delta, acc) => {
+        const nowMs = Date.now();
+        if (nowMs - lastProgressSent > 120) {
+          lastProgressSent = nowMs;
+          writeSseFrame(res, {
+            type: 'delta',
+            delta,
+            chars: acc.length,
+          });
+        }
+      },
+    });
+
+    writeSseFrame(res, {
+      type: 'phase',
+      phase: 'Validating Bundle',
+      detail: 'Decomposing multi-file workspace and verifying JavaScript syntax...',
+    });
+
+    let project: RichStudioApp | null = null;
+    if (aiOut?.rawText) {
+      project = materializeProjectFromRawOutput({
+        rawText: aiOut.rawText,
+        prompt,
+        category,
+        mode: normalizedMode,
+        providerUsed: aiOut.providerUsed,
+        modelUsed: aiOut.modelUsed,
+      });
+    }
+
+    if (!project) {
+      project = fallbackSynthesizeStudioProject({
+        prompt,
+        category,
+        mode: normalizedMode,
+      });
+    }
+
+    if (Array.isArray(turns) && turns.length > 0) {
+      project.turns = turns;
+    }
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => [
+      project!,
+      ...apps,
+    ]);
+
+    writeSseFrame(res, { type: 'complete', app: project });
+    res.end();
+  } catch (error: any) {
+    console.error('Stream build error:', error);
+    writeSseFrame(res, { type: 'error', error: error?.message || 'Build stream failed.' });
+    res.end();
+  }
+});
+
+// Silicon Valley Grade Streaming Refine Endpoint (SSE + Version Snapshots + Selected Element + Turns)
+app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  try {
+    const {
+      app: currentApp,
+      refinementPrompt,
+      mode,
+      provider = 'auto',
+      model,
+      selectedElementContext,
+      attachments = [],
+      turns,
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
+
+    if (!currentApp || !refinementPrompt) {
+      writeSseFrame(res, { type: 'error', error: 'Current app and refinementPrompt are required.' });
+      return res.end();
+    }
+
+    const tenantId = getReqTenant(req);
+    const normalizedMode = normalizeStudioMode(mode || currentApp.mode);
+    const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+
+    writeSseFrame(res, {
+      type: 'phase',
+      phase: 'Planning Refactor',
+      detail: `Inspecting ${(currentApp.files && Object.keys(currentApp.files).length) || 1} files (${normalizedMode})...`,
+    });
+
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
+    const refinePrompt = buildStudioRefinePrompt({
+      app: currentApp,
+      refinementPrompt,
+      mode: normalizedMode,
+      selectedElementContext,
+      attachments: Array.isArray(attachments) ? attachments : [],
+    });
+
+    let lastProgressSent = 0;
+    const aiOut = await executeStudioAiPrompt({
+      providerChoice,
+      requestedModel: typeof model === 'string' ? model : undefined,
+      userPromptText: refinePrompt,
+      systemInstruction: SYSTEM_PROMPT,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+      onStatus: (provLabel, modLabel) => {
+        writeSseFrame(res, {
+          type: 'phase',
+          phase: 'Applying Code Changes',
+          provider: provLabel,
+          model: modLabel,
+          detail: `Refining via ${provLabel} (${modLabel})...`,
+        });
+      },
+      onDelta: (delta, acc) => {
+        const nowMs = Date.now();
+        if (nowMs - lastProgressSent > 120) {
+          lastProgressSent = nowMs;
+          writeSseFrame(res, { type: 'delta', delta, chars: acc.length });
+        }
+      },
+    });
+
+    writeSseFrame(res, {
+      type: 'phase',
+      phase: 'Verifying Snapshot',
+      detail: 'Validating syntax and saving version snapshot...',
+    });
+
+    let updatedProject: RichStudioApp | null = null;
+    if (aiOut?.rawText) {
+      updatedProject = materializeProjectFromRawOutput({
+        rawText: aiOut.rawText,
+        prompt: refinementPrompt,
+        category: currentApp.category || 'general',
+        mode: normalizedMode,
+        providerUsed: aiOut.providerUsed,
+        modelUsed: aiOut.modelUsed,
+        existingApp: currentApp,
+        isRefinement: true,
+      });
+    }
+
+    if (!updatedProject) {
+      updatedProject = fallbackSynthesizeStudioProject({
+        prompt: refinementPrompt,
+        category: currentApp.category || 'general',
+        mode: normalizedMode,
+        existingApp: currentApp,
+        isRefinement: true,
+      });
+    }
+
+    if (Array.isArray(turns)) {
+      updatedProject.turns = turns;
+    }
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === updatedProject!.id);
+      if (idx >= 0) next[idx] = updatedProject!;
+      else next.unshift(updatedProject!);
+      return next;
+    });
+
+    writeSseFrame(res, { type: 'complete', app: updatedProject });
+    res.end();
+  } catch (error: any) {
+    console.error('Stream refine error:', error);
+    writeSseFrame(res, { type: 'error', error: error?.message || 'Refine stream failed.' });
+    res.end();
+  }
+});
+
+// 1-Click AI Auto-Fix Endpoint for Sandbox Runtime Errors
+app.post('/api/studio/fix-error', apiHeavyAiLimiter, async (req, res) => {
+  try {
+    const {
+      app: currentApp,
+      errors = [],
+      provider = 'auto',
+      model,
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
+
+    if (!currentApp || !Array.isArray(errors) || errors.length === 0) {
+      return sendApiError(req, res, 400, 'INVALID_AUTOFIX_REQUEST', 'Current app and at least one error message are required.');
+    }
+
+    const tenantId = getReqTenant(req);
+    const normalizedMode = normalizeStudioMode(currentApp.mode);
+    const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
+
+    const fixPrompt = buildStudioAutoFixPrompt({
+      app: currentApp,
+      runtimeErrors: errors.map((e: any) => String(e)),
+    });
+
+    const aiOut = await executeStudioAiPrompt({
+      providerChoice,
+      requestedModel: typeof model === 'string' ? model : undefined,
+      userPromptText: fixPrompt,
+      systemInstruction: SYSTEM_PROMPT,
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+    });
+
+    let fixedProject: RichStudioApp | null = null;
+    if (aiOut?.rawText) {
+      fixedProject = materializeProjectFromRawOutput({
+        rawText: aiOut.rawText,
+        prompt: `Auto-fix: ${String(errors[0]).slice(0, 80)}`,
+        category: currentApp.category || 'general',
+        mode: normalizedMode,
+        providerUsed: aiOut.providerUsed,
+        modelUsed: aiOut.modelUsed,
+        existingApp: currentApp,
+        isRefinement: true,
+      });
+    }
+
+    if (!fixedProject) {
+      return sendApiError(
+        req,
+        res,
+        503,
+        'AUTOFIX_PROVIDER_UNAVAILABLE',
+        'No live AI provider could generate a patch for this error. Configure Gemini, Groq, or Local llama.cpp in Settings.'
+      );
+    }
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === fixedProject!.id);
+      if (idx >= 0) next[idx] = fixedProject!;
+      else next.unshift(fixedProject!);
+      return next;
+    });
+
+    res.json({ success: true, app: fixedProject });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'AUTOFIX_ERROR', error.message);
+  }
+});
+
+// Backward-compatible non-streaming build endpoint (upgraded to honor mode, multi-provider & diagnostics)
 app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { prompt, category = 'general', geminiApiKey, apiKey: bodyApiKey } = req.body || {};
+    const {
+      prompt,
+      mode = 'Default mode',
+      category = 'general',
+      provider = 'auto',
+      model,
+      attachments = [],
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
     if (!prompt) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'App description prompt is required');
     }
 
     const tenantId = getReqTenant(req);
-    const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
-    // Optional per-request BYOK override kept strictly request-scoped (never mutates server process.env!)
-    const providedKey = typeof (geminiApiKey || bodyApiKey) === 'string' ? (geminiApiKey || bodyApiKey).trim() : '';
-    const scopedGeminiClient =
-      providedKey.length > 10
-        ? new GoogleGenAI({ apiKey: providedKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } })
-        : tenantGeminiClient;
-    const effectiveGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    const normalizedMode = normalizeStudioMode(mode);
+    const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
 
-    const appTitle = prompt.slice(0, 42) + (prompt.length > 42 ? '...' : '');
-    let generatedProject: SynthesizedProject | null = null;
+    const buildInstruction = buildStudioGeneratePrompt({
+      prompt,
+      mode: normalizedMode,
+      attachments: Array.isArray(attachments) ? attachments : [],
+    });
 
-    const buildInstruction = `You are the RaOne Senior Software Engineer Autonomous Coding Agent.
-Your task is to synthesize a complete, interactive single-file HTML web application based on this user prompt:
-"${prompt}"
+    const aiOut = await executeStudioAiPrompt({
+      providerChoice,
+      requestedModel: typeof model === 'string' ? model : undefined,
+      userPromptText: buildInstruction,
+      systemInstruction: SYSTEM_PROMPT,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+    });
 
-REQUIREMENTS:
-1. Output ONLY a valid single HTML document starting with <!DOCTYPE html>. No markdown explanation, no preamble, no backticks.
-2. Include Tailwind CSS via https://cdn.tailwindcss.com and Google Fonts (Plus Jakarta Sans and JetBrains Mono).
-3. If charts are needed, include Chart.js (https://cdn.jsdelivr.net/npm/chart.js).
-4. If maps or routing are requested, include Leaflet (https://unpkg.com/leaflet@1.9.4/dist/leaflet.js & leaflet.css) and OpenStreetMap / OSRM.
-5. Every button, form, and interactive control should have working JavaScript event handlers and localStorage state persistence.`;
-
-    const extractHtmlPayload = (raw: string) => {
-      let cleaned = (raw || '').trim();
-      const fencedMatch = cleaned.match(/```(?:html)?\s*([\s\S]*?)```/i);
-      if (fencedMatch && fencedMatch[1]) {
-        cleaned = fencedMatch[1].trim();
-      }
-      const docIdx = cleaned.search(/<!DOCTYPE html>|<html/i);
-      if (docIdx > 0) cleaned = cleaned.slice(docIdx).trim();
-      return cleaned;
-    };
-
-    const createLiveProjectFromHtml = (htmlCode: string, modelLabel: string, tagLabel: string): SynthesizedProject => {
-      const now = new Date().toISOString();
-      const bundleHash = crypto.createHash('sha256').update(htmlCode).digest('hex').slice(0, 12);
-      return {
-        id: `app-${Date.now()}`,
-        title: appTitle,
-        description: prompt,
-        category,
-        icon: 'sparkles',
-        tag: tagLabel,
-        author: `RaOne Code Studio (${modelLabel})`,
-        createdAt: now,
-        updatedAt: now,
-        code: htmlCode,
-        files: {
-          'index.html': htmlCode,
-          'app.js': '// Inline script extracted from index.html\n' + (htmlCode.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
-          'styles.css': '/* Tailwind CSS CDN + Custom Tokens */',
-          'architecture.md': `# Generated Bundle Summary: ${appTitle}\n\nSynthesized by ${modelLabel}.\nBundle SHA-256 prefix: ${bundleHash}\n\n- Single-file HTML generated by LLM.\n- Rendered inside an opaque, credential-free iframe sandbox (without allow-same-origin).`,
-          'schema.json': JSON.stringify({ bundleHash, prompt, previewMode: 'opaque_iframe_sandbox' }, null, 2),
-        },
-        // Truthful execution stages (A25: never claim automated unit-test pass or production server deploy when only HTML was generated)
-        agentSteps: [
-          {
-            step: 1,
-            phase: 'Specification',
-            title: `${tagLabel.split(' ')[0]} Prompt Parsing`,
-            status: 'complete',
-            details: 'Parsed user application requirements.',
-            timestamp: now,
-          },
-          {
-            step: 2,
-            phase: 'Code Synthesis',
-            title: `Single-File Bundle Generated (${modelLabel})`,
-            status: 'complete',
-            details: `Synthesized ${htmlCode.length} bytes of HTML/JS/CSS (SHA-256: ${bundleHash}).`,
-            timestamp: now,
-          },
-          {
-            step: 3,
-            phase: 'Preview Sandbox',
-            title: 'Loaded in Isolated Preview Frame',
-            status: 'complete',
-            details: 'Rendered inside opaque-origin sandbox (scripts permitted, parent origin blocked). Automated test suite was not executed.',
-            timestamp: now,
-          },
-        ],
-      };
-    };
-
-    if (scopedGeminiClient) {
-      const candidateModels = ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-2.5-flash'];
-      for (const modelName of candidateModels) {
-        try {
-          const resp = await scopedGeminiClient.models.generateContent({
-            model: modelName,
-            contents: [{ role: 'user', parts: [{ text: buildInstruction }] }],
-            config: {
-              systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
-                provider: 'Google Gemini API',
-                model: modelName,
-                subsystem: 'RaOne App Builder',
-              }),
-            },
-          });
-
-          const text = extractHtmlPayload(resp.text || '');
-          if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-            generatedProject = createLiveProjectFromHtml(text, modelName, 'LLM Generated');
-            break;
-          }
-        } catch (genErr: any) {
-          console.warn('Gemini model ' + modelName + ' build notice:', genErr?.message || genErr);
-        }
-      }
-    }
-
-    if (!generatedProject && effectiveGroqKey) {
-      try {
-        const groqBuild = await callGroqChat(
-          effectiveGroqKey,
-          'raone-llama3-70b',
-          [{ role: 'user', content: buildInstruction }],
-          `${SYSTEM_PROMPT}\n\n[APP BUILDER DIRECTIVE]\nOutput ONLY a valid single-file HTML document starting with <!DOCTYPE html>. Zero markdown prose.`,
-          8192
-        );
-        const text = extractHtmlPayload(groqBuild.text || '');
-        if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-          generatedProject = createLiveProjectFromHtml(text, groqBuild.modelUsed, 'Groq Generated');
-        }
-      } catch (groqBuildErr: any) {
-        console.warn('Groq app builder notice:', groqBuildErr?.message || groqBuildErr);
-      }
-    }
+    let generatedProject = aiOut?.rawText
+      ? materializeProjectFromRawOutput({
+          rawText: aiOut.rawText,
+          prompt,
+          category,
+          mode: normalizedMode,
+          providerUsed: aiOut.providerUsed,
+          modelUsed: aiOut.modelUsed,
+        })
+      : null;
 
     if (!generatedProject) {
-      generatedProject = synthesizeFullProject(prompt, category, appTitle);
+      generatedProject = fallbackSynthesizeStudioProject({
+        prompt,
+        category,
+        mode: normalizedMode,
+      });
     }
 
     await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => [
@@ -1669,112 +2230,69 @@ REQUIREMENTS:
   }
 });
 
-// App Refinement Endpoint
+// Backward-compatible non-streaming App Refinement Endpoint
 app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
   try {
-    const { app: currentApp, refinementPrompt } = req.body || {};
+    const {
+      app: currentApp,
+      refinementPrompt,
+      mode,
+      provider = 'auto',
+      model,
+      selectedElementContext,
+      attachments = [],
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
     if (!currentApp || !refinementPrompt) {
       return sendApiError(req, res, 400, 'INVALID_REFINE_REQUEST', 'Current app object and refinementPrompt are required.');
     }
 
     const tenantId = getReqTenant(req);
-    const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
-    const effectiveGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    const normalizedMode = normalizeStudioMode(mode || currentApp.mode);
+    const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
 
-    let updatedProject: SynthesizedProject | null = null;
-    const existingHtml = currentApp.code || currentApp.files?.['index.html'] || '';
-    const refineInstruction = existingHtml
-      ? `You are refining an existing single-file HTML web application.
-Existing Code:
-\`\`\`html
-${existingHtml}
-\`\`\`
+    const refineInstruction = buildStudioRefinePrompt({
+      app: currentApp,
+      refinementPrompt,
+      mode: normalizedMode,
+      selectedElementContext,
+      attachments: Array.isArray(attachments) ? attachments : [],
+    });
 
-Refactoring Directive:
-"${refinementPrompt}"
+    const aiOut = await executeStudioAiPrompt({
+      providerChoice,
+      requestedModel: typeof model === 'string' ? model : undefined,
+      userPromptText: refineInstruction,
+      systemInstruction: SYSTEM_PROMPT,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+    });
 
-Output ONLY the updated, complete, single-file HTML code starting with <!DOCTYPE html>.`
-      : '';
-
-    const extractRefinedHtml = (raw: string) => {
-      let cleaned = (raw || '').trim();
-      const fencedMatch = cleaned.match(/```(?:html)?\s*([\s\S]*?)```/i);
-      if (fencedMatch && fencedMatch[1]) {
-        cleaned = fencedMatch[1].trim();
-      }
-      const docIdx = cleaned.search(/<!DOCTYPE html>|<html/i);
-      if (docIdx > 0) cleaned = cleaned.slice(docIdx).trim();
-      return cleaned;
-    };
-
-    const applyRefinedHtml = (htmlText: string, agentLabel: string): SynthesizedProject => {
-      const now = new Date().toISOString();
-      return {
-        ...currentApp,
-        updatedAt: now,
-        code: htmlText,
-        files: {
-          ...(currentApp.files || {}),
-          'index.html': htmlText,
-          'app.js': '// Extracted script\n' + (htmlText.match(new RegExp('<script>([\\s\\S]*?)<\\/script>'))?.[1] || ''),
-        },
-        agentSteps: [
-          ...(currentApp.agentSteps || []),
-          {
-            step: (currentApp.agentSteps?.length || 3) + 1,
-            phase: 'Iteration',
-            title: `Refined via ${agentLabel}: ${refinementPrompt.slice(0, 28)}...`,
-            status: 'complete',
-            details: `Applied prompt update: "${refinementPrompt}". Rendered in isolated preview sandbox.`,
-            timestamp: now,
-          },
-        ],
-      };
-    };
-
-    if (tenantGeminiClient && refineInstruction) {
-      try {
-        const resp = await tenantGeminiClient.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: [{ role: 'user', parts: [{ text: refineInstruction }] }],
-          config: {
-            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
-              provider: 'Google Gemini API',
-              model: 'gemini-4-hydrogen',
-              subsystem: 'RaOne App Refiner',
-            }),
-          },
-        });
-
-        const text = extractRefinedHtml(resp.text || '');
-        if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-          updatedProject = applyRefinedHtml(text, 'Gemini');
-        }
-      } catch (err: any) {
-        console.warn('Gemini refactor notice:', err.message);
-      }
-    }
-
-    if (!updatedProject && effectiveGroqKey && refineInstruction) {
-      try {
-        const groqRefine = await callGroqChat(
-          effectiveGroqKey,
-          'raone-llama3-70b',
-          [{ role: 'user', content: refineInstruction }],
-          `${SYSTEM_PROMPT}\n\nOutput ONLY the complete updated HTML starting with <!DOCTYPE html>.`,
-          8192
-        );
-        const text = extractRefinedHtml(groqRefine.text || '');
-        if (text.includes('<!DOCTYPE html>') || text.includes('<html')) {
-          updatedProject = applyRefinedHtml(text, groqRefine.modelUsed);
-        }
-      } catch (groqErr: any) {
-        console.warn('Groq refactor notice:', groqErr?.message || groqErr);
-      }
-    }
+    let updatedProject = aiOut?.rawText
+      ? materializeProjectFromRawOutput({
+          rawText: aiOut.rawText,
+          prompt: refinementPrompt,
+          category: currentApp.category || 'general',
+          mode: normalizedMode,
+          providerUsed: aiOut.providerUsed,
+          modelUsed: aiOut.modelUsed,
+          existingApp: currentApp,
+          isRefinement: true,
+        })
+      : null;
 
     if (!updatedProject) {
-      updatedProject = refineSynthesizedProject(currentApp, refinementPrompt);
+      updatedProject = fallbackSynthesizeStudioProject({
+        prompt: refinementPrompt,
+        category: currentApp.category || 'general',
+        mode: normalizedMode,
+        existingApp: currentApp,
+        isRefinement: true,
+      });
     }
 
     await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
@@ -3048,8 +3566,9 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
       }
     }
 
-    // Provider 4: Groq
-    if (effectiveProvider === 'groq' || isGroqModelId(model)) {
+    // Provider 4: Groq (skip in auto mode when live Google Search/Maps grounding is requested and Gemini is available)
+    const forceGeminiForGrounding = Boolean((enableSearch || enableMaps) && effectiveProvider === 'auto' && tenantClient);
+    if (!forceGeminiForGrounding && (effectiveProvider === 'groq' || (isGroqModelId(model) && effectiveProvider !== 'gemini'))) {
       if (!activeGroqKey) {
         return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'GROQ_API_KEY is not configured. Add your gsk_... key in Settings.');
       }
@@ -3239,16 +3758,25 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
 
     const groundingSources: any[] = [];
     const mapsSources: any[] = [];
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    const searchQueries: string[] = [];
+    const groundingMeta = response.candidates?.[0]?.groundingMetadata as any;
+    const chunks = groundingMeta?.groundingChunks;
+    if (Array.isArray(groundingMeta?.webSearchQueries)) {
+      groundingMeta.webSearchQueries.forEach((q: any) => {
+        if (typeof q === 'string' && q.trim() && !searchQueries.includes(q.trim())) {
+          searchQueries.push(q.trim());
+        }
+      });
+    }
     if (Array.isArray(chunks)) {
       chunks.forEach((chunk: any) => {
-        if (chunk.web?.uri) {
+        if (chunk.web?.uri && !groundingSources.some((s) => s.url === chunk.web.uri)) {
           groundingSources.push({
             title: chunk.web.title || chunk.web.uri,
             url: chunk.web.uri,
           });
         }
-        if (chunk.maps?.uri) {
+        if (chunk.maps?.uri && !mapsSources.some((s) => s.url === chunk.maps.uri)) {
           mapsSources.push({
             title: chunk.maps.title || 'Google Maps Location',
             url: chunk.maps.uri,
@@ -3273,6 +3801,7 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
       responseId: (response as any).responseId || null,
       usage,
       latencyMs,
+      searchQueries,
       groundingSources,
       mapsSources,
       brandSignature: 'RaOne AI by RavanaTec',
@@ -3327,10 +3856,12 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
   const abortController = new AbortController();
   const timeoutHandle = setTimeout(() => abortController.abort(), 120000);
 
-  req.on('close', () => {
-    clientClosed = true;
-    abortController.abort();
-    clearTimeout(timeoutHandle);
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      abortController.abort();
+      clearTimeout(timeoutHandle);
+    }
   });
 
   const sendEvent = (payload: Record<string, any>) => {
@@ -3397,7 +3928,8 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
       return endStream();
     };
 
-    if (effectiveProvider === 'groq' || isGroqModelId(model)) {
+    const forceGeminiForGrounding = Boolean((enableSearch || enableMaps) && effectiveProvider === 'auto' && tenantClient);
+    if (!forceGeminiForGrounding && (effectiveProvider === 'groq' || (isGroqModelId(model) && effectiveProvider !== 'gemini'))) {
       if (!activeGroqKey) {
         sendEvent({
           type: 'error',
@@ -3567,6 +4099,7 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
         let usage: any = null;
         const groundingSources: any[] = [];
         const mapsSources: any[] = [];
+        const searchQueries: string[] = [];
 
         for await (const chunk of stream) {
           if (clientClosed || abortController.signal.aborted) break;
@@ -3583,7 +4116,15 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
               totalTokens: c.usageMetadata.totalTokenCount ?? 0,
             };
           }
-          const gChunks = c.candidates?.[0]?.groundingMetadata?.groundingChunks;
+          const gMeta = c.candidates?.[0]?.groundingMetadata;
+          if (Array.isArray(gMeta?.webSearchQueries)) {
+            gMeta.webSearchQueries.forEach((q: any) => {
+              if (typeof q === 'string' && q.trim() && !searchQueries.includes(q.trim())) {
+                searchQueries.push(q.trim());
+              }
+            });
+          }
+          const gChunks = gMeta?.groundingChunks;
           if (Array.isArray(gChunks)) {
             gChunks.forEach((gc: any) => {
               if (gc.web?.uri && !groundingSources.some((s) => s.url === gc.web.uri)) {
@@ -3605,6 +4146,7 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
             responseId: responseId || null,
             usage,
             latencyMs: Date.now() - startTime,
+            searchQueries,
             groundingSources,
             mapsSources,
           });
@@ -4753,6 +5295,41 @@ app.all('/api/documents/export/:format', async (req, res) => {
 
 
 
+// Standalone Sandboxed Live Hosted Preview Route for Published Code Studio Apps
+app.get('/published/:shareId', async (req, res) => {
+  try {
+    const shareId = String(req.params.shareId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!shareId) {
+      return res.status(404).send('Published application not found.');
+    }
+    const publishedMap = await readSharedCollection<Record<string, PublishedSnapshotRecord>>('studio_published', {});
+    const record = publishedMap[shareId];
+    if (!record || !record.code) {
+      return res.status(404).send('Published application snapshot was not found or has been removed.');
+    }
+
+    // Increment view counter asynchronously (non-blocking)
+    mutateSharedCollection<Record<string, PublishedSnapshotRecord>>('studio_published', {}, (map) => {
+      if (!map[shareId]) return map;
+      return {
+        ...map,
+        [shareId]: { ...map[shareId], views: (map[shareId].views || 0) + 1 },
+      };
+    }).catch(() => {});
+
+    // Isolate published user-generated apps in an opaque sandbox origin so they cannot access host cookies/storage
+    res.setHeader(
+      'Content-Security-Policy',
+      "sandbox allow-scripts allow-forms allow-modals allow-downloads; default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'"
+    );
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(record.code);
+  } catch (err: any) {
+    return res.status(500).send('Failed to serve published application.');
+  }
+});
+
 // Setup Vite in development or static serve in production
 async function startServer() {
   // Ensure unknown /api routes always return JSON instead of falling back to index.html
@@ -4768,7 +5345,7 @@ async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);

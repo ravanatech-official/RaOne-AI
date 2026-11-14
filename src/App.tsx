@@ -62,12 +62,39 @@ function getConversationsStorageKey(uid?: string | null): string {
   return `raone_conversations_v2_${uid || 'guest'}`;
 }
 
+function sanitizeConversationList(raw: unknown): Conversation[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (c): c is Conversation =>
+        Boolean(c && typeof c === 'object' && typeof (c as any).id === 'string')
+    )
+    .map((c) => ({
+      ...c,
+      title: typeof c.title === 'string' && c.title.trim() ? c.title : 'Chat',
+      section:
+        c.section === 'pinned' || c.section === 'projects' || c.section === 'recents'
+          ? c.section
+          : 'recents',
+      createdAt: typeof c.createdAt === 'string' ? c.createdAt : 'Today',
+      updatedAt: typeof c.updatedAt === 'string' ? c.updatedAt : 'Just now',
+      modelId: typeof c.modelId === 'string' ? c.modelId : 'gemini-4-hydrogen',
+      messages: Array.isArray(c.messages)
+        ? c.messages.filter(
+            (m): m is ChatMessage =>
+              Boolean(m && typeof m === 'object' && typeof (m as any).id === 'string' && typeof (m as any).content === 'string')
+          )
+        : [],
+    }));
+}
+
 function readCachedConversations(uid?: string | null): Conversation[] {
   try {
     const saved = localStorage.getItem(getConversationsStorageKey(uid));
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      const sanitized = sanitizeConversationList(parsed);
+      if (sanitized.length > 0) return sanitized;
     }
   } catch (e) {
     console.warn('LocalStorage reading error:', e);
@@ -89,9 +116,10 @@ export default function App() {
   const [isOutputsOpen, setIsOutputsOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState<boolean>(false);
-  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash');
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-4-hydrogen');
   const [activeProvider, setActiveProvider] = useState<'auto' | 'gemini' | 'groq' | 'local'>('auto');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isSearchingWeb, setIsSearchingWeb] = useState<boolean>(false);
   const [showScrollDown, setShowScrollDown] = useState<boolean>(false);
   const [shareCopied, setShareCopied] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -241,11 +269,12 @@ export default function App() {
     fetch('/api/conversations')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!cancelled && Array.isArray(data) && data.length > 0) {
+        const sanitized = sanitizeConversationList(data);
+        if (!cancelled && sanitized.length > 0) {
           setConversations((prev) => {
             if (prev.length === 0) {
-              setActiveId(data[0].id);
-              return data;
+              setActiveId(sanitized[0].id);
+              return sanitized;
             }
             return prev;
           });
@@ -561,6 +590,7 @@ export default function App() {
         const tempMsgId = `m-${Date.now()}`;
         setTemporaryMessages((prev) => [...prev, userMessage]);
         setIsLoading(true);
+        setIsSearchingWeb(Boolean(options?.enableSearch));
 
         try {
           const history = temporaryMessages.slice(-6);
@@ -622,6 +652,7 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             thinkingTime: `${meta?.elapsedSec || '0.5'}s`,
             thoughtProcess: buildThoughtProcess(meta),
+            searchQueries: meta?.searchQueries,
             groundingSources: meta?.groundingSources,
             mapsSources: meta?.mapsSources,
             isTemporary: true,
@@ -649,6 +680,7 @@ export default function App() {
           setTemporaryMessages((prev) => [...prev, errorMessage]);
         } finally {
           setIsLoading(false);
+          setIsSearchingWeb(false);
         }
         return;
       }
@@ -695,6 +727,7 @@ export default function App() {
       }
 
       setIsLoading(true);
+      setIsSearchingWeb(Boolean(options?.enableSearch));
 
       try {
         const history = isNewConv ? [] : activeConversation.messages.slice(-6);
@@ -786,6 +819,7 @@ export default function App() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           thinkingTime: `${meta?.elapsedSec || '0.5'}s`,
           thoughtProcess: buildThoughtProcess(meta),
+          searchQueries: meta?.searchQueries,
           groundingSources: meta?.groundingSources,
           mapsSources: meta?.mapsSources,
         };
@@ -834,6 +868,7 @@ export default function App() {
         );
       } finally {
         setIsLoading(false);
+        setIsSearchingWeb(false);
       }
     },
     [
@@ -1104,22 +1139,33 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {activeConversation.messages.map((message) => (
+              {activeConversation.messages.map((message, idx) => (
                 <ChatMessageItem
                   key={message.id}
                   message={message}
                   onSpeak={voice.speakText}
-                  onRegenerate={() => handleSendMessage(message.content)}
+                  onRegenerate={() => {
+                    const prevUserMsg = activeConversation.messages
+                      .slice(0, idx)
+                      .reverse()
+                      .find((m) => m.role === 'user');
+                    const queryToRetry = prevUserMsg?.content || message.content;
+                    handleSendMessage(queryToRetry, {
+                      enableSearch: Boolean(message.groundingSources?.length || message.searchQueries?.length),
+                    });
+                  }}
                   isSpeaking={voice.isSpeaking}
                 />
               ))}
 
-              {/* Thinking indicator */}
+              {/* Thinking / Web Search indicator */}
               {isLoading && (
                 <div className="my-5 max-w-[760px] mx-auto px-4">
                   <div className="flex items-center gap-2 text-xs text-[#9E9E9E]">
-                    <div className="w-2 h-2 rounded-full bg-white animate-ping" />
-                    <span className="font-mono">Thinking...</span>
+                    <div className={`w-2 h-2 rounded-full animate-ping ${isSearchingWeb ? 'bg-sky-400' : 'bg-white'}`} />
+                    <span className="font-mono">
+                      {isSearchingWeb ? 'Searching Google for real-time information...' : 'Thinking...'}
+                    </span>
                   </div>
                 </div>
               )}
