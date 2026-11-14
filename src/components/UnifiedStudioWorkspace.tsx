@@ -89,6 +89,8 @@ interface UnifiedStudioWorkspaceProps {
   toastMessage?: string | null;
   diagnosticsBadgeCount?: number;
   headerCenterExtra?: React.ReactNode;
+  extraToolbarActions?: React.ReactNode;
+  composerInlineActions?: React.ReactNode;
   streamingFeedCard?: React.ReactNode;
   composerExtraFooter?: React.ReactNode;
   modalOverlay?: React.ReactNode;
@@ -135,6 +137,8 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
   toastMessage,
   diagnosticsBadgeCount = 0,
   headerCenterExtra,
+  extraToolbarActions,
+  composerInlineActions,
   streamingFeedCard,
   composerExtraFooter,
   modalOverlay,
@@ -538,18 +542,21 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
                 />
 
                 <div className="flex items-center justify-between pt-2 mt-1">
-                  {/* Left Circular + Button */}
-                  <button
-                    onClick={() => setIsAddMenuOpen((prev) => !prev)}
-                    className={`w-7 h-7 rounded-full border flex items-center justify-center transition-colors ${
-                      isAddMenuOpen
-                        ? 'bg-[#2B2D30] border-[#52555C] text-white'
-                        : 'border-[#3C3E43] text-[#9AA0A6] hover:text-white hover:border-[#6E7075] hover:bg-[#2A2B2E]'
-                    }`}
-                    title="Attach inputs & configure parameters"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                  </button>
+                  {/* Left Circular + Button & Optional Inline Actions */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setIsAddMenuOpen((prev) => !prev)}
+                      className={`w-7 h-7 rounded-full border flex items-center justify-center transition-colors ${
+                        isAddMenuOpen
+                          ? 'bg-[#2B2D30] border-[#52555C] text-white'
+                          : 'border-[#3C3E43] text-[#9AA0A6] hover:text-white hover:border-[#6E7075] hover:bg-[#2A2B2E]'
+                      }`}
+                      title="Attach inputs & configure parameters"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                    {composerInlineActions}
+                  </div>
 
                   {/* Right Controls: Model Dropdown + Mic + Submit Arrow */}
                   <div className="flex items-center gap-1.5">
@@ -730,10 +737,15 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
               </div>
             </div>
 
-            {/* Right: Edit Controls Drawer Button */}
+            {/* Right: Optional Toolbar Actions + Edit Controls Drawer Button */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {extraToolbarActions}
               <button
-                onClick={() => setIsEditDrawerOpen((prev) => !prev)}
+                onClick={() => {
+                  setIsDiagnosticsOpen(false);
+                  setIsSettingsOpen(false);
+                  setIsEditDrawerOpen((prev) => !prev);
+                }}
                 className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                   isEditDrawerOpen
                     ? 'bg-[#2B2D30] border-[#4A4D54] text-white'
@@ -805,12 +817,12 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
               )}
             </div>
 
-            {/* Slide-Over Edit Controls Drawer */}
+            {/* Non-Blocking Overlay Slide-Over Edit Controls Drawer */}
             {isEditDrawerOpen && editDrawerContent && (
-              <aside className="w-80 sm:w-[340px] shrink-0 border-l border-[#252629] bg-[#161719] flex flex-col min-h-0 z-20">
+              <aside className="absolute top-0 right-0 bottom-0 w-full sm:w-[390px] border-l border-[#252629] bg-[#161719]/95 backdrop-blur-md flex flex-col min-h-0 z-30 shadow-2xl">
                 <div className="h-10 px-4 border-b border-[#252629] flex items-center justify-between shrink-0">
                   <span className="text-xs font-medium text-[#E3E3E3]">
-                    Edit Parameters
+                    Studio Parameters & Stack
                   </span>
                   <button
                     onClick={() => setIsEditDrawerOpen(false)}
@@ -825,12 +837,12 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
               </aside>
             )}
 
-            {/* Diagnostics Drawer (Bug button) */}
+            {/* Non-Blocking Overlay Diagnostics & Audit Drawer (Bug button) */}
             {isDiagnosticsOpen && (
-              <aside className="w-80 sm:w-[340px] shrink-0 border-l border-[#252629] bg-[#161719] flex flex-col min-h-0 z-20">
+              <aside className="absolute top-0 right-0 bottom-0 w-full sm:w-[410px] border-l border-[#252629] bg-[#161719]/95 backdrop-blur-md flex flex-col min-h-0 z-30 shadow-2xl">
                 <div className="h-10 px-4 border-b border-[#252629] flex items-center justify-between shrink-0">
                   <span className="text-xs font-medium text-[#E3E3E3]">
-                    Diagnostics & Pipeline Info
+                    Audit, Debug & Telemetry
                   </span>
                   <button
                     onClick={() => setIsDiagnosticsOpen(false)}
@@ -855,9 +867,9 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
               </aside>
             )}
 
-            {/* Settings Drawer (Gear button) */}
+            {/* Non-Blocking Overlay Settings Drawer (Gear button) */}
             {isSettingsOpen && (
-              <aside className="w-80 sm:w-[340px] shrink-0 border-l border-[#252629] bg-[#161719] flex flex-col min-h-0 z-20">
+              <aside className="absolute top-0 right-0 bottom-0 w-full sm:w-[390px] border-l border-[#252629] bg-[#161719]/95 backdrop-blur-md flex flex-col min-h-0 z-30 shadow-2xl">
                 <div className="h-10 px-4 border-b border-[#252629] flex items-center justify-between shrink-0">
                   <span className="text-xs font-medium text-[#E3E3E3]">
                     Workspace Settings

@@ -9,13 +9,6 @@ import {
   Sparkles,
   Key,
   Terminal,
-  Laptop,
-  Monitor,
-  Tablet,
-  Smartphone,
-  Gamepad2,
-  Box,
-  Glasses,
   Loader2,
   Cpu,
   AlertTriangle,
@@ -29,6 +22,9 @@ import {
   FolderArchive,
   History,
   Wifi,
+  Wand2,
+  ShieldCheck,
+  Rocket,
 } from 'lucide-react';
 import {
   UnifiedStudioWorkspace,
@@ -37,6 +33,18 @@ import {
   ViewportSize,
 } from './UnifiedStudioWorkspace';
 import { StudioCodeEditor } from './StudioCodeEditor';
+import { StudioConfigDrawer } from './StudioConfigDrawer';
+import { StudioAuditDrawer } from './StudioAuditDrawer';
+import { StudioDeployModal } from './StudioDeployModal';
+import {
+  DEFAULT_PROJECT_CONFIG,
+  CATEGORY_CATALOG,
+  type StudioProjectConfig,
+  type StudioAuditReport,
+  type StudioDependencyItem,
+  type PromptEnhanceDepth,
+  type DeployTargetId,
+} from '../types/studio';
 import {
   bundleFilesToHtml,
   injectPreviewTelemetry,
@@ -80,6 +88,10 @@ export interface StudioApp {
   updatedAt?: string;
   code: string;
   files?: Record<string, string | undefined>;
+  projectConfig?: StudioProjectConfig;
+  auditReport?: StudioAuditReport;
+  dependencies?: StudioDependencyItem[];
+  envVariables?: string[];
   turns?: WorkspaceTurn[];
   versions?: StudioVersionSnapshot[];
   currentVersion?: number;
@@ -179,10 +191,17 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
   const [filesFilter, setFilesFilter] = useState<'my' | 'gallery'>('my');
   const [fileSearch, setFileSearch] = useState<string>('');
 
-  // Share / Publish Modal State
+  // Share / Publish / Deploy Modal State
   const [isPublishModalOpen, setIsPublishModalOpen] = useState<boolean>(false);
   const [isPublishing, setIsPublishing] = useState<boolean>(false);
-  const [copiedShareLink, setCopiedShareLink] = useState<boolean>(false);
+
+  // Silicon Valley Code Studio Config, Enhancer, Audit & Dependency State
+  const [projectConfig, setProjectConfig] = useState<StudioProjectConfig>(DEFAULT_PROJECT_CONFIG);
+  const [enhanceDepth, setEnhanceDepth] = useState<PromptEnhanceDepth>('fullstack');
+  const [isEnhancingPrompt, setIsEnhancingPrompt] = useState<boolean>(false);
+  const [isAuditing, setIsAuditing] = useState<boolean>(false);
+  const [isFixingAudit, setIsFixingAudit] = useState<boolean>(false);
+  const [isSyncingDeps, setIsSyncingDeps] = useState<boolean>(false);
 
   // Keys & Local llama.cpp Config State
   const [geminiKeyInput, setGeminiKeyInput] = useState<string>('');
@@ -305,6 +324,9 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
 
   const openSavedOrGalleryApp = (app: StudioApp) => {
     setBuiltApp(app);
+    if (app.projectConfig) {
+      setProjectConfig(app.projectConfig);
+    }
     setTurns(Array.isArray(app.turns) ? app.turns : []);
     if (app.mode) handleSelectMode(app.mode);
     setRuntimeErrors([]);
@@ -460,6 +482,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
                   : 'Built new application locally via Browser Direct llama.cpp.',
               },
             ],
+            projectConfig,
           }),
         });
         const persistData = await persistRes.json();
@@ -495,14 +518,16 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
                 selectedElementContext,
                 attachments,
                 turns: nextTurns,
+                projectConfig,
               }
             : {
                 prompt: finalPrompt,
                 mode: selectedBuildMode,
-                category,
+                category: projectConfig.category || category,
                 provider: selectedBrain,
                 attachments,
                 turns: nextTurns,
+                projectConfig,
               }
         ),
       });
@@ -813,6 +838,211 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
     showToast('Started empty workspace.');
   };
 
+  // Prompt Enhancer (2 words -> Professional Silicon Valley PRD prompt)
+  const handleEnhancePrompt = async () => {
+    if (!prompt.trim() || isEnhancingPrompt) return;
+    setIsEnhancingPrompt(true);
+    try {
+      const res = await fetch('/api/studio/enhance-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          depth: enhanceDepth,
+          projectConfig,
+          provider: selectedBrain === 'local_direct' ? 'auto' : selectedBrain,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.enhancedPrompt) {
+        setPrompt(data.enhancedPrompt);
+        showToast(`Enhanced prompt (${data.providerUsed || enhanceDepth})`);
+      } else {
+        showToast(data?.error || 'Could not enhance prompt.');
+      }
+    } catch (err: any) {
+      showToast('Enhance error: ' + err.message);
+    } finally {
+      setIsEnhancingPrompt(false);
+    }
+  };
+
+  // Dependency Sync & Manifest Generator
+  const handleSyncDependencies = async (addPackage?: string, removePackage?: string) => {
+    setIsSyncingDeps(true);
+    try {
+      const filesMap = isCodeDirty ? draftFiles : builtApp?.files || {};
+      const res = await fetch('/api/studio/dependencies/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: filesMap,
+          projectConfig,
+          addPackage,
+          removePackage,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        if (data.updatedConfig) setProjectConfig(data.updatedConfig);
+        if (builtApp) {
+          const mergedFiles: Record<string, string | undefined> = {
+            ...filesMap,
+            ...(data.generatedManifests || {}),
+          };
+          const updated: StudioApp = {
+            ...builtApp,
+            files: mergedFiles,
+            dependencies: data.dependencies,
+            envVariables: data.envVariables,
+            projectConfig: data.updatedConfig || projectConfig,
+          };
+          setBuiltApp(updated);
+          setDraftFiles(mergedFiles);
+        }
+        showToast(
+          addPackage
+            ? `Added "${addPackage}" & synced manifest.`
+            : removePackage
+            ? `Removed "${removePackage}" from manifest.`
+            : `Synced ${data.dependencies?.length || 0} dependencies.`
+        );
+      }
+    } catch (err: any) {
+      showToast('Dependency sync error: ' + err.message);
+    } finally {
+      setIsSyncingDeps(false);
+    }
+  };
+
+  // Full Security / Syntax / Performance / SEO Audit
+  const handleRunFullAudit = async () => {
+    if (!builtApp || isAuditing) return;
+    setIsAuditing(true);
+    try {
+      const filesMap = isCodeDirty ? draftFiles : builtApp.files || {};
+      const res = await fetch('/api/studio/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app: builtApp,
+          files: filesMap,
+          code: isCodeDirty ? bundleFilesToHtml(draftFiles) : builtApp.code,
+          projectConfig,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.auditReport) {
+        setBuiltApp((prev) =>
+          prev
+            ? {
+                ...prev,
+                auditReport: data.auditReport,
+                dependencies: data.dependencies || prev.dependencies,
+                envVariables: data.envVariables || prev.envVariables,
+              }
+            : prev
+        );
+        showToast(`Audit complete: ${data.auditReport.score}/100`);
+      }
+    } catch (err: any) {
+      showToast('Audit failed: ' + err.message);
+    } finally {
+      setIsAuditing(false);
+    }
+  };
+
+  // 1-Click AI Audit Remediation
+  const handleAutoFixAudit = async () => {
+    if (!builtApp || isFixingAudit) return;
+    setIsFixingAudit(true);
+    try {
+      const res = await fetch('/api/studio/audit/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app: builtApp,
+          auditReport: builtApp.auditReport,
+          projectConfig,
+          provider: selectedBrain === 'local_direct' ? 'auto' : selectedBrain,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.app) {
+        throw new Error(data?.error || 'Audit auto-fix failed.');
+      }
+      const fixedApp: StudioApp = data.app;
+      setBuiltApp(fixedApp);
+      setSavedApps((prev) => [fixedApp, ...prev.filter((a) => a.id !== fixedApp.id)]);
+      setIframeKey((k) => k + 1);
+      showToast(`Audit issues remediated (Score: ${fixedApp.auditReport?.score ?? 100}/100).`);
+    } catch (err: any) {
+      showToast(err.message || 'Auto-fix audit failed.');
+    } finally {
+      setIsFixingAudit(false);
+    }
+  };
+
+  // Firebase / Google Cloud Run / GitHub Artifact Synthesis & Repo Push
+  const handlePrepareDeployArtifacts = async (opts: {
+    target: DeployTargetId;
+    firebaseProjectId?: string;
+    gcpRegion?: string;
+    cloudRunService?: string;
+    githubRepo?: string;
+    githubBranch?: string;
+  }) => {
+    if (!builtApp) return null;
+    try {
+      const res = await fetch('/api/studio/deploy/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app: builtApp,
+          ...opts,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.app) {
+        setBuiltApp(data.app);
+        setSavedApps((prev) => [data.app, ...prev.filter((a) => a.id !== data.app.id)]);
+        showToast(`Generated ${opts.target.toUpperCase()} deployment artifacts.`);
+        return {
+          commands: data.artifacts?.commands || [],
+          checklist: data.artifacts?.checklist || [],
+        };
+      }
+      showToast(data?.error || 'Failed to prepare deployment files.');
+      return null;
+    } catch (err: any) {
+      showToast('Deploy prep error: ' + err.message);
+      return null;
+    }
+  };
+
+  const handlePushToGitHub = async (opts: { repo: string; branch: string; token: string }) => {
+    if (!builtApp) return null;
+    try {
+      const res = await fetch('/api/studio/deploy/github', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app: builtApp,
+          ...opts,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'GitHub push failed.');
+      }
+      showToast(`Pushed ${data.pushedCount} files to ${data.repo}.`);
+      return { repoUrl: data.repoUrl, pushedCount: data.pushedCount };
+    } catch (err: any) {
+      showToast(err.message || 'GitHub push error.');
+      return null;
+    }
+  };
+
   // Inject runtime error & element-inspect bridge into preview srcDoc cleanly
   const instrumentedPreviewHtml = useMemo(() => {
     if (!builtApp?.code) return '';
@@ -1027,117 +1257,26 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
   );
 
   const editDrawerContent = (
-    <div className="space-y-4">
-      <div>
-        <label className="text-xs font-medium text-[#C4C7C5] block mb-1.5">
-          Viewport Size
-        </label>
-        <div className="grid grid-cols-4 gap-1 bg-[#1B1C1E] p-1 rounded-lg border border-[#2C2D30]">
-          {[
-            { id: 'desktop', Icon: Monitor },
-            { id: 'laptop', Icon: Laptop },
-            { id: 'tablet', Icon: Tablet },
-            { id: 'mobile', Icon: Smartphone },
-          ].map(({ id, Icon }) => (
-            <button
-              key={id}
-              onClick={() => setViewport(id as ViewportSize)}
-              className={`py-1.5 rounded flex items-center justify-center transition-colors ${
-                viewport === id
-                  ? 'bg-[#2B2D30] text-white'
-                  : 'text-[#8E918F] hover:text-white'
-              }`}
-              title={id}
-            >
-              <Icon className="w-3.5 h-3.5" />
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {builtApp && (
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-[#C4C7C5] block">
-            Visual Target & Refactor Actions
-          </label>
-          <button
-            onClick={() => {
-              setRightTab('preview');
-              setIsInspectMode((prev) => !prev);
-            }}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-colors ${
-              isInspectMode
-                ? 'bg-[#1F2A3C] border-[#8AB4F8] text-white'
-                : 'bg-[#1E1F20] hover:bg-[#28292C] border-[#2F3135] text-[#E3E3E3]'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Crosshair className="w-3.5 h-3.5 text-[#8AB4F8]" />
-              <span>{isInspectMode ? 'Inspecting Preview...' : 'Click-to-Target Element'}</span>
-            </span>
-          </button>
-
-          {[
-            'Add Dark/Light Theme Toggle',
-            'Add Export to CSV',
-            'Add Realtime Search & Filter',
-            'Improve responsive mobile layout',
-          ].map((action) => (
-            <button
-              key={action}
-              onClick={() => handleSubmitPrompt(action)}
-              disabled={isBuildingApp}
-              className="w-full text-left px-3 py-2 rounded-lg bg-[#1E1F20] hover:bg-[#28292C] border border-[#2F3135] text-xs text-[#E3E3E3] transition-colors disabled:opacity-50"
-            >
-              + {action}
-            </button>
-          ))}
-
-          <div className="grid grid-cols-2 gap-1.5 pt-1">
-            <button
-              onClick={() => handleDownloadZip(builtApp)}
-              className="py-2 rounded-lg bg-[#2B2D30] hover:bg-[#35373C] text-xs font-medium text-white flex items-center justify-center gap-1.5"
-            >
-              <FolderArchive className="w-3.5 h-3.5" />
-              <span>ZIP</span>
-            </button>
-            <button
-              onClick={() => handleDownloadApp(builtApp)}
-              className="py-2 rounded-lg bg-[#252629] hover:bg-[#323438] text-xs font-medium text-white flex items-center justify-center gap-1.5"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>HTML</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {!builtApp && (
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-[#C4C7C5] block">
-            Starter Templates
-          </label>
-          {[
-            { label: 'Arcade 2D Game', icon: Gamepad2, p: 'Retro Cyberpunk Space Shooter 2D Arcade Game' },
-            { label: 'Three.js 3D Scene', icon: Box, p: 'Three.js 3D Orbital Solar Simulation with planetary controls' },
-            { label: 'WebXR Showcase', icon: Glasses, p: 'WebXR Spatial 3D Product Showcase' },
-          ].map((tpl) => {
-            const Icon = tpl.icon;
-            return (
-              <button
-                key={tpl.label}
-                onClick={() => handleSubmitPrompt(tpl.p, tpl.label)}
-                disabled={isBuildingApp}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1E1F20] hover:bg-[#28292C] border border-[#2F3135] text-xs text-[#E3E3E3] transition-colors text-left"
-              >
-                <Icon className="w-3.5 h-3.5 text-[#8AB4F8] shrink-0" />
-                <span>{tpl.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    <StudioConfigDrawer
+      config={projectConfig}
+      onChangeConfig={setProjectConfig}
+      viewport={viewport}
+      onViewportChange={setViewport}
+      hasBuiltApp={Boolean(builtApp)}
+      isBuildingApp={isBuildingApp}
+      isInspectMode={isInspectMode}
+      onToggleInspectMode={() => {
+        setRightTab('preview');
+        setIsInspectMode((prev) => !prev);
+      }}
+      onQuickRefine={(action) => handleSubmitPrompt(action)}
+      onQuickTemplate={(p, label) => handleSubmitPrompt(p, label)}
+      dependencies={builtApp?.dependencies || []}
+      onSyncDependencies={handleSyncDependencies}
+      isSyncingDeps={isSyncingDeps}
+      onDownloadZip={builtApp ? () => handleDownloadZip(builtApp) : undefined}
+      onDownloadHtml={builtApp ? () => handleDownloadApp(builtApp) : undefined}
+    />
   );
 
   const composerAddContent = (
@@ -1313,72 +1452,24 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
   );
 
   const diagnosticsContent = (
-    <div className="space-y-3">
-      <div className="p-3 rounded-xl bg-[#1E1F20] border border-[#2C2D30] space-y-1">
-        <div className="flex items-center gap-1.5 font-medium text-white">
-          <Terminal className="w-3.5 h-3.5 text-[#8AB4F8]" />
-          <span>Build & Sandbox Validation</span>
-        </div>
-        <div className="text-[11px] text-[#9AA0A6] tabular-nums">
-          Mode: {selectedBuildMode} · Brain: {builtApp?.providerUsed || selectedBrain}
-        </div>
-        {builtApp?.diagnostics && (
-          <div className="text-[11px] text-[#C4C7C5] pt-1 space-y-0.5 tabular-nums">
-            <div>
-              Syntax Check: {builtApp.diagnostics.syntaxOk ? 'Passed' : 'Warnings/Errors'} ·{' '}
-              {(builtApp.diagnostics.bundleBytes / 1024).toFixed(1)} KB
-            </div>
-            {builtApp.diagnostics.errors.map((err, i) => (
-              <div key={i} className="text-red-400 font-mono">{err}</div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {runtimeErrors.length > 0 && (
-        <div className="p-3 rounded-xl bg-red-950/40 border border-red-800/60 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-red-300">
-              Preview Runtime Errors ({runtimeErrors.length})
-            </span>
-            <button
-              onClick={handleAutoFixErrors}
-              disabled={isAutoFixing}
-              className="px-2 py-1 rounded bg-red-500 hover:bg-red-400 text-white text-[11px] font-medium"
-            >
-              {isAutoFixing ? 'Fixing...' : 'Auto-Fix with AI'}
-            </button>
-          </div>
-          <div className="space-y-1 font-mono text-[11px] text-red-200 max-h-36 overflow-y-auto">
-            {runtimeErrors.map((err, i) => (
-              <div key={i}>{err}</div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {builtApp?.agentSteps && (
-        <div className="space-y-1.5">
-          {builtApp.agentSteps.map((step, i) => (
-            <div
-              key={i}
-              className="p-2.5 rounded-lg bg-[#1E1F20] border border-[#2C2D30] text-[11px]"
-            >
-              <div className="font-medium text-white">{step.phase}: {step.title}</div>
-              <div className="text-[#8E918F] mt-0.5">{step.details}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {agentLogs.length > 0 && (
-        <div className="p-2.5 rounded-lg bg-[#0E0F10] border border-[#252629] font-mono text-[11px] text-[#9AA0A6] space-y-1 max-h-48 overflow-y-auto">
-          {agentLogs.map((l, idx) => (
-            <div key={idx}>{l}</div>
-          ))}
-        </div>
-      )}
-    </div>
+    <StudioAuditDrawer
+      hasBuiltApp={Boolean(builtApp)}
+      selectedBuildMode={selectedBuildMode}
+      providerUsed={builtApp?.providerUsed}
+      selectedBrain={selectedBrain}
+      diagnostics={builtApp?.diagnostics}
+      auditReport={builtApp?.auditReport}
+      envVariables={builtApp?.envVariables}
+      runtimeErrors={runtimeErrors}
+      isAutoFixing={isAutoFixing}
+      isAuditing={isAuditing}
+      isFixingAudit={isFixingAudit}
+      onAutoFixRuntime={handleAutoFixErrors}
+      onRunFullAudit={handleRunFullAudit}
+      onAutoFixAudit={handleAutoFixAudit}
+      agentSteps={builtApp?.agentSteps}
+      agentLogs={agentLogs}
+    />
   );
 
   // Version Switcher Pill rendered cleanly in header when versions exist
@@ -1453,105 +1544,96 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       </div>
     ) : null;
 
-  // Publish & Share Modal
-  const fullShareUrl = builtApp?.publishMeta?.shareUrl
-    ? `${window.location.origin}${builtApp.publishMeta.shareUrl}`
-    : '';
-
-  const publishModal = isPublishModalOpen && builtApp ? (
-    <div className="fixed inset-0 z-[130] bg-black/70 flex items-center justify-center p-4">
-      <div className="w-full max-w-md rounded-2xl bg-[#18191B] border border-[#2F3135] p-5 space-y-4 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-[#252629] pb-3">
-          <div className="flex items-center gap-2">
-            <Globe className="w-4 h-4 text-[#8AB4F8]" />
-            <h3 className="text-sm font-medium text-white">Publish & Share Application</h3>
-          </div>
-          <button
-            onClick={() => setIsPublishModalOpen(false)}
-            className="p-1 rounded text-[#8E918F] hover:text-white"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="space-y-3 text-xs">
-          {isPublishing ? (
-            <div className="py-6 flex items-center justify-center gap-2 text-[#C4C7C5]">
-              <Loader2 className="w-4 h-4 animate-spin text-[#8AB4F8]" />
-              <span>Deploying sandboxed live snapshot...</span>
-            </div>
-          ) : builtApp.publishMeta?.shareUrl ? (
-            <>
-              <div className="text-[#9AA0A6]">
-                Standalone sandboxed live URL ready:
-              </div>
-              <div className="flex items-center gap-1.5 bg-[#111214] border border-[#2C2D30] rounded-lg p-1.5">
-                <input
-                  type="text"
-                  readOnly
-                  value={fullShareUrl}
-                  className="flex-1 bg-transparent px-2 text-xs font-mono text-[#E3E3E3] focus:outline-none select-all"
-                />
-                <button
-                  onClick={() => {
-                    navigator.clipboard?.writeText(fullShareUrl).catch(() => {});
-                    setCopiedShareLink(true);
-                    setTimeout(() => setCopiedShareLink(false), 1800);
-                    showToast('Published link copied.');
-                  }}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-[#2B2D30] hover:bg-[#383A40] text-white font-medium shrink-0"
-                >
-                  {copiedShareLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedShareLink ? 'Copied' : 'Copy'}</span>
-                </button>
-              </div>
-              <a
-                href={builtApp.publishMeta.shareUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="w-full py-2 rounded-lg bg-[#8AB4F8] hover:bg-[#AECBFA] text-[#0E0F10] font-medium flex items-center justify-center gap-1.5"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open Live Published App</span>
-              </a>
-            </>
-          ) : (
-            <button
-              onClick={handlePublishApp}
-              className="w-full py-2 rounded-lg bg-[#8AB4F8] hover:bg-[#AECBFA] text-[#0E0F10] font-medium"
-            >
-              Publish Snapshot URL
-            </button>
-          )}
-
-          <div className="pt-2 border-t border-[#252629] grid grid-cols-2 gap-2">
-            <button
-              onClick={() => handleDownloadZip(builtApp)}
-              className="py-2 rounded-lg bg-[#222428] hover:bg-[#2C2E33] border border-[#323438] text-[#E3E3E3] flex items-center justify-center gap-1.5"
-            >
-              <FolderArchive className="w-3.5 h-3.5" />
-              <span>Export ZIP</span>
-            </button>
-            <button
-              onClick={() => handleDownloadApp(builtApp)}
-              className="py-2 rounded-lg bg-[#222428] hover:bg-[#2C2E33] border border-[#323438] text-[#E3E3E3] flex items-center justify-center gap-1.5"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Export HTML</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+  const publishModal = builtApp ? (
+    <StudioDeployModal
+      isOpen={isPublishModalOpen}
+      onClose={() => setIsPublishModalOpen(false)}
+      appTitle={builtApp.title}
+      config={projectConfig}
+      publishMeta={builtApp.publishMeta}
+      isPublishing={isPublishing}
+      onPublishLiveSnapshot={handlePublishApp}
+      onPrepareDeployArtifacts={handlePrepareDeployArtifacts}
+      onPushToGitHub={handlePushToGitHub}
+      onDownloadZip={() => handleDownloadZip(builtApp)}
+      onDownloadHtml={() => handleDownloadApp(builtApp)}
+    />
   ) : null;
+
+  const activeCategoryLabel =
+    CATEGORY_CATALOG.find((c) => c.id === projectConfig.category)?.label || projectConfig.category;
+
+  const composerInlineActions = (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={handleEnhancePrompt}
+        disabled={isEnhancingPrompt || !prompt.trim()}
+        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#252629] hover:bg-[#303238] border border-[#35373B] text-[11px] font-medium text-[#E3E3E3] disabled:opacity-40 transition-colors whitespace-nowrap"
+        title="Expand brief prompt into a full architectural PRD specification"
+      >
+        {isEnhancingPrompt ? (
+          <Loader2 className="w-3 h-3 animate-spin text-[#8AB4F8]" />
+        ) : (
+          <Wand2 className="w-3 h-3 text-[#8AB4F8]" />
+        )}
+        <span>{isEnhancingPrompt ? 'Enhancing' : 'Enhance'}</span>
+      </button>
+
+      <select
+        value={enhanceDepth}
+        onChange={(e) => setEnhanceDepth(e.target.value as PromptEnhanceDepth)}
+        className="bg-[#1B1C1E] border border-[#303236] rounded-lg px-1.5 py-1 text-[11px] text-[#9AA0A6] focus:outline-none focus:border-[#8AB4F8]"
+        title="Prompt enhancement depth"
+      >
+        <option value="quick">Quick</option>
+        <option value="fullstack">PRD</option>
+        <option value="enterprise">Enterprise</option>
+      </select>
+    </div>
+  );
+
+  const extraToolbarActions = builtApp ? (
+    <div className="hidden lg:flex items-center gap-1.5">
+      {builtApp.auditReport && (
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#1B1C1E] border border-[#2C2D30] text-[11px] font-mono tabular-nums ${
+            builtApp.auditReport.score >= 85
+              ? 'text-emerald-400'
+              : builtApp.auditReport.score >= 60
+              ? 'text-amber-400'
+              : 'text-red-400'
+          }`}
+          title="Security, Syntax & Production Readiness Score"
+        >
+          <ShieldCheck className="w-3 h-3" />
+          <span>{builtApp.auditReport.score}/100</span>
+        </span>
+      )}
+      <button
+        onClick={() => setIsPublishModalOpen(true)}
+        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#1E1F20] hover:bg-[#28292C] border border-[#323438] text-xs font-medium text-[#E3E3E3] whitespace-nowrap"
+        title="Deploy to Firebase, Google Cloud Run or GitHub"
+      >
+        <Rocket className="w-3.5 h-3.5 text-[#8AB4F8]" />
+        <span>Deploy</span>
+      </button>
+    </div>
+  ) : (
+    <span className="hidden lg:inline-flex items-center px-2 py-1 rounded-lg bg-[#1B1C1E] border border-[#2C2D30] text-[11px] text-[#9AA0A6] whitespace-nowrap">
+      {activeCategoryLabel} · {projectConfig.frontendFramework}
+    </span>
+  );
+
+  const auditCriticalCount = builtApp?.auditReport?.criticalCount || 0;
 
   return (
     <UnifiedStudioWorkspace
       isOpen={isOpen}
       onBackToStart={onClose}
       moduleName="RaOne Code Studio"
-      workspaceTitle={builtApp ? builtApp.title : 'Untitled Workspace'}
+      workspaceTitle={builtApp ? builtApp.title : `${activeCategoryLabel} · Ready`}
       headerCenterExtra={headerVersionControl}
+      extraToolbarActions={extraToolbarActions}
       modelOptions={CODE_MODES}
       selectedModel={selectedBuildMode}
       onSelectModel={handleSelectMode}
@@ -1560,6 +1642,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       onSubmitPrompt={() => handleSubmitPrompt()}
       isGenerating={isBuildingApp}
       streamingFeedCard={streamingFeedCard}
+      composerInlineActions={composerInlineActions}
       composerExtraFooter={composerExtraFooter}
       turns={turns}
       onResetWorkspace={handleResetWorkspace}
@@ -1575,21 +1658,25 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       onRemix={() => handleRemixApp()}
       onShare={() => {
         if (builtApp) {
-          if (builtApp.publishMeta?.isPublished) {
-            setIsPublishModalOpen(true);
-          } else {
-            handlePublishApp();
-          }
+          setIsPublishModalOpen(true);
         } else {
           navigator.clipboard?.writeText(window.location.href).catch(() => {});
           showToast('Workspace link copied.');
         }
       }}
-      onPublish={handlePublishApp}
-      publishLabel={builtApp?.publishMeta?.isPublished ? 'Published' : 'Publish'}
+      onPublish={() => {
+        if (builtApp) {
+          setIsPublishModalOpen(true);
+        } else {
+          handlePublishApp();
+        }
+      }}
+      publishLabel={builtApp?.publishMeta?.isPublished ? 'Deploy / Live' : 'Publish'}
       filesCount={savedApps.length + galleryApps.length}
       hasActiveItem={!!builtApp}
-      diagnosticsBadgeCount={runtimeErrors.length + (builtApp?.diagnostics?.errors?.length || 0)}
+      diagnosticsBadgeCount={
+        runtimeErrors.length + (builtApp?.diagnostics?.errors?.length || 0) + auditCriticalCount
+      }
       previewContent={previewContent}
       codeContent={codeContent}
       filesContent={filesContent}
@@ -1598,7 +1685,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       diagnosticsContent={diagnosticsContent}
       settingsContent={settingsContent}
       emptyStateTitle="Empty Workspace"
-      emptyStateSubtitle="Describe an app on the left to build, or browse saved applications."
+      emptyStateSubtitle="Type even 2 words and click Enhance, choose any Category/Stack in Edit, and generate."
       emptyStateActionLabel="Open Files"
       onEmptyStateAction={() => setRightTab('files')}
       toastMessage={toastMessage}

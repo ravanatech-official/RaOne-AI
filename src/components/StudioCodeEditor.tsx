@@ -50,7 +50,9 @@ export const StudioCodeEditor: React.FC<StudioCodeEditorProps> = ({
   const [newFilename, setNewFilename] = useState('');
   const gutterRef = useRef<HTMLDivElement>(null);
 
-  const fileList = Object.keys(files).filter((k) => files[k] !== undefined);
+  const fileList = Object.keys(files)
+    .filter((k) => files[k] !== undefined)
+    .sort((a, b) => a.localeCompare(b));
   const currentContent = files[activeFile] ?? '';
   const lineCount = Math.max(1, currentContent.split('\n').length);
 
@@ -62,7 +64,10 @@ export const StudioCodeEditor: React.FC<StudioCodeEditorProps> = ({
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleaned = newFilename.trim().replace(/[^a-zA-Z0-9._-]/g, '');
+    const cleaned = newFilename
+      .trim()
+      .replace(/[^a-zA-Z0-9._/-]/g, '')
+      .replace(/^\/+|\/+$/g, '');
     if (!cleaned) return;
     onCreateFile(cleaned);
     setNewFilename('');

@@ -61,11 +61,19 @@ import {
   executeStudioAiPrompt,
   materializeProjectFromRawOutput,
   fallbackSynthesizeStudioProject,
+  enhanceStudioPromptServer,
   type StudioProviderChoice,
   type StudioAppAttachment,
   type RichStudioApp,
   type PublishedSnapshotRecord,
 } from './server_studio_engine.ts';
+import {
+  analyzeProjectDependencies,
+  runFullStudioAudit,
+  buildAuditAutoFixPrompt,
+  synthesizeDeployArtifacts,
+} from './server_studio_auditor.ts';
+import type { StudioProjectConfig, DeployTargetId, PromptEnhanceDepth } from './src/types/studio.ts';
 import {
   saveTenantVisionAsset,
   resolveTenantVisionAssetPath,
@@ -1789,6 +1797,7 @@ app.post('/api/studio/apps/persist-direct', async (req, res) => {
       existingApp,
       isRefinement = false,
       turns,
+      projectConfig,
     } = req.body || {};
 
     if (!rawText || !prompt) {
@@ -1806,6 +1815,7 @@ app.post('/api/studio/apps/persist-direct', async (req, res) => {
       modelUsed: String(modelUsed),
       existingApp,
       isRefinement: Boolean(isRefinement),
+      projectConfig: projectConfig as StudioProjectConfig | undefined,
     });
 
     if (!materialized) {
@@ -1815,6 +1825,7 @@ app.post('/api/studio/apps/persist-direct', async (req, res) => {
         mode: normalizedMode,
         existingApp,
         isRefinement: Boolean(isRefinement),
+        projectConfig: projectConfig as StudioProjectConfig | undefined,
       });
     }
 
@@ -1881,6 +1892,7 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
       model,
       attachments = [],
       turns = [],
+      projectConfig,
       geminiApiKey,
       apiKey: bodyApiKey,
     } = req.body || {};
@@ -1893,11 +1905,12 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
     const tenantId = getReqTenant(req);
     const normalizedMode = normalizeStudioMode(mode);
     const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const typedConfig = projectConfig as StudioProjectConfig | undefined;
 
     writeSseFrame(res, {
       type: 'phase',
       phase: 'Analyzing Architecture',
-      detail: `Mode: ${normalizedMode} · Provider preference: ${providerChoice}`,
+      detail: `Target: ${typedConfig?.category || category} · Mode: ${normalizedMode} · Provider: ${providerChoice}`,
     });
 
     const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
@@ -1905,6 +1918,7 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
       prompt,
       mode: normalizedMode,
       attachments: Array.isArray(attachments) ? (attachments as StudioAppAttachment[]) : [],
+      projectConfig: typedConfig,
     });
 
     let lastProgressSent = 0;
@@ -1941,8 +1955,8 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
 
     writeSseFrame(res, {
       type: 'phase',
-      phase: 'Validating Bundle',
-      detail: 'Decomposing multi-file workspace and verifying JavaScript syntax...',
+      phase: 'Resolving Dependencies & Auditing',
+      detail: 'Decomposing workspace, resolving packages & running security/syntax checks...',
     });
 
     let project: RichStudioApp | null = null;
@@ -1950,18 +1964,20 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
       project = materializeProjectFromRawOutput({
         rawText: aiOut.rawText,
         prompt,
-        category,
+        category: typedConfig?.category || category,
         mode: normalizedMode,
         providerUsed: aiOut.providerUsed,
         modelUsed: aiOut.modelUsed,
+        projectConfig: typedConfig,
       });
     }
 
     if (!project) {
       project = fallbackSynthesizeStudioProject({
         prompt,
-        category,
+        category: typedConfig?.category || category,
         mode: normalizedMode,
+        projectConfig: typedConfig,
       });
     }
 
@@ -2001,6 +2017,7 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
       selectedElementContext,
       attachments = [],
       turns,
+      projectConfig,
       geminiApiKey,
       apiKey: bodyApiKey,
     } = req.body || {};
@@ -2013,6 +2030,7 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
     const tenantId = getReqTenant(req);
     const normalizedMode = normalizeStudioMode(mode || currentApp.mode);
     const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const typedConfig = (projectConfig || currentApp.projectConfig) as StudioProjectConfig | undefined;
 
     writeSseFrame(res, {
       type: 'phase',
@@ -2027,6 +2045,7 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
       mode: normalizedMode,
       selectedElementContext,
       attachments: Array.isArray(attachments) ? attachments : [],
+      projectConfig: typedConfig,
     });
 
     let lastProgressSent = 0;
@@ -2059,8 +2078,8 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
 
     writeSseFrame(res, {
       type: 'phase',
-      phase: 'Verifying Snapshot',
-      detail: 'Validating syntax and saving version snapshot...',
+      phase: 'Auditing & Saving Snapshot',
+      detail: 'Validating syntax, resolving dependencies & saving version snapshot...',
     });
 
     let updatedProject: RichStudioApp | null = null;
@@ -2068,22 +2087,24 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
       updatedProject = materializeProjectFromRawOutput({
         rawText: aiOut.rawText,
         prompt: refinementPrompt,
-        category: currentApp.category || 'general',
+        category: currentApp.category || typedConfig?.category || 'general',
         mode: normalizedMode,
         providerUsed: aiOut.providerUsed,
         modelUsed: aiOut.modelUsed,
         existingApp: currentApp,
         isRefinement: true,
+        projectConfig: typedConfig,
       });
     }
 
     if (!updatedProject) {
       updatedProject = fallbackSynthesizeStudioProject({
         prompt: refinementPrompt,
-        category: currentApp.category || 'general',
+        category: currentApp.category || typedConfig?.category || 'general',
         mode: normalizedMode,
         existingApp: currentApp,
         isRefinement: true,
+        projectConfig: typedConfig,
       });
     }
 
@@ -2182,7 +2203,7 @@ app.post('/api/studio/fix-error', apiHeavyAiLimiter, async (req, res) => {
   }
 });
 
-// Backward-compatible non-streaming build endpoint (upgraded to honor mode, multi-provider & diagnostics)
+// Backward-compatible non-streaming build endpoint (upgraded to honor mode, multi-provider, projectConfig & diagnostics)
 app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
   try {
     const {
@@ -2192,6 +2213,7 @@ app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
       provider = 'auto',
       model,
       attachments = [],
+      projectConfig,
       geminiApiKey,
       apiKey: bodyApiKey,
     } = req.body || {};
@@ -2202,12 +2224,14 @@ app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const normalizedMode = normalizeStudioMode(mode);
     const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const typedConfig = projectConfig as StudioProjectConfig | undefined;
     const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
 
     const buildInstruction = buildStudioGeneratePrompt({
       prompt,
       mode: normalizedMode,
       attachments: Array.isArray(attachments) ? attachments : [],
+      projectConfig: typedConfig,
     });
 
     const aiOut = await executeStudioAiPrompt({
@@ -2225,18 +2249,20 @@ app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
       ? materializeProjectFromRawOutput({
           rawText: aiOut.rawText,
           prompt,
-          category,
+          category: typedConfig?.category || category,
           mode: normalizedMode,
           providerUsed: aiOut.providerUsed,
           modelUsed: aiOut.modelUsed,
+          projectConfig: typedConfig,
         })
       : null;
 
     if (!generatedProject) {
       generatedProject = fallbackSynthesizeStudioProject({
         prompt,
-        category,
+        category: typedConfig?.category || category,
         mode: normalizedMode,
+        projectConfig: typedConfig,
       });
     }
 
@@ -2266,6 +2292,7 @@ app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
       model,
       selectedElementContext,
       attachments = [],
+      projectConfig,
       geminiApiKey,
       apiKey: bodyApiKey,
     } = req.body || {};
@@ -2276,6 +2303,7 @@ app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const normalizedMode = normalizeStudioMode(mode || currentApp.mode);
     const providerChoice = (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice;
+    const typedConfig = (projectConfig || currentApp.projectConfig) as StudioProjectConfig | undefined;
     const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
 
     const refineInstruction = buildStudioRefinePrompt({
@@ -2284,6 +2312,7 @@ app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
       mode: normalizedMode,
       selectedElementContext,
       attachments: Array.isArray(attachments) ? attachments : [],
+      projectConfig: typedConfig,
     });
 
     const aiOut = await executeStudioAiPrompt({
@@ -2301,22 +2330,24 @@ app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
       ? materializeProjectFromRawOutput({
           rawText: aiOut.rawText,
           prompt: refinementPrompt,
-          category: currentApp.category || 'general',
+          category: currentApp.category || typedConfig?.category || 'general',
           mode: normalizedMode,
           providerUsed: aiOut.providerUsed,
           modelUsed: aiOut.modelUsed,
           existingApp: currentApp,
           isRefinement: true,
+          projectConfig: typedConfig,
         })
       : null;
 
     if (!updatedProject) {
       updatedProject = fallbackSynthesizeStudioProject({
         prompt: refinementPrompt,
-        category: currentApp.category || 'general',
+        category: currentApp.category || typedConfig?.category || 'general',
         mode: normalizedMode,
         existingApp: currentApp,
         isRefinement: true,
+        projectConfig: typedConfig,
       });
     }
 
@@ -2335,6 +2366,327 @@ app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
   } catch (error: any) {
     console.error('Refine app error:', error);
     sendApiError(req, res, 500, 'REFINE_APP_ERROR', error.message);
+  }
+});
+
+// Prompt Enhancer (Turns 2+ words into a comprehensive engineering PRD prompt)
+app.post('/api/studio/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
+  try {
+    const {
+      prompt,
+      depth = 'fullstack',
+      projectConfig,
+      provider = 'auto',
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
+
+    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+      return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt text is required to enhance.');
+    }
+
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
+    const out = await enhanceStudioPromptServer({
+      rawPrompt: prompt,
+      depth: (String(depth) as PromptEnhanceDepth) || 'fullstack',
+      projectConfig: projectConfig as StudioProjectConfig | undefined,
+      providerChoice: (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice,
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+    });
+
+    res.json({
+      success: true,
+      enhancedPrompt: out.enhancedPrompt,
+      providerUsed: out.providerUsed,
+    });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'ENHANCE_PROMPT_ERROR', error.message);
+  }
+});
+
+// Dependency Analyzer & Package Manifest Sync
+app.post('/api/studio/dependencies/resolve', async (req, res) => {
+  try {
+    const { files = {}, projectConfig, addPackage, removePackage } = req.body || {};
+    const cfg = projectConfig ? { ...(projectConfig as StudioProjectConfig) } : undefined;
+    if (cfg) {
+      const currentCustom = new Set<string>(cfg.customDependencies || []);
+      if (typeof addPackage === 'string' && addPackage.trim()) {
+        currentCustom.add(addPackage.trim());
+      }
+      if (typeof removePackage === 'string' && removePackage.trim()) {
+        currentCustom.delete(removePackage.trim());
+      }
+      cfg.customDependencies = Array.from(currentCustom);
+    }
+
+    const analysis = analyzeProjectDependencies(files as Record<string, string>, cfg);
+    res.json({
+      success: true,
+      dependencies: analysis.dependencies,
+      envVariables: analysis.envVariables,
+      generatedManifests: analysis.generatedManifests,
+      updatedConfig: cfg,
+    });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'DEPENDENCY_RESOLVE_ERROR', error.message);
+  }
+});
+
+// Full Security, Syntax, Performance, SEO & Accessibility Audit
+app.post('/api/studio/audit', async (req, res) => {
+  try {
+    const { app: currentApp, files, code, projectConfig } = req.body || {};
+    const fileMap: Record<string, string> = files || currentApp?.files || {};
+    const compiledHtml: string =
+      code || currentApp?.code || (Object.keys(fileMap).length ? compileFilesIntoHtmlBundle(fileMap) : '');
+    const cfg = (projectConfig || currentApp?.projectConfig) as StudioProjectConfig | undefined;
+
+    const auditReport = runFullStudioAudit(fileMap, compiledHtml, cfg);
+    const depAnalysis = analyzeProjectDependencies(fileMap, cfg);
+
+    res.json({
+      success: true,
+      auditReport,
+      dependencies: depAnalysis.dependencies,
+      envVariables: depAnalysis.envVariables,
+    });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_AUDIT_ERROR', error.message);
+  }
+});
+
+// 1-Click AI Audit Remediation (Patches all Security/Syntax/SEO/A11y findings)
+app.post('/api/studio/audit/fix', apiHeavyAiLimiter, async (req, res) => {
+  try {
+    const {
+      app: currentApp,
+      auditReport,
+      projectConfig,
+      provider = 'auto',
+      geminiApiKey,
+      apiKey: bodyApiKey,
+    } = req.body || {};
+
+    if (!currentApp || !currentApp.files) {
+      return sendApiError(req, res, 400, 'INVALID_AUDIT_FIX_REQUEST', 'Current app files are required.');
+    }
+
+    const tenantId = getReqTenant(req);
+    const cfg = (projectConfig || currentApp.projectConfig) as StudioProjectConfig | undefined;
+    const activeReport =
+      auditReport ||
+      runFullStudioAudit(currentApp.files, currentApp.code || '', cfg);
+
+    if (!activeReport.findings || activeReport.findings.length === 0) {
+      return res.json({ success: true, app: { ...currentApp, auditReport: activeReport } });
+    }
+
+    const ctx = await resolveStudioAiContext(req, geminiApiKey || bodyApiKey);
+    const fixPrompt = buildAuditAutoFixPrompt({
+      title: currentApp.title || 'Studio Project',
+      files: currentApp.files,
+      report: activeReport,
+      config: cfg,
+    });
+
+    const aiOut = await executeStudioAiPrompt({
+      providerChoice: (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice,
+      userPromptText: fixPrompt,
+      systemInstruction: SYSTEM_PROMPT,
+      byok: ctx.byok,
+      geminiClient: ctx.geminiClient,
+      serverKeys: ctx.serverKeys,
+    });
+
+    let patchedApp: RichStudioApp | null = null;
+    if (aiOut?.rawText) {
+      patchedApp = materializeProjectFromRawOutput({
+        rawText: aiOut.rawText,
+        prompt: `Audit auto-fix (${activeReport.findings.length} checks)`,
+        category: currentApp.category || cfg?.category || 'general',
+        mode: normalizeStudioMode(currentApp.mode),
+        providerUsed: aiOut.providerUsed,
+        modelUsed: aiOut.modelUsed,
+        existingApp: currentApp,
+        isRefinement: true,
+        projectConfig: cfg,
+      });
+    }
+
+    if (!patchedApp) {
+      return sendApiError(
+        req,
+        res,
+        503,
+        'AUDIT_FIX_UNAVAILABLE',
+        'No live AI provider could remediate these audit findings. Configure Gemini, Groq, OpenAI or Local llama.cpp in Settings.'
+      );
+    }
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === patchedApp!.id);
+      if (idx >= 0) next[idx] = patchedApp!;
+      else next.unshift(patchedApp!);
+      return next;
+    });
+
+    res.json({ success: true, app: patchedApp });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_AUDIT_FIX_ERROR', error.message);
+  }
+});
+
+// Synthesize & Attach Firebase / Google Cloud Run / GitHub Deployment Artifacts
+app.post('/api/studio/deploy/prepare', async (req, res) => {
+  try {
+    const {
+      app: currentApp,
+      target = 'firebase',
+      firebaseProjectId,
+      gcpRegion,
+      cloudRunService,
+      githubRepo,
+      githubBranch,
+    } = req.body || {};
+
+    if (!currentApp) {
+      return sendApiError(req, res, 400, 'INVALID_DEPLOY_REQUEST', 'Current app is required.');
+    }
+
+    const tenantId = getReqTenant(req);
+    const files: Record<string, string> = { ...(currentApp.files || {}) };
+    const artifacts = synthesizeDeployArtifacts({
+      title: currentApp.title || 'raone-app',
+      files,
+      config: currentApp.projectConfig,
+      target: target as DeployTargetId,
+      firebaseProjectId,
+      gcpRegion,
+      cloudRunService,
+      githubRepo,
+      githubBranch,
+    });
+
+    const mergedFiles = { ...files, ...artifacts.generatedFiles };
+    const normalizedMode = normalizeStudioMode(currentApp.mode);
+    const compiledCode = compileFilesIntoHtmlBundle(mergedFiles);
+    const auditReport = runFullStudioAudit(mergedFiles, compiledCode, currentApp.projectConfig);
+
+    let updatedApp = {
+      ...currentApp,
+      files: mergedFiles,
+      code: compiledCode,
+      auditReport,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', DEFAULT_GALLERY_APPS, (apps) => {
+      const next = [...apps];
+      const idx = next.findIndex((a: any) => a.id === updatedApp.id);
+      if (idx >= 0) next[idx] = updatedApp;
+      else next.unshift(updatedApp);
+      return next;
+    });
+
+    res.json({
+      success: true,
+      artifacts,
+      app: updatedApp,
+    });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'STUDIO_DEPLOY_PREP_ERROR', error.message);
+  }
+});
+
+// Direct GitHub Repository Push (Uses user-supplied PAT in memory only, never persisted on disk)
+app.post('/api/studio/deploy/github', apiHeavyAiLimiter, async (req, res) => {
+  try {
+    const {
+      app: currentApp,
+      repo,
+      branch = 'main',
+      token,
+      commitMessage = 'Deploy generated project from RaOne Code Studio',
+    } = req.body || {};
+
+    if (!currentApp?.files || !repo || !token) {
+      return sendApiError(
+        req,
+        res,
+        400,
+        'INVALID_GITHUB_PUSH',
+        'Repository (owner/name), branch, GitHub Personal Access Token, and project files are required.'
+      );
+    }
+
+    const cleanRepo = String(repo).trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '');
+    if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(cleanRepo)) {
+      return sendApiError(req, res, 400, 'INVALID_GITHUB_REPO', 'Repository must match "owner/repo" format.');
+    }
+
+    const cleanBranch = String(branch || 'main').trim();
+    const ghHeaders = {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${String(token).trim()}`,
+      'User-Agent': 'RaOne-Code-Studio',
+      'Content-Type': 'application/json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+
+    const fileEntries = Object.entries(currentApp.files as Record<string, string>)
+      .filter(([k, v]) => typeof v === 'string' && v.length > 0 && !k.startsWith('/'))
+      .slice(0, 40);
+
+    const pushedFiles: string[] = [];
+    for (const [filePath, content] of fileEntries) {
+      const apiUrl = `https://api.github.com/repos/${cleanRepo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}`;
+      let existingSha: string | undefined;
+      const getResp = await fetch(`${apiUrl}?ref=${encodeURIComponent(cleanBranch)}`, {
+        method: 'GET',
+        headers: ghHeaders,
+      });
+      if (getResp.ok) {
+        const existingJson: any = await getResp.json();
+        existingSha = existingJson?.sha;
+      }
+
+      const putResp = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: ghHeaders,
+        body: JSON.stringify({
+          message: `${commitMessage} (${filePath})`,
+          content: Buffer.from(content, 'utf8').toString('base64'),
+          branch: cleanBranch,
+          ...(existingSha ? { sha: existingSha } : {}),
+        }),
+      });
+      if (!putResp.ok) {
+        const errBody = await putResp.text().catch(() => '');
+        return sendApiError(
+          req,
+          res,
+          putResp.status,
+          'GITHUB_PUSH_FAILED',
+          `GitHub API rejected ${filePath} (HTTP ${putResp.status}): ${errBody.slice(0, 220)}`
+        );
+      }
+      pushedFiles.push(filePath);
+    }
+
+    res.json({
+      success: true,
+      repo: cleanRepo,
+      branch: cleanBranch,
+      pushedCount: pushedFiles.length,
+      pushedFiles,
+      repoUrl: `https://github.com/${cleanRepo}/tree/${cleanBranch}`,
+    });
+  } catch (error: any) {
+    sendApiError(req, res, 500, 'GITHUB_DEPLOY_ERROR', error.message);
   }
 });
 

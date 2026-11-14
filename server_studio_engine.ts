@@ -15,6 +15,17 @@ import {
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import { validateSafeHttpsEgress } from './server_security.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import {
+  DEFAULT_PROJECT_CONFIG,
+  type PromptEnhanceDepth,
+  type StudioAuditReport,
+  type StudioDependencyItem,
+  type StudioProjectConfig,
+} from './src/types/studio.ts';
+import {
+  analyzeProjectDependencies,
+  runFullStudioAudit,
+} from './server_studio_auditor.ts';
 
 export type StudioBuildMode =
   | 'Default mode'
@@ -88,6 +99,10 @@ export interface RichStudioApp extends SynthesizedProject {
     'architecture.md': string;
     'schema.json': string;
   };
+  projectConfig?: StudioProjectConfig;
+  auditReport?: StudioAuditReport;
+  dependencies?: StudioDependencyItem[];
+  envVariables?: string[];
   turns?: StudioTurnRecord[];
   versions?: StudioVersionSnapshot[];
   currentVersion?: number;
@@ -222,9 +237,9 @@ ${mode === 'Fullstack mode' ? '- `api_routes.js`: Simulated client-side REST API
     'schema.json': string;
   } = {
     ...(existingFiles || {}),
-    'index.html': cleanIndexHtml || rawHtml,
-    'styles.css': extractedCss,
-    'app.js': extractedJs,
+    'index.html': existingFiles?.['index.html'] || cleanIndexHtml || rawHtml,
+    'styles.css': existingFiles?.['styles.css'] || extractedCss,
+    'app.js': existingFiles?.['app.js'] || extractedJs,
     'schema.json': schemaJson,
     'architecture.md': architectureMd,
   };
@@ -416,34 +431,118 @@ function formatAttachmentContext(attachments?: StudioAppAttachment[]): string {
   return textParts.length > 0 ? `\n\n[ATTACHED SPECIFICATIONS / FILES]\n${textParts.join('\n\n')}` : '';
 }
 
+function buildConfigArchitectureDirectives(config?: StudioProjectConfig): string {
+  if (!config) return '';
+  const cp = config.codingParams || DEFAULT_PROJECT_CONFIG.codingParams;
+  const activeTools = (config.integrations || []).join(', ') || 'None';
+
+  let categoryBlock = '';
+  switch (config.category) {
+    case 'browser_extension':
+      categoryBlock = `TARGET CATEGORY — CHROME / EDGE / FIREFOX BROWSER EXTENSION (MANIFEST V3):
+- Generate real Manifest V3 files inside \`files\`:
+  * \`extension/manifest.json\`: Valid MV3 manifest (manifest_version: 3, permissions, action.default_popup, background.service_worker, content_scripts).
+  * \`extension/popup.html\` & \`extension/popup.js\`: Complete working extension popup UI & chrome.storage logic.
+  * \`extension/background.js\`: Service worker event listeners & alarms/rules.
+  * \`extension/content.js\`: Clean DOM content script with zero global pollution.
+- CRITICAL FOR LIVE PREVIEW: Also provide \`index.html\`, \`styles.css\`, and \`app.js\` implementing an interactive Browser Extension Popup & Tab Simulator so the user can test every toggle, rule, and permission live in the right preview canvas!`;
+      break;
+
+    case 'script_cli':
+      categoryBlock = `TARGET CATEGORY — ${config.scriptLanguage.toUpperCase()} AUTOMATION SCRIPT / CLI TOOL:
+- Generate production ${config.scriptLanguage} source files inside \`files\`:
+  * Primary script file (e.g. \`scripts/main.${config.scriptLanguage === 'python' ? 'py' : config.scriptLanguage === 'rust' ? 'rs' : config.scriptLanguage === 'go' ? 'go' : config.scriptLanguage === 'bash' ? 'sh' : config.scriptLanguage === 'sql' ? 'sql' : 'ts'}\`) with strict argument parsing, structured logging, error handling, and help output.
+  * Appropriate dependency manifest (\`requirements.txt\`, \`package.json\`, \`Cargo.toml\`, or \`go.mod\`) + \`README.md\` usage examples.
+- CRITICAL FOR LIVE PREVIEW: Also provide \`index.html\`, \`styles.css\`, and \`app.js\` rendering a clean Interactive CLI Flag Builder, Sample Input Runner & Simulated Output Console so non-coders and engineers can test the script behavior visually right in the preview window!`;
+      break;
+
+    case 'api_service':
+      categoryBlock = `TARGET CATEGORY — PRODUCTION REST / GRAPHQL API & MICROSERVICE (${config.backendRuntime}):
+- Generate real backend service files inside \`files\`:
+  * \`backend/server.${config.backendRuntime === 'python_fastapi' ? 'py' : config.backendRuntime === 'go_gin' ? 'go' : 'ts'}\`: Real routes, middleware, input validation, rate limiting, and error handler.
+  * \`database/schema.sql\` (or Firestore schema), \`openapi.json\`, \`.env.example\`, and \`tests/api.test.js\`.
+- CRITICAL FOR LIVE PREVIEW: Also provide \`index.html\`, \`styles.css\`, and \`app.js\` implementing a clean Interactive API Endpoint Explorer & Live Request Simulator where users can send CRUD payloads and inspect JSON responses!`;
+      break;
+
+    case 'saas':
+    case 'micro_saas':
+    case 'fullstack':
+      categoryBlock = `TARGET CATEGORY — PRODUCTION ${config.category.toUpperCase()} PLATFORM:
+- Generate a real multi-layer repository inside \`files\`:
+  * Frontend UI (\`index.html\`, \`styles.css\`, \`app.js\`): Rich multi-view product workspace with real client-side state/CRUD, forms, search/filter, and persistence.
+  * Backend API (\`backend/server.${config.backendRuntime === 'python_fastapi' ? 'py' : 'ts'}\`): Real Express/FastAPI endpoints matching every frontend resource (${config.authProvider !== 'none' ? `with ${config.authProvider} auth middleware` : 'with validation middleware'}).
+  * Database Layer (\`${config.database === 'firestore' ? 'firestore.rules' : 'database/schema.sql'}\` + \`schema.json\`): Normalized schema & security rules.
+  * Ops & Configs (\`.env.example\`, \`package.json\`, \`README.md\`${cp.includeUnitTests ? ', `tests/app.test.js`' : ''}).`;
+      break;
+
+    case 'mobile_pwa':
+      categoryBlock = `TARGET CATEGORY — INSTALLABLE MOBILE-FIRST PWA:
+- Mobile-first viewport layout (fits 375px cleanly + centered desktop shell) with >=44px touch targets and bottom tab navigation.
+- Include \`manifest.json\` and \`sw.js\` (offline service worker cache) inside \`files\`.`;
+      break;
+
+    default:
+      categoryBlock = `TARGET CATEGORY — ${config.category.toUpperCase()} (${config.frontendFramework}):
+- Build a polished, production-ready web product with real interactive state, keyboard support, zero dead buttons, and clean modular structure.`;
+  }
+
+  return `
+[SILICON VALLEY ENGINEERING CONFIGURATION]
+- Category: ${config.category}
+- Frontend Framework: ${config.frontendFramework}
+- Backend Runtime: ${config.backendRuntime}
+- Database Engine: ${config.database}
+- Script Language: ${config.scriptLanguage}
+- Auth Provider: ${config.authProvider}
+- Payment / Billing: ${config.paymentProvider}
+- 3rd-Party Integrations: ${activeTools}
+- Target Deploy Platform: ${config.deployTarget}
+- Coding Standards:
+  * TypeScript Strictness: ${cp.strictTypeScript ? 'Strict' : 'Standard'}
+  * Architecture: ${cp.architecturePattern}
+  * Theme Mode: ${cp.themeMode}
+  * Responsive Mobile-First: ${cp.responsiveMobileFirst ? 'Required' : 'Desktop-first'}
+  * Security Hardening: ${cp.securityHardening ? 'Enforce XSS escaping, no eval(), env secrets only' : 'Standard'}
+  * SEO Meta Tags: ${cp.includeSeoMeta ? 'Include title, description, OG meta' : 'Minimal'}
+  * Unit Tests: ${cp.includeUnitTests ? 'Include tests/app.test.js' : 'Skip'}
+${config.customDependencies?.length ? `- Required Packages: ${config.customDependencies.join(', ')}` : ''}
+
+${categoryBlock}`;
+}
+
 export function buildStudioGeneratePrompt(opts: {
   prompt: string;
   mode: StudioBuildMode;
   attachments?: StudioAppAttachment[];
+  projectConfig?: StudioProjectConfig;
 }): string {
+  const cfgBlock = buildConfigArchitectureDirectives(opts.projectConfig);
   return `You are the RaOne Senior Principal Full-Stack Software Engineer in RaOne Code Studio.
-Build a complete, zero-placeholder, interactive web application for:
+Build a complete, zero-placeholder, production-grade software solution for:
 "${opts.prompt}"
 
 ${getModeGuidelines(opts.mode)}
+${cfgBlock}
 ${formatAttachmentContext(opts.attachments)}
 
 TECHNICAL & OUTPUT CONTRACT:
-1. Return EITHER a clean JSON object OR a single self-contained HTML5 document.
-   - Preferred JSON format (no prose outside JSON):
+1. Return a clean JSON object (preferred — no markdown prose outside JSON) with multi-file architecture:
    {
-     "title": "Short clean app title",
+     "title": "Short clean project title",
      "description": "1-sentence summary",
      "files": {
-       "index.html": "<!DOCTYPE html>... complete HTML with Tailwind CDN & semantic DOM (leave CSS in styles.css or <style>, JS in app.js or <script>) ...",
-       "styles.css": "Custom CSS tokens & animations",
-       "app.js": "Complete ES6+ interactive logic, event listeners & localStorage persistence",
-       "api_routes.js": "Optional simulated API routes for Fullstack mode",
+       "index.html": "<!DOCTYPE html>... complete runnable HTML preview with Tailwind CDN (<script src=\\"https://cdn.tailwindcss.com\\"></script>) & semantic DOM ...",
+       "styles.css": "Custom CSS tokens & layout styles",
+       "app.js": "Complete ES6+ interactive logic, event listeners & persistence",
+       "api_routes.js": "Optional client-side REST API simulation bridge for preview",
+       "backend/server.ts": "Optional real backend server source when backendRuntime != none",
+       "database/schema.sql": "Optional SQL schema or firestore.rules when database requires it",
+       "tests/app.test.js": "Optional unit tests when includeUnitTests is enabled",
        "schema.json": "{ ...valid JSON schema... }",
        "architecture.md": "# Architecture..."
      }
    }
-   - OR output a complete single <!DOCTYPE html> document with Tailwind CSS (https://cdn.tailwindcss.com), Plus Jakarta Sans + JetBrains Mono Google Fonts, inline <style> and inline <script>.
+   (If returning single-file HTML fallback, wrap cleanly in <!DOCTYPE html> with Tailwind CDN, Plus Jakarta Sans + JetBrains Mono Google Fonts, inline <style> and inline <script>.)
 2. Use Chart.js (https://cdn.jsdelivr.net/npm/chart.js) if analytics/charts are requested, or Leaflet (https://unpkg.com/leaflet@1.9.4/dist/leaflet.js + leaflet.css) if maps are requested.
 3. Every single button, form, modal, search, filter, and export action MUST have working JavaScript handlers — zero dead buttons or placeholder alerts.`;
 }
@@ -454,19 +553,28 @@ export function buildStudioRefinePrompt(opts: {
   mode: StudioBuildMode;
   selectedElementContext?: string;
   attachments?: StudioAppAttachment[];
+  projectConfig?: StudioProjectConfig;
 }): string {
   const existingFiles: Record<string, string> = opts.app.files || {};
+  const extraFilesPreview = Object.entries(existingFiles)
+    .filter(([k]) => k !== 'index.html' && k !== 'architecture.md')
+    .slice(0, 6)
+    .map(([k, v]) => `--- ${k} ---\n${String(v).slice(0, 4000)}`)
+    .join('\n\n');
   const existingCode = opts.app.code || existingFiles['index.html'] || '';
   const elementHint = opts.selectedElementContext
     ? `\n\n[TARGETED UI ELEMENT SELECTED BY USER]\n${opts.selectedElementContext}\nApply the change specifically considering this selected element while keeping all existing functionality working.`
     : '';
+  const cfgBlock = buildConfigArchitectureDirectives(opts.projectConfig || opts.app.projectConfig);
 
-  return `You are refining an existing RaOne Code Studio web application (${opts.mode}).
+  return `You are refining an existing RaOne Code Studio software project (${opts.mode}).
+${cfgBlock}
 
-EXISTING APPLICATION CODE:
+EXISTING COMPILED PREVIEW BUNDLE:
 \`\`\`html
-${existingCode.slice(0, 32000)}
+${existingCode.slice(0, 26000)}
 \`\`\`
+${extraFilesPreview ? `\nADDITIONAL PROJECT FILES:\n${extraFilesPreview}` : ''}
 ${elementHint}
 ${formatAttachmentContext(opts.attachments)}
 
@@ -475,7 +583,7 @@ USER REFACTORING DIRECTIVE:
 
 REQUIREMENTS:
 1. Preserve all working features unless the user asked to remove or replace them.
-2. Return the COMPLETE updated application either in the same JSON multi-file format (\`{ "title", "description", "files": { "index.html", "styles.css", "app.js", ... } }\`) OR a complete updated \`<!DOCTYPE html>\` document.
+2. Return the COMPLETE updated application in JSON multi-file format (\`{ "title", "description", "files": { "index.html", "styles.css", "app.js", ... } }\`) OR a complete updated \`<!DOCTYPE html>\` document.
 3. Ensure zero syntax errors, zero missing DOM IDs, and clean working event handlers.`;
 }
 
@@ -633,8 +741,8 @@ export async function executeStudioAiPrompt(
   for (const provider of order) {
     if (provider === 'gemini' && opts.geminiClient) {
       const candidates = opts.requestedModel?.includes('argon')
-        ? ['gemini-4-argon', 'gemini-4-hydrogen', 'gemini-2.5-flash']
-        : ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-2.5-flash'];
+        ? ['gemini-4-argon', 'gemini-4-hydrogen']
+        : ['gemini-4-hydrogen', 'gemini-4-argon'];
       for (const modelName of candidates) {
         try {
           opts.onStatus?.('Google Gemini', modelName);
@@ -835,6 +943,82 @@ export async function executeStudioAiPrompt(
   return null;
 }
 
+export async function enhanceStudioPromptServer(opts: {
+  rawPrompt: string;
+  depth?: PromptEnhanceDepth;
+  projectConfig?: StudioProjectConfig;
+  providerChoice?: StudioProviderChoice;
+  byok: ByokKeyMap;
+  geminiClient: GoogleGenAI | null;
+  serverKeys: ExecuteStudioAiOptions['serverKeys'];
+}): Promise<{ enhancedPrompt: string; providerUsed: string }> {
+  const cfg = opts.projectConfig || DEFAULT_PROJECT_CONFIG;
+  const depth = opts.depth || 'fullstack';
+  const raw = opts.rawPrompt.trim();
+
+  const instruction = `You are a Principal Product Architect at a top Silicon Valley engineering studio.
+Turn this brief user idea (even if just 1-3 words) into a crystal-clear, actionable software engineering build specification prompt.
+
+USER IDEA: "${raw}"
+ENHANCEMENT DEPTH: ${depth}
+SELECTED STACK & TARGET:
+- Category: ${cfg.category}
+- Frontend: ${cfg.frontendFramework}
+- Backend: ${cfg.backendRuntime}
+- Database: ${cfg.database}
+- Script Language: ${cfg.scriptLanguage}
+- Auth: ${cfg.authProvider}
+- Billing: ${cfg.paymentProvider}
+- Integrations: ${(cfg.integrations || []).join(', ') || 'None'}
+- Deploy Target: ${cfg.deployTarget}
+
+RULES:
+- Output ONLY the expanded prompt text directly (no markdown headings like "Enhanced Prompt:" or conversational intro).
+- Make it concrete, detailed, and tailored specifically to the category and stack above:
+  1. Core product goal & primary user workflow
+  2. Exact screens / views / commands / extension panels or API endpoints needed
+  3. Data entities, fields, validation rules & persistence behavior
+  4. Design aesthetic, responsive layout, keyboard/empty states & real interactive controls (search, filter, CRUD, export)
+  5. Security, error handling & production readiness.`;
+
+  try {
+    const out = await executeStudioAiPrompt({
+      providerChoice: opts.providerChoice || 'auto',
+      userPromptText: instruction,
+      systemInstruction:
+        'You rewrite brief app ideas into crisp, senior-engineer technical specification prompts. Output plain text only.',
+      byok: opts.byok,
+      geminiClient: opts.geminiClient,
+      serverKeys: opts.serverKeys,
+    });
+    if (out?.rawText && out.rawText.trim().length > 40) {
+      return { enhancedPrompt: out.rawText.trim(), providerUsed: `${out.providerUsed}/${out.modelUsed}` };
+    }
+  } catch (err) {
+    console.warn('Prompt enhancer AI notice:', err);
+  }
+
+  // Deterministic Silicon Valley PRD fallback when no cloud/local AI provider responds
+  const integrationsText = cfg.integrations?.length
+    ? ` Integrate ${cfg.integrations.join(', ')}.`
+    : '';
+  const authText =
+    cfg.authProvider !== 'none'
+      ? ` Include secure ${cfg.authProvider} authentication with protected workspace routes and role validation.`
+      : '';
+  const fallback =
+    depth === 'quick'
+      ? `Build a production-ready ${cfg.category.replace('_', ' ')} for "${raw}" using ${cfg.frontendFramework} and ${cfg.database}.${integrationsText} Include full CRUD management, live search & filtering, responsive dark slate UI, empty states, and persistent storage.`
+      : `Build a complete, Silicon Valley-grade ${cfg.category.replace('_', ' ')} for "${raw}" engineered with ${cfg.frontendFramework} (frontend), ${cfg.backendRuntime} (backend), and ${cfg.database} (persistence).${authText}${integrationsText}
+Deliver:
+1. Primary Workspace & Navigation: Clean structured layout with dashboard overview, interactive creation/editing modal, live search, multi-criteria filtering, and sortable tabular metrics.
+2. Complete Data Lifecycle: Real CRUD actions with validation, optimistic feedback, import/export (JSON & CSV), and persistent storage.
+3. Architecture & Quality: Modular code structure, XSS-safe rendering, error boundaries, responsive mobile layout, and keyboard shortcuts.
+4. Verification & Readiness: Include schema definition, API contract routes, unit tests, and ${cfg.deployTarget} deployment configuration.`;
+
+  return { enhancedPrompt: fallback, providerUsed: 'raone-architect-engine' };
+}
+
 // =========================================================================
 // Project Assembly Helpers (New Build, Refinement, Auto-Fix, Persistence)
 // =========================================================================
@@ -847,9 +1031,11 @@ export function materializeProjectFromRawOutput(opts: {
   modelUsed: string;
   existingApp?: Partial<RichStudioApp>;
   isRefinement?: boolean;
+  projectConfig?: StudioProjectConfig;
 }): RichStudioApp | null {
   const now = new Date().toISOString();
   const parsedJson = tryExtractJsonProject(opts.rawText);
+  const activeConfig = opts.projectConfig || opts.existingApp?.projectConfig || DEFAULT_PROJECT_CONFIG;
 
   let title =
     parsedJson?.title?.trim() ||
@@ -860,8 +1046,8 @@ export function materializeProjectFromRawOutput(opts: {
   let files: RichStudioApp['files'] | null = null;
   let compiledCode = '';
 
-  if (parsedJson?.files && (parsedJson.files['index.html'] || parsedJson.files['app.js'])) {
-    const rawFiles: Record<string, string> = {};
+  if (parsedJson?.files && (parsedJson.files['index.html'] || parsedJson.files['app.js'] || Object.keys(parsedJson.files).length > 0)) {
+    const rawFiles: Record<string, string> = { ...(opts.existingApp?.files || {}) };
     for (const [k, v] of Object.entries(parsedJson.files)) {
       if (typeof v === 'string') rawFiles[k] = v;
     }
@@ -884,7 +1070,16 @@ export function materializeProjectFromRawOutput(opts: {
     compiledCode = compileFilesIntoHtmlBundle(files);
   }
 
+  // Resolve dependencies & attach real package/env manifests if missing
+  const depAnalysis = analyzeProjectDependencies(files, activeConfig);
+  for (const [manifestName, manifestContent] of Object.entries(depAnalysis.generatedManifests)) {
+    if (!files[manifestName]) {
+      files[manifestName] = manifestContent;
+    }
+  }
+
   const diagnostics = validateStudioProject(files, compiledCode);
+  const auditReport = runFullStudioAudit(files, compiledCode, activeConfig);
   const existingVersions = Array.isArray(opts.existingApp?.versions) ? opts.existingApp.versions : [];
   const nextVersionNum = existingVersions.length + 1;
 
@@ -904,7 +1099,7 @@ export function materializeProjectFromRawOutput(opts: {
     phase: opts.isRefinement ? `Iteration v${nextVersionNum}` : 'Multi-File Build',
     title: `${opts.isRefinement ? 'Refined' : 'Built'} via ${opts.providerUsed} (${opts.modelUsed})`,
     status: 'complete' as const,
-    details: `${opts.mode} · ${diagnostics.fileCount} files · ${diagnostics.bundleBytes} bytes · Syntax: ${diagnostics.syntaxOk ? 'OK' : diagnostics.errors[0] || 'Warning'}`,
+    details: `${opts.mode} · ${activeConfig.category} · ${diagnostics.fileCount} files · Audit ${auditReport.score}/100 · Syntax: ${diagnostics.syntaxOk ? 'OK' : diagnostics.errors[0] || 'Warning'}`,
     timestamp: now,
   };
 
@@ -912,18 +1107,22 @@ export function materializeProjectFromRawOutput(opts: {
     id: opts.existingApp?.id || `app-${Date.now()}`,
     title,
     description,
-    category: opts.existingApp?.category || opts.category || 'general',
+    category: opts.existingApp?.category || activeConfig.category || opts.category || 'general',
     icon: opts.existingApp?.icon || 'sparkles',
-    tag: opts.providerUsed === 'local' ? 'Local llama.cpp' : `${opts.mode}`,
+    tag: opts.providerUsed === 'local' ? 'Local llama.cpp' : `${activeConfig.category}`,
     author: `RaOne Code Studio (${opts.modelUsed})`,
     mode: opts.mode,
-    framework: opts.mode === 'Fullstack mode' ? 'HTML5 + Tailwind + REST Bridge' : 'HTML5 + Tailwind + ES6',
+    framework: `${activeConfig.frontendFramework}${activeConfig.backendRuntime !== 'none' ? ` + ${activeConfig.backendRuntime}` : ''}`,
     providerUsed: opts.providerUsed,
     modelUsed: opts.modelUsed,
     createdAt: opts.existingApp?.createdAt || now,
     updatedAt: now,
     code: compiledCode,
     files,
+    projectConfig: activeConfig,
+    auditReport,
+    dependencies: depAnalysis.dependencies,
+    envVariables: depAnalysis.envVariables,
     diagnostics,
     versions: [...existingVersions, newSnapshot].slice(-20),
     currentVersion: nextVersionNum,
@@ -939,8 +1138,10 @@ export function fallbackSynthesizeStudioProject(opts: {
   mode: StudioBuildMode;
   existingApp?: Partial<RichStudioApp>;
   isRefinement?: boolean;
+  projectConfig?: StudioProjectConfig;
 }): RichStudioApp {
   const now = new Date().toISOString();
+  const activeConfig = opts.projectConfig || opts.existingApp?.projectConfig || DEFAULT_PROJECT_CONFIG;
   let baseProj: SynthesizedProject;
   if (opts.isRefinement && opts.existingApp?.code) {
     baseProj = refineSynthesizedProject(
@@ -960,15 +1161,185 @@ export function fallbackSynthesizeStudioProject(opts: {
     baseProj = synthesizeFullProject(opts.prompt, opts.category);
   }
 
+  const extraScaffoldFiles: Record<string, string> = { ...(opts.existingApp?.files || {}), ...baseProj.files };
+
+  if (
+    activeConfig.backendRuntime === 'none' &&
+    (activeConfig.category === 'browser_extension' || activeConfig.category === 'script_cli' || activeConfig.category === 'website')
+  ) {
+    delete extraScaffoldFiles['backend/server.ts'];
+  }
+
+  // Add category-tailored starter files so Extensions, Scripts, APIs & Fullstack projects always ship complete layer files
+  if (activeConfig.category === 'browser_extension') {
+    if (!extraScaffoldFiles['extension/manifest.json']) {
+      extraScaffoldFiles['extension/manifest.json'] = JSON.stringify(
+        {
+          manifest_version: 3,
+          name: baseProj.title,
+          version: '1.0.0',
+          description: baseProj.description,
+          permissions: ['storage', 'activeTab'],
+          action: { default_popup: 'popup.html' },
+          background: { service_worker: 'background.js' },
+        },
+        null,
+        2
+      );
+    }
+    if (!extraScaffoldFiles['extension/background.js']) {
+      extraScaffoldFiles['extension/background.js'] = `// Chrome MV3 Background Service Worker\nchrome.runtime.onInstalled.addListener(() => {\n  chrome.storage.local.set({ enabled: true, installedAt: Date.now() });\n});\n`;
+    }
+    if (!extraScaffoldFiles['extension/popup.html']) {
+      extraScaffoldFiles['extension/popup.html'] = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>${baseProj.title}</title></head><body><div id="popup-root"></div><script src="./popup.js"></script></body></html>\n`;
+    }
+    if (!extraScaffoldFiles['extension/popup.js']) {
+      extraScaffoldFiles['extension/popup.js'] = `document.addEventListener('DOMContentLoaded', () => {\n  chrome.storage?.local.get(['enabled'], (res) => {\n    console.log('Extension state:', res);\n  });\n});\n`;
+    }
+  }
+
+  if (activeConfig.category === 'script_cli') {
+    const lang = activeConfig.scriptLanguage || 'python';
+    if (lang === 'python' && !extraScaffoldFiles['scripts/main.py']) {
+      extraScaffoldFiles['scripts/main.py'] = `#!/usr/bin/env python3
+"""${baseProj.title} — Automated CLI Utility"""
+import argparse
+import json
+from pathlib import Path
+
+def run(target_path: str, verbose: bool = False) -> dict:
+    path = Path(target_path)
+    result = {"task": "${baseProj.title}", "target": str(path), "exists": path.exists()}
+    if verbose:
+        print(json.dumps(result, indent=2))
+    return result
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="${baseProj.description.replace(/"/g, "'")}")
+    parser.add_argument("--input", default=".", help="Input path or resource")
+    parser.add_argument("--verbose", action="store_true", help="Enable structured JSON output")
+    args = parser.parse_args()
+    print(json.dumps(run(args.input, args.verbose), indent=2))
+`;
+    } else if ((lang === 'typescript' || lang === 'javascript') && !extraScaffoldFiles[`scripts/main.${lang === 'typescript' ? 'ts' : 'mjs'}`]) {
+      const ext = lang === 'typescript' ? 'ts' : 'mjs';
+      extraScaffoldFiles[`scripts/main.${ext}`] = `#!/usr/bin/env node
+import fs from 'node:fs';
+
+const args = process.argv.slice(2);
+const target = args[0] || '.';
+const summary = {
+  utility: '${baseProj.title.replace(/'/g, '')}',
+  target,
+  exists: fs.existsSync(target),
+  timestamp: new Date().toISOString(),
+};
+console.log(JSON.stringify(summary, null, 2));
+`;
+    } else if (lang === 'go' && !extraScaffoldFiles['scripts/main.go']) {
+      extraScaffoldFiles['scripts/main.go'] = `package main
+
+import (
+\t"encoding/json"
+\t"flag"
+\t"fmt"
+)
+
+func main() {
+\tinput := flag.String("input", ".", "Input target")
+\tflag.Parse()
+\tout, _ := json.MarshalIndent(map[string]string{"service": "${baseProj.title.replace(/"/g, "'")}", "input": *input}, "", "  ")
+\tfmt.Println(string(out))
+}
+`;
+    } else if (lang === 'rust' && !extraScaffoldFiles['scripts/main.rs']) {
+      extraScaffoldFiles['scripts/main.rs'] = `use std::env;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let target = args.get(1).map(String::as_str).unwrap_or(".");
+    println!("{{\"utility\": \"${baseProj.title.replace(/"/g, "'")}\", \"target\": \"{}\"}}", target);
+}
+`;
+    } else if (lang === 'bash' && !extraScaffoldFiles['scripts/run.sh']) {
+      extraScaffoldFiles['scripts/run.sh'] = `#!/usr/bin/env bash
+set -euo pipefail
+TARGET="\${1:-.}"
+echo "Running ${baseProj.title.replace(/"/g, "'")} on \${TARGET}"
+ls -la "\${TARGET}"
+`;
+    } else if (lang === 'sql' && !extraScaffoldFiles['scripts/queries.sql']) {
+      extraScaffoldFiles['scripts/queries.sql'] = `-- ${baseProj.title}
+CREATE TABLE IF NOT EXISTS records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+SELECT status, COUNT(*) AS total FROM records GROUP BY status;
+`;
+    }
+  }
+
+  if (
+    (activeConfig.backendRuntime !== 'none' || activeConfig.category === 'saas' || activeConfig.category === 'fullstack' || activeConfig.category === 'api_service') &&
+    !extraScaffoldFiles['backend/server.ts']
+  ) {
+    extraScaffoldFiles['backend/server.ts'] = `import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import dotenv from 'dotenv';
+
+dotenv.config();
+const app = express();
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+const records: Array<{ id: string; title: string; createdAt: string }> = [];
+
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: '${baseProj.title}' }));
+app.get('/api/records', (_req, res) => res.json({ items: records }));
+app.post('/api/records', (req, res) => {
+  const title = String(req.body?.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'title is required' });
+  const item = { id: 'rec_' + Date.now(), title, createdAt: new Date().toISOString() };
+  records.unshift(item);
+  res.status(201).json({ item });
+});
+
+const port = Number(process.env.PORT || 3000);
+app.listen(port, () => console.log('API listening on', port));
+`;
+  }
+
+  if (activeConfig.codingParams?.includeUnitTests && !extraScaffoldFiles['tests/app.test.js']) {
+    extraScaffoldFiles['tests/app.test.js'] = `import test from 'node:test';
+import assert from 'node:assert/strict';
+
+test('${baseProj.title} smoke validation', () => {
+  assert.equal(typeof '${baseProj.title}', 'string');
+  assert.ok('${baseProj.title}'.length > 0);
+});
+`;
+  }
+
   const files = decomposeHtmlIntoFiles(
     baseProj.code,
     baseProj.title,
     opts.prompt,
     opts.mode,
-    baseProj.files
+    extraScaffoldFiles
   );
+  const depAnalysis = analyzeProjectDependencies(files, activeConfig);
+  for (const [k, v] of Object.entries(depAnalysis.generatedManifests)) {
+    if (!files[k]) files[k] = v;
+  }
+
   const compiledCode = compileFilesIntoHtmlBundle(files);
   const diagnostics = validateStudioProject(files, compiledCode);
+  const auditReport = runFullStudioAudit(files, compiledCode, activeConfig);
   const existingVersions = Array.isArray(opts.existingApp?.versions) ? opts.existingApp.versions : [];
   const nextVersionNum = existingVersions.length + 1;
 
@@ -976,11 +1347,15 @@ export function fallbackSynthesizeStudioProject(opts: {
     ...baseProj,
     id: opts.existingApp?.id || baseProj.id,
     mode: opts.mode,
-    framework: opts.mode === 'Fullstack mode' ? 'HTML5 + Tailwind + REST Bridge' : 'HTML5 + Tailwind + ES6',
+    framework: `${activeConfig.frontendFramework}${activeConfig.backendRuntime !== 'none' ? ` + ${activeConfig.backendRuntime}` : ''}`,
     providerUsed: 'synthesizer',
     modelUsed: 'raone-deterministic-swe',
     code: compiledCode,
     files,
+    projectConfig: activeConfig,
+    auditReport,
+    dependencies: depAnalysis.dependencies,
+    envVariables: depAnalysis.envVariables,
     diagnostics,
     versions: [
       ...existingVersions,
