@@ -42,6 +42,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Backend Admin-SDK-only multi-tenant & shared platform collections
+    // (All reads/writes are enforced and tenant-isolated by server_cloud_persistence.ts & server_tenant_store.ts)
+    match /tenants/{tenantId}/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /shared/{document=**} {
+      allow read, write: if false;
+    }
+
     // Default deny all unmatched paths
     match /{document=**} {
       allow read, write: if false;

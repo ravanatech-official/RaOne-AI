@@ -1,61 +1,21 @@
-import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
-import { fileURLToPath } from 'url';
 import { encryptSecret, decryptSecret } from './server_security.ts';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
-
-// Per-file async mutex queue to prevent concurrent read-modify-write race conditions (A08)
-const writeLocks = new Map<string, Promise<unknown>>();
-
-async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = writeLocks.get(filePath) || Promise.resolve();
-  const next = prev.then(fn, fn);
-  writeLocks.set(filePath, next.catch(() => {}));
-  return next;
-}
-
-function safeTenantDir(tenantId: string): string {
-  const cleaned = tenantId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || 'guest_workspace';
-  const dir = path.join(DATA_ROOT, cleaned);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-}
-
-function getTenantFile(tenantId: string, filename: string): string {
-  return path.join(safeTenantDir(tenantId), filename);
-}
-
-async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
-  try {
-    if (!fs.existsSync(filePath)) return fallback;
-    const raw = await fs.promises.readFile(filePath, 'utf-8');
-    return JSON.parse(raw) as T;
-  } catch (err) {
-    console.error(`Persistence read error (${filePath}):`, err);
-    throw err;
-  }
-}
-
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  const tmpPath = `${filePath}.${crypto.randomUUID()}.tmp`;
-  await fs.promises.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-  await fs.promises.rename(tmpPath, filePath);
-}
+import {
+  getStructuredPersistenceProvider,
+  getMediaStorageProvider,
+  type PaginatedCollectionResult,
+} from './server_cloud_persistence.ts';
 
 export async function readTenantCollection<T>(
   tenantId: string,
   collectionName: string,
   fallback: T
 ): Promise<T> {
-  const filePath = getTenantFile(tenantId, `${collectionName}.json`);
-  return readJsonFile<T>(filePath, fallback);
+  return getStructuredPersistenceProvider().readTenantCollection<T>(
+    tenantId,
+    collectionName,
+    fallback
+  );
 }
 
 export async function mutateTenantCollection<T>(
@@ -64,27 +24,28 @@ export async function mutateTenantCollection<T>(
   fallback: T,
   mutator: (current: T) => T | Promise<T>
 ): Promise<T> {
-  const filePath = getTenantFile(tenantId, `${collectionName}.json`);
-  return withFileLock(filePath, async () => {
-    const current = await readJsonFile<T>(filePath, fallback);
-    const updated = await mutator(current);
-    await atomicWriteJson(filePath, updated);
-    return updated;
-  });
+  return getStructuredPersistenceProvider().mutateTenantCollection<T>(
+    tenantId,
+    collectionName,
+    fallback,
+    mutator
+  );
 }
 
-const SHARED_DATA_ROOT = path.join(__dirname, 'data', 'shared');
-
-function getSharedFile(filename: string): string {
-  if (!fs.existsSync(SHARED_DATA_ROOT)) {
-    fs.mkdirSync(SHARED_DATA_ROOT, { recursive: true });
-  }
-  return path.join(SHARED_DATA_ROOT, filename);
+export async function listTenantCollectionPaginated<T = any>(
+  tenantId: string,
+  collectionName: string,
+  opts?: { limit?: number; cursor?: string | null }
+): Promise<PaginatedCollectionResult<T>> {
+  return getStructuredPersistenceProvider().listTenantCollectionPaginated<T>(
+    tenantId,
+    collectionName,
+    opts
+  );
 }
 
 export async function readSharedCollection<T>(collectionName: string, fallback: T): Promise<T> {
-  const filePath = getSharedFile(`${collectionName}.json`);
-  return readJsonFile<T>(filePath, fallback);
+  return getStructuredPersistenceProvider().readSharedCollection<T>(collectionName, fallback);
 }
 
 export async function mutateSharedCollection<T>(
@@ -92,13 +53,11 @@ export async function mutateSharedCollection<T>(
   fallback: T,
   mutator: (current: T) => T | Promise<T>
 ): Promise<T> {
-  const filePath = getSharedFile(`${collectionName}.json`);
-  return withFileLock(filePath, async () => {
-    const current = await readJsonFile<T>(filePath, fallback);
-    const updated = await mutator(current);
-    await atomicWriteJson(filePath, updated);
-    return updated;
-  });
+  return getStructuredPersistenceProvider().mutateSharedCollection<T>(
+    collectionName,
+    fallback,
+    mutator
+  );
 }
 
 // =========================================================================
@@ -213,26 +172,26 @@ export async function getTenantCreditBalance(tenantId: string): Promise<{
   balance: number;
   entries: CreditLedgerEntry[];
 }> {
-  const filePath = getTenantFile(tenantId, 'credit_ledger.json');
-  return withFileLock(filePath, async () => {
-    let entries = await readJsonFile<CreditLedgerEntry[]>(filePath, []);
-    if (entries.length === 0) {
-      const plan = await getTenantPlan(tenantId);
-      entries = [
-        {
+  const plan = await getTenantPlan(tenantId);
+  return getStructuredPersistenceProvider().runCreditLedgerTransaction(
+    tenantId,
+    async (currentEntries, saveEntries) => {
+      const entries: CreditLedgerEntry[] = [...currentEntries];
+      if (entries.length === 0) {
+        entries.push({
           id: `led-${crypto.randomUUID()}`,
           kind: 'grant',
           amount: plan.monthlyAllowance || PLAN_ALLOWANCES.free,
           action: 'initial_plan_allowance',
           referenceId: 'init',
           createdAt: new Date().toISOString(),
-        },
-      ];
-      await atomicWriteJson(filePath, entries);
+        });
+        await saveEntries(entries);
+      }
+      const balance = entries.reduce((sum, e) => sum + e.amount, 0);
+      return { balance, entries };
     }
-    const balance = entries.reduce((sum, e) => sum + e.amount, 0);
-    return { balance, entries };
-  });
+  );
 }
 
 export async function reserveCredits(
@@ -245,40 +204,45 @@ export async function reserveCredits(
     const { balance } = await getTenantCreditBalance(tenantId);
     return { ok: true, balance };
   }
-  const filePath = getTenantFile(tenantId, 'credit_ledger.json');
-  return withFileLock(filePath, async () => {
-    const entries = await readJsonFile<CreditLedgerEntry[]>(filePath, []);
-    if (entries.length === 0) {
-      const plan = await getTenantPlan(tenantId);
+  const plan = await getTenantPlan(tenantId);
+  return getStructuredPersistenceProvider().runCreditLedgerTransaction(
+    tenantId,
+    async (currentEntries, saveEntries) => {
+      const entries: CreditLedgerEntry[] = [...currentEntries];
+      if (entries.length === 0) {
+        entries.push({
+          id: `led-${crypto.randomUUID()}`,
+          kind: 'grant',
+          amount: plan.monthlyAllowance || PLAN_ALLOWANCES.free,
+          action: 'initial_plan_allowance',
+          referenceId: 'init',
+          createdAt: new Date().toISOString(),
+        });
+      }
+      // Idempotency guard per referenceId
+      if (entries.some((e) => e.referenceId === referenceId && e.kind === 'reserve')) {
+        const balance = entries.reduce((s, e) => s + e.amount, 0);
+        return { ok: true, balance };
+      }
+      const currentBalance = entries.reduce((s, e) => s + e.amount, 0);
+      if (currentBalance < cost) {
+        if (currentEntries.length === 0) {
+          await saveEntries(entries);
+        }
+        return { ok: false, balance: currentBalance };
+      }
       entries.push({
         id: `led-${crypto.randomUUID()}`,
-        kind: 'grant',
-        amount: plan.monthlyAllowance || PLAN_ALLOWANCES.free,
-        action: 'initial_plan_allowance',
-        referenceId: 'init',
+        kind: 'reserve',
+        amount: -cost,
+        action,
+        referenceId,
         createdAt: new Date().toISOString(),
       });
+      await saveEntries(entries);
+      return { ok: true, balance: currentBalance - cost };
     }
-    // Idempotency guard per referenceId
-    if (entries.some((e) => e.referenceId === referenceId && e.kind === 'reserve')) {
-      const balance = entries.reduce((s, e) => s + e.amount, 0);
-      return { ok: true, balance };
-    }
-    const currentBalance = entries.reduce((s, e) => s + e.amount, 0);
-    if (currentBalance < cost) {
-      return { ok: false, balance: currentBalance };
-    }
-    entries.push({
-      id: `led-${crypto.randomUUID()}`,
-      kind: 'reserve',
-      amount: -cost,
-      action,
-      referenceId,
-      createdAt: new Date().toISOString(),
-    });
-    await atomicWriteJson(filePath, entries);
-    return { ok: true, balance: currentBalance - cost };
-  });
+  );
 }
 
 export async function refundCredits(
@@ -291,23 +255,25 @@ export async function refundCredits(
     const { balance } = await getTenantCreditBalance(tenantId);
     return balance;
   }
-  const filePath = getTenantFile(tenantId, 'credit_ledger.json');
-  return withFileLock(filePath, async () => {
-    const entries = await readJsonFile<CreditLedgerEntry[]>(filePath, []);
-    if (entries.some((e) => e.referenceId === referenceId && e.kind === 'refund')) {
+  return getStructuredPersistenceProvider().runCreditLedgerTransaction(
+    tenantId,
+    async (currentEntries, saveEntries) => {
+      const entries: CreditLedgerEntry[] = [...currentEntries];
+      if (entries.some((e) => e.referenceId === referenceId && e.kind === 'refund')) {
+        return entries.reduce((s, e) => s + e.amount, 0);
+      }
+      entries.push({
+        id: `led-${crypto.randomUUID()}`,
+        kind: 'refund',
+        amount: cost,
+        action,
+        referenceId,
+        createdAt: new Date().toISOString(),
+      });
+      await saveEntries(entries);
       return entries.reduce((s, e) => s + e.amount, 0);
     }
-    entries.push({
-      id: `led-${crypto.randomUUID()}`,
-      kind: 'refund',
-      amount: cost,
-      action,
-      referenceId,
-      createdAt: new Date().toISOString(),
-    });
-    await atomicWriteJson(filePath, entries);
-    return entries.reduce((s, e) => s + e.amount, 0);
-  });
+  );
 }
 
 // =========================================================================
@@ -372,10 +338,8 @@ export async function exportAllTenantData(tenantId: string, email: string | null
 }
 
 export async function purgeAllTenantData(tenantId: string): Promise<void> {
-  const dir = safeTenantDir(tenantId);
-  await withFileLock(dir, async () => {
-    if (fs.existsSync(dir)) {
-      await fs.promises.rm(dir, { recursive: true, force: true });
-    }
-  });
+  await Promise.all([
+    getMediaStorageProvider().deleteTenantMedia(tenantId),
+    getStructuredPersistenceProvider().purgeTenantStructuredData(tenantId),
+  ]);
 }

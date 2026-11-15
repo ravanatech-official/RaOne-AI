@@ -34,7 +34,15 @@ import {
   sendApiError,
   validateSafeHttpsEgress,
   createSlidingWindowLimiter,
+  isFirebaseAuthRequired,
+  validateEncryptionConfig,
 } from './server_security.ts';
+import {
+  getCloudPersistenceHealth,
+  validateCloudConfig,
+  logCloudEvent,
+} from './server_cloud_persistence.ts';
+import { DEFAULT_UNIVERSAL_SETTINGS } from './src/types/settings.ts';
 import {
   readTenantCollection,
   mutateTenantCollection,
@@ -77,7 +85,8 @@ import {
 import type { StudioProjectConfig, DeployTargetId, PromptEnhanceDepth } from './src/types/studio.ts';
 import {
   saveTenantVisionAsset,
-  resolveTenantVisionAssetPath,
+  streamTenantVisionAsset,
+  deleteTenantVisionAsset,
   resolveImageInputToInlinePart,
   computeVisionDimensions,
   selectGeminiImageEngine,
@@ -93,9 +102,9 @@ import {
   type VisionPublishedSnapshot,
 } from './server_vision_engine.ts';
 import {
-  resolveTenantCinemaAssetPath,
+  streamCinemaAssetByFilename,
+  materializeCinemaAssetToTemp,
   deleteTenantCinemaAssets,
-  streamCinemaAssetWithRange,
   probeVideoFile,
   transcodeNormalizeUpload,
   trimVideoFfmpeg,
@@ -115,10 +124,10 @@ import {
   type CinemaPublishedSnapshot,
 } from './server_cinema_engine.ts';
 import {
-  resolveTenantMusicAssetPath,
+  streamMusicAssetByFilename,
+  materializeMusicAssetToTemp,
   deleteTenantMusicAssets,
-  saveTenantMusicAssetBuffer,
-  streamMusicAssetWithRange,
+  saveTenantMusicAssetFromFile,
   probeAudioFile,
   trimAudioFfmpeg,
   dspTransformAudioFfmpeg,
@@ -144,9 +153,9 @@ import {
 } from './server_exports.ts';
 import { extractTextFromUploadedBase64 } from './server_uploads.ts';
 import {
-  resolveTenantDocAssetPath,
+  saveTenantDocAssetBuffer,
+  streamDocAssetByFilename,
   deleteTenantDocAssets,
-  streamDocAssetWithRange,
   normalizeDocumentConfig,
   compileDocumentPrompt,
   compileDocumentEditPrompt,
@@ -257,7 +266,7 @@ app.use((req, res, next) => {
       "worker-src 'self' blob:",
       isDevPreview
         ? "connect-src 'self' ws: wss: http: https:"
-        : "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://raone-ai-backend-348832701843.asia-southeast1.run.app https://*.run.app",
+        : "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.web.app https://*.firebaseapp.com",
       allowPreviewFraming
         ? isDevPreview || isAiStudioHost
           ? 'frame-ancestors *'
@@ -272,7 +281,6 @@ app.use((req, res, next) => {
 const BUILTIN_ALLOWED_ORIGINS = [
   'https://raoneai.web.app',
   'https://raoneai.firebaseapp.com',
-  'https://raone-ai-backend-348832701843.asia-southeast1.run.app',
   'http://localhost:3000',
   'http://127.0.0.1:3000',
 ];
@@ -791,19 +799,30 @@ async function generateWithGeminiFallback(
   throw lastErr || new Error('All Gemini model candidates failed.');
 }
 
-// API Health Route (supports ?verify=true to perform live Gemini & Groq API brain pings)
+// API Health Route (supports ?verify=true to perform live Gemini, Groq, & Cloud Persistence checks without leaking secrets)
 app.get('/api/health', async (req, res) => {
-  const storedSettings = await getStoredUserSettings();
+  const verifyLive = req.query.verify === 'true';
+  const [persistenceHealth, storedLocalSettings] = await Promise.all([
+    getCloudPersistenceHealth(verifyLive),
+    validateCloudConfig().mode === 'local'
+      ? getStoredUserSettings().catch(() => DEFAULT_UNIVERSAL_SETTINGS)
+      : Promise.resolve(DEFAULT_UNIVERSAL_SETTINGS),
+  ]);
+  const encHealth = validateEncryptionConfig();
+  const isDegraded =
+    persistenceHealth.storageBackend === 'cloud' &&
+    (Boolean(persistenceHealth.errorSummary) || encHealth.usingFallbackDevKey);
+
   const basePayload: any = {
-    status: 'online',
+    status: isDegraded ? 'degraded' : 'online',
     brand: 'RaOne',
     productName: 'RaOne AI',
     brandMeaning: 'Ravana + One — One AI for Your World',
     voiceActivationPhrase: 'Hey RaOne',
     tagline: 'Think. Create. Act.',
     brandSignature: 'RaOne AI by RavanaTec',
-    activeProvider: storedSettings.activeProvider || 'auto',
-    selectedModel: storedSettings.selectedModel || 'gemini-4-hydrogen',
+    activeProvider: storedLocalSettings.activeProvider || 'auto',
+    selectedModel: storedLocalSettings.selectedModel || 'gemini-4-hydrogen',
     hasApiKey: Boolean(apiKey || GROQ_API_KEY || COMET_API_KEY),
     providers: {
       gemini: Boolean(apiKey),
@@ -813,6 +832,16 @@ app.get('/api/health', async (req, res) => {
       deepseek: Boolean(DEEPSEEK_API_KEY),
       xai: Boolean(XAI_API_KEY),
       cometapi: Boolean(COMET_API_KEY),
+    },
+    persistence: {
+      storageBackend: persistenceHealth.storageBackend,
+      firestore: persistenceHealth.firestore,
+      gcs: persistenceHealth.gcs,
+      gcsBucketConfigured: persistenceHealth.gcsBucketConfigured,
+      firebaseAdmin: persistenceHealth.firebaseAdmin,
+      emulatorMode: persistenceHealth.emulatorMode,
+      lastCheckedAt: persistenceHealth.lastCheckedAt,
+      ...(persistenceHealth.errorSummary ? { errorSummary: persistenceHealth.errorSummary } : {}),
     },
     groqService: {
       configured: Boolean(GROQ_API_KEY),
@@ -825,12 +854,13 @@ app.get('/api/health', async (req, res) => {
       slidingWindowRateLimitPerMin: 120,
       heavyAiRateLimitPerMin: 30,
       firestoreRulesConfigured: fs.existsSync(path.join(__dirname, 'firestore.rules')),
-      requireFirebaseAuth: process.env.REQUIRE_FIREBASE_AUTH === 'true',
+      requireFirebaseAuth: isFirebaseAuthRequired(),
+      encryptionKeyStatus: encHealth.usingFallbackDevKey ? 'fallback_dev_key' : 'configured',
       byokEncryption: 'AES-256-GCM (Per-Tenant Isolated)',
     },
   };
 
-  if (req.query.verify === 'true') {
+  if (verifyLive) {
     if (apiKey) {
       const pingStart = Date.now();
       try {
@@ -963,10 +993,11 @@ app.get('/api/models', (_req, res) => {
 });
 
 // Capabilities Discovery Endpoint (Honest status per modality — never misleads users)
-app.get('/api/capabilities', (_req, res) => {
+app.get('/api/capabilities', async (_req, res) => {
   const hasGemini = Boolean(apiKey || process.env.GEMINI_API_KEY);
   const hasGroq = Boolean(GROQ_API_KEY || process.env.GROQ_API_KEY);
   const hasTextLlm = hasGemini || hasGroq || Boolean(OPENAI_API_KEY || ANTHROPIC_API_KEY || COMET_API_KEY);
+  const persistenceHealth = await getCloudPersistenceHealth(false);
 
   res.json({
     chat: { status: hasTextLlm ? 'real' : 'provider_required', streaming: true, attachments: ['pdf', 'docx', 'txt', 'md', 'csv', 'json'] },
@@ -997,6 +1028,22 @@ app.get('/api/capabilities', (_req, res) => {
       filesVault: 'real',
       pluginsVault: 'real',
       encryption: 'aes-256-gcm',
+    },
+    persistence: {
+      mode: persistenceHealth.storageBackend,
+      firestore: persistenceHealth.firestore,
+      gcs: persistenceHealth.gcs,
+      firebaseAuth: isFirebaseAuthRequired() ? 'enforced' : 'optional_dev',
+      cloudStatus:
+        persistenceHealth.storageBackend === 'local'
+          ? 'available'
+          : persistenceHealth.errorSummary
+          ? 'degraded'
+          : persistenceHealth.firestore === 'available' && persistenceHealth.gcs === 'available'
+          ? 'available'
+          : persistenceHealth.gcs === 'not_configured'
+          ? 'not_configured'
+          : 'configured',
     },
     localLlm: {
       browserDirectSupported: true,
@@ -5346,19 +5393,16 @@ app.post('/api/ai/transcribe', apiHeavyAiLimiter, async (req, res) => {
 // ==========================================
 // 🎨 RAONE VISION STUDIO (Silicon Valley Grade T2I + Multimodal Edit + Binary Asset Storage)
 // ==========================================
-app.get('/api/vision/assets/:filename', (req, res) => {
-  const tenantId = getReqTenant(req);
-  const filePath = resolveTenantVisionAssetPath(tenantId, String(req.params.filename || ''));
-  if (!filePath || !fs.existsSync(filePath)) {
-    return res.status(404).send('Vision asset not found.');
+app.get('/api/vision/assets/:filename', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const ok = await streamTenantVisionAsset(req, res, tenantId, String(req.params.filename || ''));
+    if (!ok) {
+      return res.status(404).send('Vision asset not found.');
+    }
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'VISION_ASSET_STREAM_ERROR', err?.message || 'Failed to stream vision asset.');
   }
-  const ext = path.extname(filePath).toLowerCase();
-  res.setHeader(
-    'Content-Type',
-    ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png'
-  );
-  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-  return fs.createReadStream(filePath).pipe(res);
 });
 
 app.get(['/api/vision/history', '/api/vision/gallery'], async (req, res) => {
@@ -5925,10 +5969,7 @@ app.post('/api/vision/delete', async (req, res) => {
       return list.filter((item) => item.id !== id);
     });
     if (removedAsset) {
-      const assetPath = resolveTenantVisionAssetPath(tenantId, removedAsset);
-      if (assetPath && fs.existsSync(assetPath)) {
-        fs.promises.unlink(assetPath).catch(() => {});
-      }
+      await deleteTenantVisionAsset(tenantId, removedAsset);
     }
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
@@ -5956,13 +5997,16 @@ app.post('/api/vision/lora/train', (req, res) => {
 // ==========================================
 // 🎬 RAONE CINEMA STUDIO (Silicon Valley Grade T2V + I2V + Text-to-Video Edit + FFmpeg Post-Prod + Lyria Audio)
 // ==========================================
-app.get('/api/motion/assets/:filename', (req, res) => {
-  const tenantId = getReqTenant(req);
-  const filePath = resolveTenantCinemaAssetPath(tenantId, String(req.params.filename || ''));
-  if (!filePath || !fs.existsSync(filePath)) {
-    return res.status(404).send('Cinema asset not found.');
+app.get('/api/motion/assets/:filename', async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const ok = await streamCinemaAssetByFilename(req, res, tenantId, String(req.params.filename || ''));
+    if (!ok) {
+      return res.status(404).send('Cinema asset not found.');
+    }
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'CINEMA_ASSET_STREAM_ERROR', err?.message || 'Failed to stream cinema asset.');
   }
-  return streamCinemaAssetWithRange(req, res, filePath);
 });
 
 app.get(['/api/motion/history', '/api/motion/gallery'], async (req, res) => {
@@ -6050,7 +6094,6 @@ app.post('/api/motion/upload', apiHeavyAiLimiter, async (req, res) => {
     const normTmp = path.join(tmpDir, 'normalized.mp4');
     await fs.promises.writeFile(rawTmp, rawBuffer);
     await transcodeNormalizeUpload(rawTmp, normTmp);
-    const normalizedBuf = await fs.promises.readFile(normTmp);
 
     const id = `vid-up-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const probe = await probeVideoFile(normTmp);
@@ -6066,7 +6109,7 @@ app.post('/api/motion/upload', apiHeavyAiLimiter, async (req, res) => {
     const record = await finalizeCinemaVideoRecord({
       tenantId,
       id,
-      rawVideoBuffer: normalizedBuf,
+      rawVideoFilePath: normTmp,
       prompt: title,
       compiledPrompt: `Uploaded video source (${probe.width}x${probe.height}, ${probe.duration}s)`,
       config: cfg,
@@ -6321,6 +6364,7 @@ app.post('/api/motion/edit', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for video editing (required: ${creditCost}, remaining: ${reservation.balance}).`);
   }
 
+  const editTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-cinedit-'));
   try {
     const cfg = normalizeCinemaConfig({
       ...(sourceItem.configSnapshot || {}),
@@ -6351,7 +6395,7 @@ app.post('/api/motion/edit', apiHeavyAiLimiter, async (req, res) => {
     });
 
     const localVideoPath = sourceItem.assetFilename
-      ? resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename)
+      ? await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, editTmpDir)
       : null;
 
     const omniEdit = await runGeminiOmniVideoEditOrExtend({
@@ -6406,6 +6450,8 @@ app.post('/api/motion/edit', apiHeavyAiLimiter, async (req, res) => {
     await refundCredits(tenantId, creditCost, 'motion_edit_failed', req.requestId || `moted_err_${Date.now()}`);
     console.error('Motion Edit Error:', err);
     return sendApiError(req, res, 503, 'VIDEO_EDIT_FAILED', err?.message || 'Text-to-Video edit failed. Credits refunded.');
+  } finally {
+    await fs.promises.rm(editTmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
@@ -6434,7 +6480,7 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
   try {
     const cfg = normalizeCinemaConfig(sourceItem.configSnapshot);
     const localVideoPath = sourceItem.assetFilename
-      ? resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename)
+      ? await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir)
       : null;
 
     const omniExt = await runGeminiOmniVideoEditOrExtend({
@@ -6447,7 +6493,7 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
       resolution: cfg.resolution,
     });
 
-    let finalBuffer = omniExt.buffer;
+    let finalFilePath: string | undefined;
     if (concatWithOriginal && localVideoPath && fs.existsSync(localVideoPath)) {
       const extTmp = path.join(tmpDir, 'ext_clip.mp4');
       const mergedTmp = path.join(tmpDir, 'merged.mp4');
@@ -6457,7 +6503,7 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
       if (extProbe.duration <= Number(sourceItem.duration || 5) + 1.5) {
         await concatVideosFfmpeg(localVideoPath, extTmp, mergedTmp).catch(() => {});
         if (fs.existsSync(mergedTmp) && fs.statSync(mergedTmp).size > 0) {
-          finalBuffer = await fs.promises.readFile(mergedTmp);
+          finalFilePath = mergedTmp;
         }
       }
     }
@@ -6466,7 +6512,8 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
     const extendedRecord = await finalizeCinemaVideoRecord({
       tenantId,
       id: newId,
-      rawVideoBuffer: finalBuffer,
+      rawVideoFilePath: finalFilePath,
+      rawVideoBuffer: finalFilePath ? undefined : omniExt.buffer,
       prompt: `${sourceItem.prompt} (Extended +${addDurationSec}s)`,
       compiledPrompt: String(extensionPrompt).trim(),
       config: cfg,
@@ -6501,27 +6548,26 @@ app.post('/api/motion/trim', async (req, res) => {
   const list = await readTenantCollection<any[]>(tenantId, 'motion_videos', []);
   const sourceItem = list.find((v) => v.id === id);
   if (!sourceItem || !sourceItem.assetFilename) {
-    return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Local video asset not found for trimming.');
-  }
-  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file does not exist on disk.');
+    return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for trimming.');
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-trim-'));
   try {
+    const sourcePath = await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file does not exist in storage.');
+    }
     const outPath = path.join(tmpDir, 'trimmed.mp4');
     const safeStart = Math.max(0, Number(startSec) || 0);
     const safeEnd = Math.max(safeStart + 0.5, Number(endSec) || Number(sourceItem.duration || 5));
     await trimVideoFfmpeg(sourcePath, outPath, safeStart, safeEnd);
-    const buf = await fs.promises.readFile(outPath);
     const newId = `vid-tr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const cfg = normalizeCinemaConfig(sourceItem.configSnapshot);
 
     const trimmedRecord = await finalizeCinemaVideoRecord({
       tenantId,
       id: newId,
-      rawVideoBuffer: buf,
+      rawVideoFilePath: outPath,
       prompt: `${sourceItem.prompt} (Trimmed ${safeStart.toFixed(1)}s–${safeEnd.toFixed(1)}s)`,
       compiledPrompt: sourceItem.compiledPrompt || sourceItem.prompt,
       config: cfg,
@@ -6557,23 +6603,22 @@ app.post('/api/motion/interpolate', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for 60fps interpolation.');
   }
-  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
-  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-60fps-'));
   try {
+    const sourcePath = await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
+    }
     const outPath = path.join(tmpDir, 'interp60.mp4');
     await interpolate60FpsFfmpeg(sourcePath, outPath);
-    const buf = await fs.promises.readFile(outPath);
     const newId = `vid-60fps-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const cfg = normalizeCinemaConfig({ ...(sourceItem.configSnapshot || {}), fps: 60 });
 
     const interpRecord = await finalizeCinemaVideoRecord({
       tenantId,
       id: newId,
-      rawVideoBuffer: buf,
+      rawVideoFilePath: outPath,
       prompt: `${sourceItem.prompt} (60 FPS Optical Flow)`,
       compiledPrompt: sourceItem.compiledPrompt || sourceItem.prompt,
       config: cfg,
@@ -6608,24 +6653,23 @@ app.post('/api/motion/upscale', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for 4K upscaling.');
   }
-  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
-  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-4k-'));
   try {
+    const sourcePath = await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
+    }
     const tier: '1080p' | '4k' = targetTier === '1080p' ? '1080p' : '4k';
     const outPath = path.join(tmpDir, 'upscaled.mp4');
     await upscaleVideoFfmpeg(sourcePath, outPath, tier);
-    const buf = await fs.promises.readFile(outPath);
     const newId = `vid-${tier}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const cfg = normalizeCinemaConfig({ ...(sourceItem.configSnapshot || {}), resolution: tier });
 
     const upRecord = await finalizeCinemaVideoRecord({
       tenantId,
       id: newId,
-      rawVideoBuffer: buf,
+      rawVideoFilePath: outPath,
       prompt: `${sourceItem.prompt} (${tier.toUpperCase()} Super-Res)`,
       compiledPrompt: sourceItem.compiledPrompt || sourceItem.prompt,
       config: cfg,
@@ -6674,6 +6718,7 @@ app.post('/api/motion/motion-brush', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for Motion Brush (required: ${creditCost}).`);
   }
 
+  const brushTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-brush-'));
   try {
     const cfg = normalizeCinemaConfig({
       ...(sourceItem.configSnapshot || {}),
@@ -6688,7 +6733,9 @@ app.post('/api/motion/motion-brush', apiHeavyAiLimiter, async (req, res) => {
     const maskPart = await resolveCinemaImageInlinePart(tenantId, String(maskImage));
     const promptText = String(instruction || `Animate ONLY the masked region moving with "${direction}" while keeping surrounding scene steady.`).trim();
     const compiled = compileCinemaEditPrompt(promptText, cfg, { hasMask: Boolean(maskPart) });
-    const localVideoPath = sourceItem.assetFilename ? resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename) : null;
+    const localVideoPath = sourceItem.assetFilename
+      ? await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, brushTmpDir)
+      : null;
 
     const omni = await runGeminiOmniVideoEditOrExtend({
       client: tenantClient,
@@ -6727,6 +6774,8 @@ app.post('/api/motion/motion-brush', apiHeavyAiLimiter, async (req, res) => {
   } catch (err: any) {
     await refundCredits(tenantId, creditCost, 'motion_brush_failed', req.requestId || `motmb_err_${Date.now()}`);
     return sendApiError(req, res, 503, 'MOTION_BRUSH_FAILED', err?.message || 'Motion Brush synthesis failed.');
+  } finally {
+    await fs.promises.rm(brushTmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
@@ -6739,13 +6788,14 @@ app.post('/api/motion/audio-sync', apiHeavyAiLimiter, async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'VIDEO_NOT_FOUND', 'Video asset not found for audio synchronization.');
   }
-  const sourcePath = resolveTenantCinemaAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
-  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-aud-'));
   try {
+    const sourcePath = await materializeCinemaAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'VIDEO_FILE_MISSING', 'Source video file is missing.');
+    }
+
     let audioBuffer: Buffer;
     let engineLabel = 'FFmpeg Custom Audio Mux';
 
@@ -6767,14 +6817,13 @@ app.post('/api/motion/audio-sync', apiHeavyAiLimiter, async (req, res) => {
     const outPath = path.join(tmpDir, 'muxed.mp4');
     await fs.promises.writeFile(audioTmp, audioBuffer);
     await muxAudioFfmpeg(sourcePath, audioTmp, outPath);
-    const buf = await fs.promises.readFile(outPath);
 
     const newId = `vid-aud-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const cfg = normalizeCinemaConfig(sourceItem.configSnapshot);
     const syncedRecord = await finalizeCinemaVideoRecord({
       tenantId,
       id: newId,
-      rawVideoBuffer: buf,
+      rawVideoFilePath: outPath,
       prompt: `${sourceItem.prompt} (Audio Synced)`,
       compiledPrompt: sourceItem.compiledPrompt || sourceItem.prompt,
       config: cfg,
@@ -6893,9 +6942,8 @@ app.get('/api/motion/share/:shareId/stream', async (req, res) => {
     const list = await readTenantCollection<CinemaPublishedSnapshot[]>('__public__', 'cinema_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Stream not found.');
-    const filePath = resolveTenantCinemaAssetPath(snap.tenantId, snap.videoFilename);
-    if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Video asset not found.');
-    return streamCinemaAssetWithRange(req, res, filePath);
+    const ok = await streamCinemaAssetByFilename(req, res, snap.tenantId, snap.videoFilename);
+    if (!ok) return res.status(404).send('Video asset not found.');
   } catch (err: any) {
     return res.status(500).send(err.message);
   }
@@ -6950,14 +6998,13 @@ app.post('/api/motion/delete', async (req, res) => {
 // ==========================================
 // 🎵 RAONE MUSIC STUDIO (Lyria 3 Synthesis, Text-to-Music Edit, FFmpeg DSP & 4-Stem Isolation)
 // ==========================================
-app.get('/api/audio/assets/:filename', (req, res) => {
+app.get('/api/audio/assets/:filename', async (req, res) => {
   try {
     const tenantId = getReqTenant(req);
-    const filePath = resolveTenantMusicAssetPath(tenantId, req.params.filename);
-    if (!filePath || !fs.existsSync(filePath)) {
+    const ok = await streamMusicAssetByFilename(req, res, tenantId, req.params.filename);
+    if (!ok) {
       return sendApiError(req, res, 404, 'AUDIO_ASSET_NOT_FOUND', 'Audio asset not found.');
     }
-    return streamMusicAssetWithRange(req, res, filePath);
   } catch (err: any) {
     return sendApiError(req, res, 500, 'AUDIO_ASSET_STREAM_ERROR', err?.message || 'Failed to stream audio.');
   }
@@ -7298,11 +7345,6 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Source audio track not found for editing.');
   }
 
-  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio asset file is missing.');
-  }
-
   const cfg = normalizeMusicConfig({
     ...(sourceItem.configSnapshot || {}),
     ...(musicConfig || {}),
@@ -7311,129 +7353,136 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
   const activePreset = editPreset || cfg.editPreset || 'ai_remix';
   const cleanInstruction = String(instruction || '').trim() || `Transform using ${activePreset.replace(/_/g, ' ')}`;
 
-  // 1. Direct non-destructive FFmpeg DSP presets (fast, sample-exact, zero external worker needed)
-  if (
-    activePreset === 'karaoke_instrumental' ||
-    activePreset === 'lofi_vinyl' ||
-    activePreset === 'tempo_pitch' ||
-    activePreset === 'stadium_reverb' ||
-    activePreset === 'dsp_master'
-  ) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-dspedit-'));
-    try {
-      const dsp = { ...cfg.dsp };
-      let removeVocals = false;
-      if (activePreset === 'karaoke_instrumental') removeVocals = true;
-      if (activePreset === 'lofi_vinyl') dsp.lofiWarmth = true;
-      if (activePreset === 'stadium_reverb') dsp.reverbWet = Math.max(45, dsp.reverbWet || 55);
-      if (activePreset === 'tempo_pitch' && dsp.tempoMultiplier === 1 && dsp.pitchSemitones === 0) {
-        dsp.tempoMultiplier = 1.12;
-        dsp.pitchSemitones = 2;
-      }
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-audedit-'));
+  let sourcePath: string | null = null;
+  try {
+    sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio asset file is missing.');
+    }
 
-      const outFmt = cfg.production.outputFormat === 'wav' ? 'wav' : 'mp3';
-      const outTmp = path.join(tmpDir, `dsp_edit.${outFmt}`);
-      await dspTransformAudioFfmpeg(sourcePath, outTmp, dsp, {
-        format: outFmt,
-        removeVocals,
-        totalDurationSec: Number(sourceItem.duration || 0),
+    // 1. Direct non-destructive FFmpeg DSP presets (fast, sample-exact, zero external worker needed)
+    if (
+      activePreset === 'karaoke_instrumental' ||
+      activePreset === 'lofi_vinyl' ||
+      activePreset === 'tempo_pitch' ||
+      activePreset === 'stadium_reverb' ||
+      activePreset === 'dsp_master'
+    ) {
+      try {
+        const dsp = { ...cfg.dsp };
+        let removeVocals = false;
+        if (activePreset === 'karaoke_instrumental') removeVocals = true;
+        if (activePreset === 'lofi_vinyl') dsp.lofiWarmth = true;
+        if (activePreset === 'stadium_reverb') dsp.reverbWet = Math.max(45, dsp.reverbWet || 55);
+        if (activePreset === 'tempo_pitch' && dsp.tempoMultiplier === 1 && dsp.pitchSemitones === 0) {
+          dsp.tempoMultiplier = 1.12;
+          dsp.pitchSemitones = 2;
+        }
+
+        const outFmt = cfg.production.outputFormat === 'wav' ? 'wav' : 'mp3';
+        const outTmp = path.join(tmpDir, `dsp_edit.${outFmt}`);
+        await dspTransformAudioFfmpeg(sourcePath, outTmp, dsp, {
+          format: outFmt,
+          removeVocals,
+          totalDurationSec: Number(sourceItem.duration || 0),
+        });
+        const newId = `trk-ed-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        const editedRecord = await finalizeMusicTrackRecord({
+          tenantId,
+          id: newId,
+          rawAudioFilePath: outTmp,
+          rawInputExt: `.${outFmt}`,
+          existingCoverUrl: sourceItem.coverUrl,
+          existingCoverFilename: sourceItem.coverFilename,
+          title: `${sourceItem.title} (${activePreset === 'karaoke_instrumental' ? 'Instrumental' : 'DSP Edit'})`,
+          prompt: `${sourceItem.prompt} · ${cleanInstruction}`,
+          compiledPrompt: `FFmpeg DSP Transform [${activePreset}]: pitch=${dsp.pitchSemitones}st tempo=${dsp.tempoMultiplier}x bass=${dsp.bassDb}dB treble=${dsp.trebleDb}dB reverb=${dsp.reverbWet}%`,
+          editInstruction: cleanInstruction,
+          lyrics: removeVocals ? undefined : sourceItem.lyrics,
+          styleTags: sourceItem.styleTags || [cfg.primaryGenre],
+          config: {
+            ...cfg,
+            dsp,
+            vocal: removeVocals ? { ...cfg.vocal, mode: 'instrumental' } : cfg.vocal,
+          },
+          operationType: 'dsp_edit',
+          parentId: sourceItem.id,
+          rootId: sourceItem.rootId || sourceItem.id,
+          version: Math.max(2, Number(sourceItem.version || 1) + 1),
+          sourceAudioUrl: sourceItem.audioUrl,
+          engineModelUsed: `FFmpeg Studio DSP (${activePreset})`,
+          mastered: true,
+          skipNormalize: true,
+          aiNotes: `Applied non-destructive FFmpeg DSP preset: ${activePreset}`,
+        });
+
+        await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [editedRecord, ...existing]);
+        return res.json({ success: true, track: editedRecord, item: editedRecord });
+      } catch (err: any) {
+        return sendApiError(req, res, 500, 'AUDIO_DSP_EDIT_FAILED', err?.message || 'FFmpeg DSP edit failed.');
+      }
+    }
+
+    // 2. AI Music-to-Music Re-Imagine / Style Transfer via Gemini Audio Understanding + Lyria 3
+    const { client: tenantClient } = await getTenantGeminiClient(req);
+    if (!tenantClient) {
+      return sendApiError(req, res, 503, 'AUDIO_PROVIDER_NOT_CONFIGURED', 'Gemini API key is required for AI Music Remixing.');
+    }
+
+    const creditCost = 4;
+    const reservation = await reserveCredits(tenantId, creditCost, 'music_ai_edit', req.requestId || `mused_${Date.now()}`);
+    if (!reservation.ok) {
+      return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for AI Music Edit (required: ${creditCost}).`);
+    }
+
+    try {
+      const sourceAnalysis = await analyzeAudioTrackForEdit(tenantClient, sourcePath, cleanInstruction);
+      const compiledEdit = compileMusicEditPrompt({
+        instruction: cleanInstruction,
+        sourceAnalysis,
+        sourceItem,
+        config: cfg,
       });
-      const outBuf = await fs.promises.readFile(outTmp);
-      const newId = `trk-ed-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-      const editedRecord = await finalizeMusicTrackRecord({
+
+      const lyria = await generateLyriaTrackBuffer(
+        tenantClient,
+        compiledEdit,
+        cfg.enginePreference === 'lyria-3-clip-preview' ? 'lyria-3-clip-preview' : 'lyria-3-pro-preview'
+      );
+      const rawExt = lyria.mimeType.includes('mpeg') || lyria.mimeType.includes('mp3') ? '.mp3' : '.wav';
+      const newId = `trk-rmx-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
+      const remixRecord = await finalizeMusicTrackRecord({
         tenantId,
         id: newId,
-        rawAudioBuffer: outBuf,
-        rawInputExt: `.${outFmt}`,
-        existingCoverUrl: sourceItem.coverUrl,
-        existingCoverFilename: sourceItem.coverFilename,
-        title: `${sourceItem.title} (${activePreset === 'karaoke_instrumental' ? 'Instrumental' : 'DSP Edit'})`,
-        prompt: `${sourceItem.prompt} · ${cleanInstruction}`,
-        compiledPrompt: `FFmpeg DSP Transform [${activePreset}]: pitch=${dsp.pitchSemitones}st tempo=${dsp.tempoMultiplier}x bass=${dsp.bassDb}dB treble=${dsp.trebleDb}dB reverb=${dsp.reverbWet}%`,
+        rawAudioBuffer: lyria.buffer,
+        rawInputExt: rawExt,
+        coverClient: tenantClient,
+        title: `${sourceItem.title} (Remix)`,
+        prompt: `${sourceItem.prompt} → Remix: ${cleanInstruction}`,
+        compiledPrompt: compiledEdit,
         editInstruction: cleanInstruction,
-        lyrics: removeVocals ? undefined : sourceItem.lyrics,
-        styleTags: sourceItem.styleTags || [cfg.primaryGenre],
-        config: {
-          ...cfg,
-          dsp,
-          vocal: removeVocals ? { ...cfg.vocal, mode: 'instrumental' } : cfg.vocal,
-        },
-        operationType: 'dsp_edit',
+        lyrics: String(lyria.lyrics || sourceItem.lyrics || '').trim() || undefined,
+        styleTags: [cfg.primaryGenre, 'AI Remix'],
+        config: cfg,
+        operationType: 'ai_remix',
         parentId: sourceItem.id,
         rootId: sourceItem.rootId || sourceItem.id,
         version: Math.max(2, Number(sourceItem.version || 1) + 1),
         sourceAudioUrl: sourceItem.audioUrl,
-        engineModelUsed: `FFmpeg Studio DSP (${activePreset})`,
-        mastered: true,
-        skipNormalize: true,
-        aiNotes: `Applied non-destructive FFmpeg DSP preset: ${activePreset}`,
+        engineModelUsed: `${lyria.modelUsed} + Gemini Audio Analysis`,
+        aiNotes: `AI Music Edit: "${cleanInstruction}" · Analysis: ${sourceAnalysis.slice(0, 140)}`,
       });
 
-      await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [editedRecord, ...existing]);
-      return res.json({ success: true, track: editedRecord, item: editedRecord });
+      await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [remixRecord, ...existing]);
+      return res.json({ success: true, track: remixRecord, item: remixRecord, creditsBalance: reservation.balance });
     } catch (err: any) {
-      return sendApiError(req, res, 500, 'AUDIO_DSP_EDIT_FAILED', err?.message || 'FFmpeg DSP edit failed.');
-    } finally {
-      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await refundCredits(tenantId, creditCost, 'music_ai_edit_failed', req.requestId || `mused_err_${Date.now()}`);
+      return sendApiError(req, res, 503, 'AUDIO_EDIT_FAILED', err?.message || 'AI music edit failed. Credits refunded.');
     }
-  }
-
-  // 2. AI Music-to-Music Re-Imagine / Style Transfer via Gemini Audio Understanding + Lyria 3
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(req, res, 503, 'AUDIO_PROVIDER_NOT_CONFIGURED', 'Gemini API key is required for AI Music Remixing.');
-  }
-
-  const creditCost = 4;
-  const reservation = await reserveCredits(tenantId, creditCost, 'music_ai_edit', req.requestId || `mused_${Date.now()}`);
-  if (!reservation.ok) {
-    return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for AI Music Edit (required: ${creditCost}).`);
-  }
-
-  try {
-    const sourceAnalysis = await analyzeAudioTrackForEdit(tenantClient, sourcePath, cleanInstruction);
-    const compiledEdit = compileMusicEditPrompt({
-      instruction: cleanInstruction,
-      sourceAnalysis,
-      sourceItem,
-      config: cfg,
-    });
-
-    const lyria = await generateLyriaTrackBuffer(
-      tenantClient,
-      compiledEdit,
-      cfg.enginePreference === 'lyria-3-clip-preview' ? 'lyria-3-clip-preview' : 'lyria-3-pro-preview'
-    );
-    const rawExt = lyria.mimeType.includes('mpeg') || lyria.mimeType.includes('mp3') ? '.mp3' : '.wav';
-    const newId = `trk-rmx-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-
-    const remixRecord = await finalizeMusicTrackRecord({
-      tenantId,
-      id: newId,
-      rawAudioBuffer: lyria.buffer,
-      rawInputExt: rawExt,
-      coverClient: tenantClient,
-      title: `${sourceItem.title} (Remix)`,
-      prompt: `${sourceItem.prompt} → Remix: ${cleanInstruction}`,
-      compiledPrompt: compiledEdit,
-      editInstruction: cleanInstruction,
-      lyrics: String(lyria.lyrics || sourceItem.lyrics || '').trim() || undefined,
-      styleTags: [cfg.primaryGenre, 'AI Remix'],
-      config: cfg,
-      operationType: 'ai_remix',
-      parentId: sourceItem.id,
-      rootId: sourceItem.rootId || sourceItem.id,
-      version: Math.max(2, Number(sourceItem.version || 1) + 1),
-      sourceAudioUrl: sourceItem.audioUrl,
-      engineModelUsed: `${lyria.modelUsed} + Gemini Audio Analysis`,
-      aiNotes: `AI Music Edit: "${cleanInstruction}" · Analysis: ${sourceAnalysis.slice(0, 140)}`,
-    });
-
-    await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [remixRecord, ...existing]);
-    return res.json({ success: true, track: remixRecord, item: remixRecord, creditsBalance: reservation.balance });
-  } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'music_ai_edit_failed', req.requestId || `mused_err_${Date.now()}`);
-    return sendApiError(req, res, 503, 'AUDIO_EDIT_FAILED', err?.message || 'AI music edit failed. Credits refunded.');
+  } finally {
+    await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
@@ -7446,13 +7495,13 @@ app.post('/api/audio/master', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found for mastering.');
   }
-  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
-  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-master-'));
   try {
+    const sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
+    }
     const cfg = normalizeMusicConfig(sourceItem.configSnapshot);
     const mergedDsp = { ...cfg.dsp, ...(dsp || {}) };
     const outFmt: 'mp3' | 'wav' =
@@ -7467,12 +7516,11 @@ app.post('/api/audio/master', async (req, res) => {
       totalDurationSec: Number(sourceItem.duration || 0),
     });
 
-    const outBuf = await fs.promises.readFile(outTmp);
     const newId = `trk-mst-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const masteredRecord = await finalizeMusicTrackRecord({
       tenantId,
       id: newId,
-      rawAudioBuffer: outBuf,
+      rawAudioFilePath: outTmp,
       rawInputExt: `.${outFmt}`,
       existingCoverUrl: sourceItem.coverUrl,
       existingCoverFilename: sourceItem.coverFilename,
@@ -7510,26 +7558,25 @@ app.post('/api/audio/trim', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found for trimming.');
   }
-  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
-  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-audtrim-'));
   try {
+    const sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
+    }
     const cfg = normalizeMusicConfig(sourceItem.configSnapshot);
     const outFmt = cfg.production.outputFormat === 'wav' ? 'wav' : 'mp3';
     const safeStart = Math.max(0, Number(startSec) || 0);
     const safeEnd = Math.max(safeStart + 0.5, Number(endSec) || Number(sourceItem.duration || 10));
     const outTmp = path.join(tmpDir, `trimmed.${outFmt}`);
     await trimAudioFfmpeg(sourcePath, outTmp, safeStart, safeEnd, outFmt);
-    const outBuf = await fs.promises.readFile(outTmp);
 
     const newId = `trk-tr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const trimmedRecord = await finalizeMusicTrackRecord({
       tenantId,
       id: newId,
-      rawAudioBuffer: outBuf,
+      rawAudioFilePath: outTmp,
       rawInputExt: `.${outFmt}`,
       existingCoverUrl: sourceItem.coverUrl,
       existingCoverFilename: sourceItem.coverFilename,
@@ -7568,10 +7615,6 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track not found for extension.');
   }
-  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
-  }
 
   const { client: tenantClient } = await getTenantGeminiClient(req);
   if (!tenantClient) {
@@ -7586,6 +7629,11 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-audext-'));
   try {
+    const sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      await refundCredits(tenantId, creditCost, 'music_extend_missing', req.requestId || `musext_miss_${Date.now()}`);
+      return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
+    }
     const cfg = normalizeMusicConfig(sourceItem.configSnapshot);
     const analysis = await analyzeAudioTrackForEdit(tenantClient, sourcePath, String(extensionPrompt));
     const extCompiled = `Seamless musical continuation matching tempo ${cfg.bpm} BPM and key ${cfg.keySignature}. Previous section character: ${analysis}. Continuation direction: ${String(extensionPrompt)}`;
@@ -7597,13 +7645,12 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
     const mergedTmp = path.join(tmpDir, `extended.${outFmt}`);
     await fs.promises.writeFile(part2Tmp, lyria.buffer);
     await concatAudioCrossfadeFfmpeg(sourcePath, part2Tmp, mergedTmp, outFmt);
-    const outBuf = await fs.promises.readFile(mergedTmp);
 
     const newId = `trk-ext-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const extRecord = await finalizeMusicTrackRecord({
       tenantId,
       id: newId,
-      rawAudioBuffer: outBuf,
+      rawAudioFilePath: mergedTmp,
       rawInputExt: `.${outFmt}`,
       existingCoverUrl: sourceItem.coverUrl,
       existingCoverFilename: sourceItem.coverFilename,
@@ -7642,26 +7689,20 @@ app.post('/api/audio/separate-stems', async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found for stem isolation.');
   }
-  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
-  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-stems-'));
   try {
+    const sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
+    }
     const stems = await separateStemsFfmpeg(sourcePath, tmpDir);
-    const [vocalsBuf, instBuf, bassBuf, drumsBuf] = await Promise.all([
-      fs.promises.readFile(stems.vocalsPath),
-      fs.promises.readFile(stems.instrumentalPath),
-      fs.promises.readFile(stems.bassPath),
-      fs.promises.readFile(stems.drumsPath),
-    ]);
 
     const [vocSaved, instSaved, bassSaved, drumsSaved] = await Promise.all([
-      saveTenantMusicAssetBuffer(tenantId, `${sourceItem.id}_vocals`, 'mp3', vocalsBuf),
-      saveTenantMusicAssetBuffer(tenantId, `${sourceItem.id}_inst`, 'mp3', instBuf),
-      saveTenantMusicAssetBuffer(tenantId, `${sourceItem.id}_bass`, 'mp3', bassBuf),
-      saveTenantMusicAssetBuffer(tenantId, `${sourceItem.id}_drums`, 'mp3', drumsBuf),
+      saveTenantMusicAssetFromFile(tenantId, `${sourceItem.id}_vocals`, 'mp3', stems.vocalsPath),
+      saveTenantMusicAssetFromFile(tenantId, `${sourceItem.id}_inst`, 'mp3', stems.instrumentalPath),
+      saveTenantMusicAssetFromFile(tenantId, `${sourceItem.id}_bass`, 'mp3', stems.bassPath),
+      saveTenantMusicAssetFromFile(tenantId, `${sourceItem.id}_drums`, 'mp3', stems.drumsPath),
     ]);
 
     let updatedItem: any = null;
@@ -7705,10 +7746,6 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
   if (!sourceItem || !sourceItem.assetFilename) {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found.');
   }
-  const sourcePath = resolveTenantMusicAssetPath(tenantId, sourceItem.assetFilename);
-  if (!sourcePath || !fs.existsSync(sourcePath)) {
-    return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
-  }
 
   const { client: tenantClient } = await getTenantGeminiClient(req);
   if (!tenantClient) {
@@ -7717,6 +7754,10 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-tag-'));
   try {
+    const sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
+    }
     const cfg = normalizeMusicConfig(sourceItem.configSnapshot);
     const outFmt = cfg.production.outputFormat === 'wav' ? 'wav' : 'mp3';
     const tagBuf = await generateTtsProducerTagBuffer(tenantClient, String(tagText).trim(), String(voiceName));
@@ -7724,13 +7765,12 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
     const outTmp = path.join(tmpDir, `tagged.${outFmt}`);
     await fs.promises.writeFile(tagTmp, tagBuf);
     await mixProducerTagIntoTrackFfmpeg(sourcePath, tagTmp, outTmp, outFmt);
-    const outBuf = await fs.promises.readFile(outTmp);
 
     const newId = `trk-tag-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const taggedRecord = await finalizeMusicTrackRecord({
       tenantId,
       id: newId,
-      rawAudioBuffer: outBuf,
+      rawAudioFilePath: outTmp,
       rawInputExt: `.${outFmt}`,
       existingCoverUrl: sourceItem.coverUrl,
       existingCoverFilename: sourceItem.coverFilename,
@@ -7853,9 +7893,8 @@ app.get('/api/audio/share/:shareId/stream', async (req, res) => {
     const list = await readTenantCollection<MusicPublishedSnapshot[]>('__public__', 'music_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Audio stream not found.');
-    const filePath = resolveTenantMusicAssetPath(snap.tenantId, snap.audioFilename);
-    if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Audio asset missing.');
-    return streamMusicAssetWithRange(req, res, filePath);
+    const ok = await streamMusicAssetByFilename(req, res, snap.tenantId, snap.audioFilename);
+    if (!ok) return res.status(404).send('Audio asset missing.');
   } catch (err: any) {
     return res.status(500).send(err.message);
   }
@@ -7929,13 +7968,12 @@ app.post('/api/audio/play', async (req, res) => {
 // ==========================================
 // 📄 RAONE DOCUMENT STUDIO (Text-to-Document Gen, Text-to-Document Edit, OCR Upload, TTS Podcast & Office Exports)
 // ==========================================
-app.get('/api/documents/assets/:filename', (req, res) => {
+app.get('/api/documents/assets/:filename', async (req, res) => {
   try {
-    const filePath = resolveTenantDocAssetPath(getReqTenant(req), req.params.filename);
-    if (!filePath || !fs.existsSync(filePath)) {
+    const ok = await streamDocAssetByFilename(req, res, getReqTenant(req), req.params.filename);
+    if (!ok) {
       return sendApiError(req, res, 404, 'DOC_ASSET_NOT_FOUND', 'Document media asset not found.');
     }
-    return streamDocAssetWithRange(req, res, filePath);
   } catch (err: any) {
     return sendApiError(req, res, 500, 'DOC_ASSET_STREAM_ERROR', err?.message || 'Failed to stream asset.');
   }
@@ -8103,7 +8141,14 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
       }
     }
 
-    const newDoc = buildDocumentRecord({
+    const docAsset = await saveTenantDocAssetBuffer(
+      tenantId,
+      docId,
+      'md',
+      Buffer.from(`# ${generatedTitle}\n\n${generatedContent}`, 'utf-8')
+    );
+
+    const newDoc: any = buildDocumentRecord({
       id: docId,
       operationType: 'generate',
       title: generatedTitle,
@@ -8121,6 +8166,8 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
       audioOverviewTranscript: audioTranscript,
       aiNotes: `Generated via ${llmOut.providerUsed} (${cfg.category} · ${cfg.tone} · ${cfg.language})`,
     });
+    newDoc.docAssetFilename = docAsset.filename;
+    newDoc.docAssetUrl = docAsset.url;
 
     const updated = await mutateTenantCollection<any[]>(tenantId, 'documents', [], (existing) => [newDoc, ...existing]);
     return res.json({ success: true, document: newDoc, item: newDoc, totalCount: updated.length });
@@ -8200,7 +8247,14 @@ app.post('/api/documents/edit', apiHeavyAiLimiter, async (req, res) => {
         : 'text_edit';
     const newId = `doc_ed_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    const editedDoc = buildDocumentRecord({
+    const docAsset = await saveTenantDocAssetBuffer(
+      tenantId,
+      newId,
+      'md',
+      Buffer.from(`# ${String(parsed.title || sourceDoc.title).trim()}\n\n${updatedContent}`, 'utf-8')
+    );
+
+    const editedDoc: any = buildDocumentRecord({
       id: newId,
       parentId: sourceDoc.id,
       rootId: sourceDoc.rootId || sourceDoc.id,
@@ -8220,6 +8274,8 @@ app.post('/api/documents/edit', apiHeavyAiLimiter, async (req, res) => {
       ocrEngine: sourceDoc.ocrEngine,
       aiNotes: String(parsed.changeSummary || `Edited (${editPreset}): "${cleanInstruction}" via ${llmOut.providerUsed}`),
     });
+    editedDoc.docAssetFilename = docAsset.filename;
+    editedDoc.docAssetUrl = docAsset.url;
 
     const updated = await mutateTenantCollection<any[]>(tenantId, 'documents', [], (existing) => [editedDoc, ...existing]);
     return res.json({ success: true, document: editedDoc, item: editedDoc, totalCount: updated.length });
@@ -8258,6 +8314,21 @@ app.post('/api/documents/save-manual', async (req, res) => {
     );
 
     if (!savedItem) return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', 'Document not found.');
+    const docAsset = await saveTenantDocAssetBuffer(
+      tenantId,
+      savedItem.id,
+      'md',
+      Buffer.from(`# ${savedItem.title}\n\n${savedItem.content || ''}`, 'utf-8')
+    ).catch(() => null);
+    if (docAsset) {
+      await mutateTenantCollection<any[]>(tenantId, 'documents', [], (list) =>
+        list.map((d) =>
+          d.id === savedItem.id
+            ? (savedItem = { ...d, docAssetFilename: docAsset.filename, docAssetUrl: docAsset.url })
+            : d
+        )
+      );
+    }
     return res.json({ success: true, document: savedItem, item: savedItem });
   } catch (err: any) {
     return sendApiError(req, res, 500, 'DOCUMENT_SAVE_ERROR', err.message);
@@ -8453,9 +8524,8 @@ app.get('/api/documents/share/:shareId/audio', async (req, res) => {
     const list = await readTenantCollection<DocumentPublishedSnapshot[]>('__public__', 'documents_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap || !snap.audioFilename) return res.status(404).send('Podcast audio not found.');
-    const filePath = resolveTenantDocAssetPath(snap.tenantId, snap.audioFilename);
-    if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Audio file missing.');
-    return streamDocAssetWithRange(req, res, filePath);
+    const ok = await streamDocAssetByFilename(req, res, snap.tenantId, snap.audioFilename);
+    if (!ok) return res.status(404).send('Audio file missing.');
   } catch (err: any) {
     return res.status(500).send(err.message);
   }
@@ -8497,8 +8567,8 @@ app.post('/api/documents/delete', async (req, res) => {
         return true;
       })
     );
-    if (removed?.audioOverviewFilename) {
-      await deleteTenantDocAssets(tenantId, [removed.audioOverviewFilename]);
+    if (removed?.audioOverviewFilename || removed?.docAssetFilename) {
+      await deleteTenantDocAssets(tenantId, [removed.audioOverviewFilename, removed.docAssetFilename]);
     }
     return res.json({ success: true, remainingCount: filtered.length });
   } catch (err: any) {
@@ -8689,9 +8759,31 @@ async function startServer() {
     });
   }
 
-  app.listen(Number(port), '0.0.0.0', () => {
-    console.log(`RaOne AI server listening on http://0.0.0.0:${port}`);
+  const cloudCfg = validateCloudConfig();
+  if (!cloudCfg.ok) {
+    logCloudEvent('error', 'cloud_config_incomplete', { errors: cloudCfg.errors });
+  } else {
+    logCloudEvent('info', 'persistence_initialized', { mode: cloudCfg.mode });
+  }
+
+  const server = app.listen(Number(port), '0.0.0.0', () => {
+    console.log(`RaOne AI server listening on http://0.0.0.0:${port} (storage=${cloudCfg.mode})`);
   });
+
+  const gracefulShutdown = (signal: string) => {
+    logCloudEvent('info', 'graceful_shutdown_start', { signal });
+    server.close((closeErr) => {
+      if (closeErr) {
+        logCloudEvent('error', 'graceful_shutdown_error', { message: closeErr.message });
+        process.exit(1);
+      }
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 10000).unref();
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 startServer();

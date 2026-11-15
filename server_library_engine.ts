@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type {
   LibraryAsset,
@@ -7,26 +6,35 @@ import type {
   LibraryVaultStats,
 } from './src/types/library.ts';
 import {
+  getMediaStorageProvider,
+  type MediaCategory,
+} from './server_cloud_persistence.ts';
+import {
   mutateTenantCollection,
   readTenantCollection,
 } from './server_tenant_store.ts';
 import {
-  resolveTenantVisionAssetPath,
+  deleteTenantVisionAsset,
+  readTenantVisionAssetBuffer,
   saveTenantVisionAsset,
 } from './server_vision_engine.ts';
 import {
-  resolveTenantCinemaAssetPath,
+  deleteTenantCinemaAssets,
+  readTenantCinemaAssetBuffer,
   saveTenantCinemaAssetBuffer,
 } from './server_cinema_engine.ts';
 import {
-  resolveTenantMusicAssetPath,
+  deleteTenantMusicAssets,
+  readTenantMusicAssetBuffer,
   saveTenantMusicAssetBuffer,
 } from './server_music_engine.ts';
 import {
   buildDocumentRecord,
+  deleteTenantDocAssets,
   extractUploadedDocumentWithOcrFallback,
   normalizeDocumentConfig,
-  resolveTenantDocAssetPath,
+  readTenantDocAssetBuffer,
+  saveTenantDocAssetBuffer,
 } from './server_document_engine.ts';
 import {
   generateTrueDocxBuffer,
@@ -142,16 +150,18 @@ export function buildZipBuffer(entries: { path: string; data: Buffer | string }[
   return Buffer.concat([...localParts, centralBuf, eocd]);
 }
 
-function safeFileSize(filePath: string | null): number {
-  if (!filePath) return 0;
+async function resolveMediaSizeBytes(
+  tenantId: string,
+  category: MediaCategory,
+  filename?: string | null
+): Promise<number> {
+  if (!filename) return 0;
   try {
-    if (fs.existsSync(filePath)) {
-      return fs.statSync(filePath).size;
-    }
+    const meta = await getMediaStorageProvider().getMetadata(tenantId, category, filename);
+    return meta?.size ? Number(meta.size) : 0;
   } catch {
-    // ignore stat errors
+    return 0;
   }
-  return 0;
 }
 
 function estimateBase64Bytes(dataUri?: string): number {
@@ -245,10 +255,24 @@ export async function listUnifiedLibraryAssets(
   }
 
   // 2. Vision Studio Images
-  for (const img of images) {
-    if (!img || typeof img !== 'object') continue;
+  const visionSizes = await Promise.all(
+    images.map(async (img) => {
+      if (!img || typeof img !== 'object') return 0;
+      if (Number(img.fileSizeBytes || 0) > 0) return Number(img.fileSizeBytes);
+      const assetFilename =
+        img.assetFilename ||
+        (typeof img.imageUrl === 'string' && img.imageUrl.includes('/api/vision/assets/')
+          ? decodeURIComponent(img.imageUrl.split('/').pop() || '')
+          : '');
+      const cloudOrLocalSize = await resolveMediaSizeBytes(tenantId, 'vision', assetFilename);
+      return cloudOrLocalSize || estimateBase64Bytes(img.imageUrl) || 0;
+    })
+  );
+
+  images.forEach((img, idx) => {
+    if (!img || typeof img !== 'object') return;
     const rawId = String(img.id || '');
-    if (!rawId) continue;
+    if (!rawId) return;
     const key = `vision:${rawId}`;
     const meta = metaMap[key] || {};
     const assetFilename =
@@ -256,8 +280,7 @@ export async function listUnifiedLibraryAssets(
       (typeof img.imageUrl === 'string' && img.imageUrl.includes('/api/vision/assets/')
         ? decodeURIComponent(img.imageUrl.split('/').pop() || '')
         : '');
-    const filePath = assetFilename ? resolveTenantVisionAssetPath(tenantId, assetFilename) : null;
-    const bytes = safeFileSize(filePath) || estimateBase64Bytes(img.imageUrl) || 0;
+    const bytes = visionSizes[idx] || 0;
     const ext = assetFilename.toLowerCase().endsWith('.jpg') || assetFilename.toLowerCase().endsWith('.jpeg')
       ? 'JPG'
       : assetFilename.toLowerCase().endsWith('.webp')
@@ -300,22 +323,30 @@ export async function listUnifiedLibraryAssets(
         cameraSpec: img.cameraSpec,
       },
     });
-  }
+  });
 
   // 3. Cinema Studio Videos
-  for (const vid of videos) {
-    if (!vid || typeof vid !== 'object') continue;
+  const cinemaSizes = await Promise.all(
+    videos.map(async (vid) => {
+      if (!vid || typeof vid !== 'object') return 0;
+      if (Number(vid.fileSizeBytes || 0) > 0) return Number(vid.fileSizeBytes);
+      const assetFilename =
+        vid.assetFilename ||
+        (typeof vid.videoUrl === 'string' && vid.videoUrl.includes('/api/motion/assets/')
+          ? decodeURIComponent(vid.videoUrl.split('/').pop() || '')
+          : '');
+      const resolvedSize = await resolveMediaSizeBytes(tenantId, 'cinema', assetFilename);
+      return resolvedSize || estimateBase64Bytes(vid.videoUrl);
+    })
+  );
+
+  videos.forEach((vid, idx) => {
+    if (!vid || typeof vid !== 'object') return;
     const rawId = String(vid.id || '');
-    if (!rawId) continue;
+    if (!rawId) return;
     const key = `cinema:${rawId}`;
     const meta = metaMap[key] || {};
-    const assetFilename =
-      vid.assetFilename ||
-      (typeof vid.videoUrl === 'string' && vid.videoUrl.includes('/api/motion/assets/')
-        ? decodeURIComponent(vid.videoUrl.split('/').pop() || '')
-        : '');
-    const filePath = assetFilename ? resolveTenantCinemaAssetPath(tenantId, assetFilename) : null;
-    const bytes = Number(vid.fileSizeBytes || 0) || safeFileSize(filePath) || estimateBase64Bytes(vid.videoUrl);
+    const bytes = cinemaSizes[idx] || 0;
 
     const downloads = [
       { label: 'Video Clip (.MP4)', format: 'mp4', url: buildDownloadUrl('cinema', rawId, 'mp4') },
@@ -361,13 +392,27 @@ export async function listUnifiedLibraryAssets(
         cameraMotion: vid.cameraMotion,
       },
     });
-  }
+  });
 
   // 4. Music Studio Tracks & Stems
-  for (const trk of tracks) {
-    if (!trk || typeof trk !== 'object') continue;
+  const musicSizes = await Promise.all(
+    tracks.map(async (trk) => {
+      if (!trk || typeof trk !== 'object') return 0;
+      if (Number(trk.fileSizeBytes || 0) > 0) return Number(trk.fileSizeBytes);
+      const assetFilename =
+        trk.assetFilename ||
+        (typeof trk.audioUrl === 'string' && trk.audioUrl.includes('/api/audio/assets/')
+          ? decodeURIComponent(trk.audioUrl.split('/').pop() || '')
+          : '');
+      const resolvedSize = await resolveMediaSizeBytes(tenantId, 'music', assetFilename);
+      return resolvedSize || estimateBase64Bytes(trk.audioUrl);
+    })
+  );
+
+  tracks.forEach((trk, idx) => {
+    if (!trk || typeof trk !== 'object') return;
     const rawId = String(trk.id || '');
-    if (!rawId) continue;
+    if (!rawId) return;
     const key = `music:${rawId}`;
     const meta = metaMap[key] || {};
     const assetFilename =
@@ -375,8 +420,7 @@ export async function listUnifiedLibraryAssets(
       (typeof trk.audioUrl === 'string' && trk.audioUrl.includes('/api/audio/assets/')
         ? decodeURIComponent(trk.audioUrl.split('/').pop() || '')
         : '');
-    const filePath = assetFilename ? resolveTenantMusicAssetPath(tenantId, assetFilename) : null;
-    const bytes = Number(trk.fileSizeBytes || 0) || safeFileSize(filePath) || estimateBase64Bytes(trk.audioUrl);
+    const bytes = musicSizes[idx] || 0;
     const audioFmt = String(trk.format || (assetFilename.endsWith('.wav') ? 'WAV' : 'MP3')).toUpperCase();
 
     const downloads = [
@@ -436,19 +480,25 @@ export async function listUnifiedLibraryAssets(
         stemsSeparated: trk.stemsSeparated,
       },
     });
-  }
+  });
 
   // 5. Document Studio Deliverables
-  for (const doc of docs) {
-    if (!doc || typeof doc !== 'object') continue;
+  const docAudioSizes = await Promise.all(
+    docs.map((doc) =>
+      doc && doc.audioOverviewFilename
+        ? resolveMediaSizeBytes(tenantId, 'documents', doc.audioOverviewFilename)
+        : Promise.resolve(0)
+    )
+  );
+
+  docs.forEach((doc, idx) => {
+    if (!doc || typeof doc !== 'object') return;
     const rawId = String(doc.id || '');
-    if (!rawId) continue;
+    if (!rawId) return;
     const key = `document:${rawId}`;
     const meta = metaMap[key] || {};
     const mdBytes = Buffer.byteLength(String(doc.content || ''), 'utf-8');
-    const audioBytes = doc.audioOverviewFilename
-      ? safeFileSize(resolveTenantDocAssetPath(tenantId, doc.audioOverviewFilename))
-      : 0;
+    const audioBytes = docAudioSizes[idx] || 0;
 
     const downloads = [
       { label: 'Word Document (.DOCX)', format: 'docx', url: buildDownloadUrl('document', rawId, 'docx') },
@@ -499,7 +549,7 @@ export async function listUnifiedLibraryAssets(
         hasPodcast: Boolean(doc.audioOverviewUrl),
       },
     });
-  }
+  });
 
   // Sort default newest first
   items.sort(
@@ -607,12 +657,12 @@ export async function resolveLibraryDownloadAsset(opts: {
     const branding = doc.configSnapshot?.branding || {};
 
     if (fmt === 'podcast' && doc.audioOverviewFilename) {
-      const fp = resolveTenantDocAssetPath(tenantId, doc.audioOverviewFilename);
-      if (fp && fs.existsSync(fp)) {
+      const buf = await readTenantDocAssetBuffer(tenantId, doc.audioOverviewFilename);
+      if (buf) {
         return {
           filename: `${baseName}_Podcast.mp3`,
           mimeType: 'audio/mpeg',
-          buffer: fs.readFileSync(fp),
+          buffer: buf,
         };
       }
     }
@@ -685,13 +735,13 @@ export async function resolveLibraryDownloadAsset(opts: {
         ? decodeURIComponent(img.imageUrl.split('/').pop() || '')
         : '');
     if (assetFilename) {
-      const fp = resolveTenantVisionAssetPath(tenantId, assetFilename);
-      if (fp && fs.existsSync(fp)) {
+      const asset = await readTenantVisionAssetBuffer(tenantId, assetFilename);
+      if (asset) {
         const ext = path.extname(assetFilename).replace('.', '') || 'png';
         return {
           filename: `${baseName}.${ext}`,
-          mimeType: ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png',
-          buffer: fs.readFileSync(fp),
+          mimeType: asset.mimeType || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png'),
+          buffer: asset.buffer,
         };
       }
     }
@@ -710,9 +760,9 @@ export async function resolveLibraryDownloadAsset(opts: {
     const baseName = sanitizeFilename(String(vid.prompt || 'Cinema_Clip').slice(0, 42));
 
     if (fmt === 'poster' && vid.posterFilename) {
-      const pf = resolveTenantCinemaAssetPath(tenantId, vid.posterFilename);
-      if (pf && fs.existsSync(pf)) {
-        return { filename: `${baseName}_Poster.jpg`, mimeType: 'image/jpeg', buffer: fs.readFileSync(pf) };
+      const posterBuf = await readTenantCinemaAssetBuffer(tenantId, vid.posterFilename);
+      if (posterBuf) {
+        return { filename: `${baseName}_Poster.jpg`, mimeType: 'image/jpeg', buffer: posterBuf };
       }
     }
 
@@ -722,9 +772,9 @@ export async function resolveLibraryDownloadAsset(opts: {
         ? decodeURIComponent(vid.videoUrl.split('/').pop() || '')
         : '');
     if (assetFilename) {
-      const fp = resolveTenantCinemaAssetPath(tenantId, assetFilename);
-      if (fp && fs.existsSync(fp)) {
-        return { filename: `${baseName}.mp4`, mimeType: 'video/mp4', buffer: fs.readFileSync(fp) };
+      const vidBuf = await readTenantCinemaAssetBuffer(tenantId, assetFilename);
+      if (vidBuf) {
+        return { filename: `${baseName}.mp4`, mimeType: 'video/mp4', buffer: vidBuf };
       }
     }
     const inline = readDataUriBuffer(vid.videoUrl);
@@ -755,12 +805,12 @@ export async function resolveLibraryDownloadAsset(opts: {
       stem_bass: trk.stemFilenames?.bass,
     };
     if (fmt.startsWith('stem_') && stemKeyMap[fmt]) {
-      const stemPath = resolveTenantMusicAssetPath(tenantId, String(stemKeyMap[fmt]));
-      if (stemPath && fs.existsSync(stemPath)) {
+      const stemBuf = await readTenantMusicAssetBuffer(tenantId, String(stemKeyMap[fmt]));
+      if (stemBuf) {
         return {
           filename: `${baseName}_${fmt.replace('stem_', '')}.mp3`,
           mimeType: 'audio/mpeg',
-          buffer: fs.readFileSync(stemPath),
+          buffer: stemBuf,
         };
       }
     }
@@ -771,13 +821,13 @@ export async function resolveLibraryDownloadAsset(opts: {
         ? decodeURIComponent(trk.audioUrl.split('/').pop() || '')
         : '');
     if (assetFilename) {
-      const fp = resolveTenantMusicAssetPath(tenantId, assetFilename);
-      if (fp && fs.existsSync(fp)) {
+      const audioBuf = await readTenantMusicAssetBuffer(tenantId, assetFilename);
+      if (audioBuf) {
         const isWav = assetFilename.toLowerCase().endsWith('.wav');
         return {
           filename: `${baseName}.${isWav ? 'wav' : 'mp3'}`,
           mimeType: isWav ? 'audio/wav' : 'audio/mpeg',
-          buffer: fs.readFileSync(fp),
+          buffer: audioBuf,
         };
       }
     }
@@ -948,14 +998,10 @@ export async function purgeLibraryAssets(tenantId: string, assetKeys: string[]) 
     if (byStudio[studio] && rawId) byStudio[studio].add(rawId);
   }
 
-  const unlinkSafe = (fp: string | null) => {
-    if (!fp) return;
-    try {
-      if (fs.existsSync(fp)) fs.unlinkSync(fp);
-    } catch {
-      // ignore disk cleanup errors
-    }
-  };
+  const visionDeletes: string[] = [];
+  const cinemaDeletes: string[] = [];
+  const musicDeletes: string[] = [];
+  const docDeletes: string[] = [];
 
   if (byStudio.code.size > 0) {
     await mutateTenantCollection<any[]>(tenantId, 'studio_apps', [], (list) =>
@@ -967,7 +1013,7 @@ export async function purgeLibraryAssets(tenantId: string, assetKeys: string[]) 
     await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], (list) =>
       list.filter((item) => {
         if (byStudio.vision.has(item.id)) {
-          if (item.assetFilename) unlinkSafe(resolveTenantVisionAssetPath(tenantId, item.assetFilename));
+          if (item.assetFilename) visionDeletes.push(item.assetFilename);
           return false;
         }
         return true;
@@ -979,8 +1025,8 @@ export async function purgeLibraryAssets(tenantId: string, assetKeys: string[]) 
     await mutateTenantCollection<any[]>(tenantId, 'motion_videos', [], (list) =>
       list.filter((item) => {
         if (byStudio.cinema.has(item.id)) {
-          if (item.assetFilename) unlinkSafe(resolveTenantCinemaAssetPath(tenantId, item.assetFilename));
-          if (item.posterFilename) unlinkSafe(resolveTenantCinemaAssetPath(tenantId, item.posterFilename));
+          if (item.assetFilename) cinemaDeletes.push(item.assetFilename);
+          if (item.posterFilename) cinemaDeletes.push(item.posterFilename);
           return false;
         }
         return true;
@@ -992,10 +1038,11 @@ export async function purgeLibraryAssets(tenantId: string, assetKeys: string[]) 
     await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (list) =>
       list.filter((item) => {
         if (byStudio.music.has(item.id)) {
-          if (item.assetFilename) unlinkSafe(resolveTenantMusicAssetPath(tenantId, item.assetFilename));
+          if (item.assetFilename) musicDeletes.push(item.assetFilename);
+          if (item.coverFilename) musicDeletes.push(item.coverFilename);
           if (item.stemFilenames) {
             for (const s of Object.values(item.stemFilenames)) {
-              if (typeof s === 'string') unlinkSafe(resolveTenantMusicAssetPath(tenantId, s));
+              if (typeof s === 'string') musicDeletes.push(s);
             }
           }
           return false;
@@ -1009,15 +1056,21 @@ export async function purgeLibraryAssets(tenantId: string, assetKeys: string[]) 
     await mutateTenantCollection<any[]>(tenantId, 'documents', [], (list) =>
       list.filter((item) => {
         if (byStudio.document.has(item.id)) {
-          if (item.audioOverviewFilename) {
-            unlinkSafe(resolveTenantDocAssetPath(tenantId, item.audioOverviewFilename));
-          }
+          if (item.audioOverviewFilename) docDeletes.push(item.audioOverviewFilename);
+          if (item.docAssetFilename) docDeletes.push(item.docAssetFilename);
           return false;
         }
         return true;
       })
     );
   }
+
+  await Promise.all([
+    ...visionDeletes.map((fn) => deleteTenantVisionAsset(tenantId, fn)),
+    cinemaDeletes.length > 0 ? deleteTenantCinemaAssets(tenantId, cinemaDeletes) : Promise.resolve(),
+    musicDeletes.length > 0 ? deleteTenantMusicAssets(tenantId, musicDeletes) : Promise.resolve(),
+    docDeletes.length > 0 ? deleteTenantDocAssets(tenantId, docDeletes) : Promise.resolve(),
+  ]);
 
   // Also strip purged keys from library_meta and library_folders
   const purgeSet = new Set(assetKeys);
@@ -1140,6 +1193,12 @@ export async function uploadExternalFileToVault(opts: {
 
   if (extracted.extractedText) {
     const docId = `doc_up_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const mdAsset = await saveTenantDocAssetBuffer(
+      tenantId,
+      docId,
+      'md',
+      Buffer.from(`# ${title}\n\n${extracted.extractedText}`, 'utf-8')
+    ).catch(() => null);
     const record = buildDocumentRecord({
       id: docId,
       operationType: 'upload',
@@ -1154,6 +1213,10 @@ export async function uploadExternalFileToVault(opts: {
       tags: ['Vault Upload'],
       aiNotes: `Imported into Files Library (${extracted.ocrEngine})`,
     });
+    if (mdAsset) {
+      (record as any).docAssetFilename = mdAsset.filename;
+      (record as any).docAssetUrl = mdAsset.url;
+    }
     await mutateTenantCollection<any[]>(tenantId, 'documents', [], (list) => [record, ...list]);
     return { studio: 'document', rawId: docId };
   }

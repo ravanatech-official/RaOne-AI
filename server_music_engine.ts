@@ -4,13 +4,18 @@ import os from 'os';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { callGroqChat } from './server_groq_service.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import {
+  getMediaStorageProvider,
+  inferMimeFromFilename,
+  normalizeSafeAssetFilename,
+  resolveLocalMediaFilePath,
+} from './server_cloud_persistence.ts';
 import {
   DEFAULT_MUSIC_CONFIG,
   type MusicConfig,
@@ -22,9 +27,6 @@ import {
 import type { GeneratedAudioItem } from './src/types/index.ts';
 
 const execFileAsync = promisify(execFile);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
 
 export interface AudioProbeInfo {
   duration: number;
@@ -59,23 +61,8 @@ function safeSegment(value: string): string {
     .slice(0, 96);
 }
 
-export function getTenantMusicAssetDir(tenantId: string): string {
-  const dir = path.join(DATA_ROOT, safeSegment(tenantId), 'audio_assets');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
 export function resolveTenantMusicAssetPath(tenantId: string, filename: string): string | null {
-  const clean = path.basename(String(filename || '').trim());
-  if (!clean || clean === '.' || clean === '..' || !/^[a-zA-Z0-9._-]+$/.test(clean)) {
-    return null;
-  }
-  const dir = getTenantMusicAssetDir(tenantId);
-  const resolved = path.resolve(dir, clean);
-  if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
-    return null;
-  }
-  return resolved;
+  return resolveLocalMediaFilePath(tenantId, 'music', filename);
 }
 
 export async function saveTenantMusicAssetBuffer(
@@ -84,52 +71,94 @@ export async function saveTenantMusicAssetBuffer(
   ext: 'mp3' | 'wav' | 'flac' | 'jpg' | 'png' | 'svg',
   buffer: Buffer
 ): Promise<{ filename: string; filePath: string; url: string }> {
-  const dir = getTenantMusicAssetDir(tenantId);
   const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 8);
   const filename = `${safeSegment(baseId)}_${hash}.${ext}`;
-  const filePath = path.join(dir, filename);
-  await fs.promises.writeFile(filePath, buffer);
+  const mimeType = inferMimeFromFilename(filename);
+  const meta = await getMediaStorageProvider().saveBuffer({
+    tenantId,
+    category: 'music',
+    filename,
+    buffer,
+    mimeType,
+    originalName: filename,
+  });
   return {
     filename,
-    filePath,
+    filePath: meta.objectPath,
     url: `/api/audio/assets/${encodeURIComponent(filename)}`,
   };
+}
+
+export async function saveTenantMusicAssetFromFile(
+  tenantId: string,
+  baseId: string,
+  ext: 'mp3' | 'wav' | 'flac' | 'jpg' | 'png' | 'svg',
+  localFilePath: string
+): Promise<{ filename: string; filePath: string; url: string }> {
+  const randHash = crypto.randomBytes(4).toString('hex');
+  const filename = `${safeSegment(baseId)}_${randHash}.${ext}`;
+  const mimeType = inferMimeFromFilename(filename);
+  const meta = await getMediaStorageProvider().saveFromFile({
+    tenantId,
+    category: 'music',
+    filename,
+    localFilePath,
+    mimeType,
+    originalName: filename,
+  });
+  return {
+    filename,
+    filePath: meta.objectPath,
+    url: `/api/audio/assets/${encodeURIComponent(filename)}`,
+  };
+}
+
+export async function readTenantMusicAssetBuffer(
+  tenantId: string,
+  filename: string
+): Promise<Buffer | null> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return null;
+  return getMediaStorageProvider().readBuffer(tenantId, 'music', clean);
+}
+
+export async function materializeMusicAssetToTemp(
+  tenantId: string,
+  filename: string,
+  targetDir: string
+): Promise<string | null> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return null;
+  return getMediaStorageProvider().materializeToTempFile(tenantId, 'music', clean, targetDir);
 }
 
 export async function deleteTenantMusicAssets(
   tenantId: string,
   filenames: Array<string | undefined | null>
 ): Promise<void> {
+  const media = getMediaStorageProvider();
   for (const name of filenames) {
     if (!name) continue;
-    const p = resolveTenantMusicAssetPath(tenantId, name);
-    if (p && fs.existsSync(p)) {
-      await fs.promises.unlink(p).catch(() => {});
+    const clean = normalizeSafeAssetFilename(name);
+    if (clean) {
+      await media.deleteAsset(tenantId, 'music', clean).catch(() => {});
     }
   }
 }
 
-export function streamMusicAssetWithRange(req: Request, res: Response, filePath: string): void {
-  const ext = path.extname(filePath).toLowerCase();
-  const contentType =
-    ext === '.mp3'
-      ? 'audio/mpeg'
-      : ext === '.wav'
-      ? 'audio/wav'
-      : ext === '.flac'
-      ? 'audio/flac'
-      : ext === '.m4a'
-      ? 'audio/mp4'
-      : ext === '.ogg'
-      ? 'audio/ogg'
-      : ext === '.jpg' || ext === '.jpeg'
-      ? 'image/jpeg'
-      : ext === '.png'
-      ? 'image/png'
-      : ext === '.svg'
-      ? 'image/svg+xml'
-      : 'application/octet-stream';
+export async function streamMusicAssetByFilename(
+  req: Request,
+  res: Response,
+  tenantId: string,
+  filename: string
+): Promise<boolean> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return false;
+  return getMediaStorageProvider().streamHttpResponse(req, res, tenantId, 'music', clean);
+}
 
+export function streamMusicAssetWithRange(req: Request, res: Response, filePath: string): void {
+  const contentType = inferMimeFromFilename(filePath);
   const stat = fs.statSync(filePath);
   const totalSize = stat.size;
   const range = req.headers.range;
@@ -947,7 +976,8 @@ export async function generateMusicCoverArtBuffer(
 export async function finalizeMusicTrackRecord(params: {
   tenantId: string;
   id: string;
-  rawAudioBuffer: Buffer;
+  rawAudioBuffer?: Buffer;
+  rawAudioFilePath?: string;
   rawInputExt?: string;
   coverClient?: GoogleGenAI | null;
   existingCoverUrl?: string;
@@ -976,9 +1006,15 @@ export async function finalizeMusicTrackRecord(params: {
 }): Promise<GeneratedAudioItem> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-mus-'));
   try {
-    const inExt = params.rawInputExt || '.wav';
+    const inExt = params.rawInputExt || (params.rawAudioFilePath ? path.extname(params.rawAudioFilePath) : '') || '.wav';
     const rawTmp = path.join(tmpDir, `${params.id}_raw${inExt.startsWith('.') ? inExt : `.${inExt}`}`);
-    await fs.promises.writeFile(rawTmp, params.rawAudioBuffer);
+    if (params.rawAudioFilePath && fs.existsSync(params.rawAudioFilePath)) {
+      await fs.promises.copyFile(params.rawAudioFilePath, rawTmp);
+    } else if (params.rawAudioBuffer) {
+      await fs.promises.writeFile(rawTmp, params.rawAudioBuffer);
+    } else {
+      throw new Error('Either rawAudioFilePath or rawAudioBuffer must be provided.');
+    }
 
     const outFormat = params.config.production.outputFormat === 'wav' ? 'wav' : 'mp3';
     const finalTmp = path.join(tmpDir, `${params.id}_final.${outFormat}`);
@@ -994,13 +1030,12 @@ export async function finalizeMusicTrackRecord(params: {
       );
     }
 
-    const finalBuf = await fs.promises.readFile(finalTmp);
     const probe = await probeAudioFile(finalTmp);
-    const audioAsset = await saveTenantMusicAssetBuffer(
+    const audioAsset = await saveTenantMusicAssetFromFile(
       params.tenantId,
       params.id,
       outFormat,
-      finalBuf
+      finalTmp
     );
 
     let coverUrl = params.existingCoverUrl || '';

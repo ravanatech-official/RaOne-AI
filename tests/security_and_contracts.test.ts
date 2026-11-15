@@ -408,4 +408,651 @@ test('Vision Studio engine compiles camera/lighting specs, enhances 2-word promp
   fs.rmSync(path.join(process.cwd(), 'data', 'tenants', 'test_vision_t'), { recursive: true, force: true });
 });
 
+// ===========================================================================
+// Phase 1 Cloud-Native Architecture Tests (Firestore / GCS / Auth / Routing)
+// ===========================================================================
+
+test('Local persistence & 5-studio + Files Library full lifecycle survives reads, downloads, bulk ZIP, and purge', async () => {
+  const { saveTenantVisionAsset, readTenantVisionAssetBuffer } = await import('../server_vision_engine.ts');
+  const { saveTenantCinemaAssetBuffer, readTenantCinemaAssetBuffer } = await import('../server_cinema_engine.ts');
+  const { saveTenantMusicAssetBuffer, readTenantMusicAssetBuffer } = await import('../server_music_engine.ts');
+  const { saveTenantDocAssetBuffer, readTenantDocAssetBuffer } = await import('../server_document_engine.ts');
+  const {
+    listUnifiedLibraryAssets,
+    resolveLibraryDownloadAsset,
+    buildLibraryBulkZip,
+    purgeLibraryAssets,
+  } = await import('../server_library_engine.ts');
+
+  const tenantId = `test_phase1_local_${crypto.randomUUID().slice(0, 8)}`;
+  try {
+    // 1. Create Code App
+    await mutateTenantCollection<any[]>(tenantId, 'studio_apps', [], () => [
+      {
+        id: 'app_1',
+        title: 'Phase1 Demo App',
+        category: 'SaaS',
+        files: {
+          'index.html': '<!DOCTYPE html><html><body><h1>Hi</h1></body></html>',
+          'app.js': 'console.log(1);',
+        },
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    // 2. Vision asset
+    const vis = await saveTenantVisionAsset(
+      tenantId,
+      'vis_1',
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64'),
+      'image/png'
+    );
+    await mutateTenantCollection<any[]>(tenantId, 'vision_images', [], () => [
+      {
+        id: 'vis_1',
+        prompt: 'Cyberpunk skyline',
+        imageUrl: vis.imageUrl,
+        assetFilename: vis.assetFilename,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    assert.ok(await readTenantVisionAssetBuffer(tenantId, vis.assetFilename));
+
+    // 3. Cinema asset
+    const cin = await saveTenantCinemaAssetBuffer(tenantId, 'mov_1', 'mp4', Buffer.from('FAKE_MP4_STREAM'));
+    await mutateTenantCollection<any[]>(tenantId, 'motion_videos', [], () => [
+      {
+        id: 'mov_1',
+        prompt: 'Drone sunrise',
+        videoUrl: cin.url,
+        assetFilename: cin.filename,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    assert.ok(await readTenantCinemaAssetBuffer(tenantId, cin.filename));
+
+    // 4. Music asset
+    const mus = await saveTenantMusicAssetBuffer(tenantId, 'aud_1', 'mp3', Buffer.from('ID3_FAKE_MP3'));
+    await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], () => [
+      {
+        id: 'aud_1',
+        title: 'Midnight Synth',
+        prompt: 'Synthwave',
+        audioUrl: mus.url,
+        assetFilename: mus.filename,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    assert.ok(await readTenantMusicAssetBuffer(tenantId, mus.filename));
+
+    // 5. Document asset
+    const docAsset = await saveTenantDocAssetBuffer(tenantId, 'doc_1', 'md', Buffer.from('# Spec\nContent', 'utf-8'));
+    await mutateTenantCollection<any[]>(tenantId, 'documents', [], () => [
+      {
+        id: 'doc_1',
+        title: 'Cloud Spec',
+        content: '# Spec\nContent',
+        docAssetFilename: docAsset.filename,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    assert.ok(await readTenantDocAssetBuffer(tenantId, docAsset.filename));
+
+    // 6. Verify unified library recognizes all 5 studios + downloads + bulk zip
+    const vault = await listUnifiedLibraryAssets(tenantId);
+    assert.equal(vault.stats.totalAssets, 5);
+    assert.equal(vault.stats.byStudio.code.count, 1);
+    assert.equal(vault.stats.byStudio.vision.count, 1);
+    assert.equal(vault.stats.byStudio.cinema.count, 1);
+    assert.equal(vault.stats.byStudio.music.count, 1);
+    assert.equal(vault.stats.byStudio.document.count, 1);
+
+    const dlVision = await resolveLibraryDownloadAsset({ tenantId, studio: 'vision', rawId: 'vis_1', format: 'png' });
+    assert.ok(dlVision && dlVision.buffer.length === 8);
+
+    const zip = await buildLibraryBulkZip(tenantId, [
+      { studio: 'code', rawId: 'app_1', format: 'zip' },
+      { studio: 'vision', rawId: 'vis_1', format: 'png' },
+      { studio: 'music', rawId: 'aud_1', format: 'mp3' },
+    ]);
+    assert.equal(zip.buffer.subarray(0, 2).toString('ascii'), 'PK');
+
+    // 7. Purge one item & verify binary removal
+    await purgeLibraryAssets(tenantId, ['vision:vis_1', 'document:doc_1']);
+    assert.equal(await readTenantVisionAssetBuffer(tenantId, vis.assetFilename), null);
+    assert.equal(await readTenantDocAssetBuffer(tenantId, docAsset.filename), null);
+  } finally {
+    await purgeAllTenantData(tenantId);
+  }
+});
+
+test('Mocked Cloud Firestore & GCS adapters enforce schema, byte-range streaming, tenant isolation, and fail loudly without local fallback', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough } = await import('node:stream');
+  const {
+    FirestoreStructuredPersistenceProvider,
+    GcsMediaStorageProvider,
+    CloudPersistenceError,
+    setCloudAdaptersForTesting,
+    resetCloudAdaptersForTesting,
+    getStructuredPersistenceProvider,
+    getMediaStorageProvider,
+    migrateLocalTenantToCloud,
+  } = await import('../server_cloud_persistence.ts');
+
+  // Lightweight in-memory Firestore mock honoring collection/doc/orderBy/startAfter/limit/count/runTransaction/batch
+  const firestoreStore = new Map<string, Record<string, any>>();
+  const createDocRef = (docPath: string): any => ({
+    id: docPath.split('/').pop()!,
+    path: docPath,
+    collection: (sub: string) => createColRef(`${docPath}/${sub}`),
+    get: async () => ({
+      id: docPath.split('/').pop()!,
+      exists: firestoreStore.has(docPath),
+      data: () => (firestoreStore.has(docPath) ? structuredClone(firestoreStore.get(docPath)) : undefined),
+    }),
+    set: async (data: Record<string, any>) => {
+      firestoreStore.set(docPath, structuredClone(data));
+    },
+    delete: async () => {
+      firestoreStore.delete(docPath);
+    },
+    listCollections: async () => {
+      const prefix = `${docPath}/`;
+      const names = new Set<string>();
+      for (const k of firestoreStore.keys()) {
+        if (k.startsWith(prefix)) {
+          const rest = k.slice(prefix.length).split('/')[0];
+          if (rest) names.add(rest);
+        }
+      }
+      return Array.from(names).map((n) => createColRef(`${docPath}/${n}`));
+    },
+  });
+
+  const buildQuery = (colPath: string, opts?: { orderField?: string; after?: number; lim?: number }): any => ({
+    orderBy: (field: string) => buildQuery(colPath, { ...opts, orderField: field }),
+    startAfter: (val: number) => buildQuery(colPath, { ...opts, after: val }),
+    limit: (lim: number) => buildQuery(colPath, { ...opts, lim }),
+    count: () => ({
+      get: async () => {
+        const prefix = `${colPath}/`;
+        let count = 0;
+        for (const k of firestoreStore.keys()) {
+          if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/')) count++;
+        }
+        return { data: () => ({ count }) };
+      },
+    }),
+    get: async () => {
+      const prefix = `${colPath}/`;
+      let rows: Array<{ id: string; ref: any; data: Record<string, any> }> = [];
+      for (const [k, v] of firestoreStore.entries()) {
+        if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/')) {
+          rows.push({ id: k.slice(prefix.length), ref: createDocRef(k), data: structuredClone(v) });
+        }
+      }
+      if (opts?.orderField) {
+        rows.sort((a, b) => Number(a.data[opts.orderField!] ?? 0) - Number(b.data[opts.orderField!] ?? 0));
+      }
+      if (opts?.after !== undefined) {
+        rows = rows.filter((r) => Number(r.data[opts?.orderField || '_orderIndex'] ?? 0) > opts.after!);
+      }
+      if (opts?.lim !== undefined) {
+        rows = rows.slice(0, opts.lim);
+      }
+      return {
+        empty: rows.length === 0,
+        docs: rows.map((r) => ({ id: r.id, ref: r.ref, data: () => r.data })),
+      };
+    },
+  });
+
+  const createColRef = (colPath: string): any => ({
+    ...buildQuery(colPath),
+    doc: (id: string) => createDocRef(`${colPath}/${id}`),
+  });
+
+  const mockDb: any = {
+    collection: (name: string) => createColRef(name),
+    runTransaction: async (fn: (tx: any) => Promise<any>) => {
+      const ops: Array<() => void> = [];
+      const tx = {
+        get: async (target: any) => target.get(),
+        set: (docRef: any, data: Record<string, any>) => ops.push(() => firestoreStore.set(docRef.path, structuredClone(data))),
+        delete: (docRef: any) => ops.push(() => firestoreStore.delete(docRef.path)),
+      };
+      const result = await fn(tx);
+      for (const op of ops) op();
+      return result;
+    },
+    batch: () => {
+      const ops: Array<() => void> = [];
+      return {
+        delete: (docRef: any) => ops.push(() => firestoreStore.delete(docRef.path)),
+        commit: async () => {
+          for (const op of ops) op();
+        },
+      };
+    },
+  };
+
+  // In-memory GCS Bucket mock
+  const gcsObjects = new Map<string, { data: Buffer; metadata: Record<string, any> }>();
+  const mockBucket: any = {
+    file: (objectPath: string) => ({
+      save: async (buf: Buffer, opts: any) => {
+        gcsObjects.set(objectPath, {
+          data: Buffer.from(buf),
+          metadata: {
+            contentType: opts?.contentType || 'application/octet-stream',
+            size: buf.length,
+            timeCreated: new Date().toISOString(),
+            updated: new Date().toISOString(),
+            metadata: opts?.metadata?.metadata || {},
+          },
+        });
+      },
+      createWriteStream: (opts: any) => {
+        const pt = new PassThrough();
+        const chunks: Buffer[] = [];
+        pt.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+        pt.on('finish', () => {
+          const buf = Buffer.concat(chunks);
+          gcsObjects.set(objectPath, {
+            data: buf,
+            metadata: {
+              contentType: opts?.contentType || 'application/octet-stream',
+              size: buf.length,
+              timeCreated: new Date().toISOString(),
+              updated: new Date().toISOString(),
+              metadata: opts?.metadata?.metadata || {},
+            },
+          });
+        });
+        return pt;
+      },
+      createReadStream: (rangeOpts?: { start?: number; end?: number }) => {
+        const pt = new PassThrough();
+        const entry = gcsObjects.get(objectPath);
+        if (!entry) {
+          queueMicrotask(() => pt.destroy(new Error('NoSuchKey')));
+        } else {
+          const start = rangeOpts?.start ?? 0;
+          const end = rangeOpts?.end !== undefined ? rangeOpts.end + 1 : entry.data.length;
+          pt.end(entry.data.subarray(start, end));
+        }
+        return pt;
+      },
+      exists: async () => [gcsObjects.has(objectPath)],
+      download: async () => [Buffer.from(gcsObjects.get(objectPath)!.data)],
+      getMetadata: async () => [structuredClone(gcsObjects.get(objectPath)!.metadata)],
+      setMetadata: async (patch: any) => {
+        const entry = gcsObjects.get(objectPath)!;
+        if (patch.contentType) entry.metadata.contentType = patch.contentType;
+        entry.metadata.metadata = { ...(entry.metadata.metadata || {}), ...(patch.metadata || {}) };
+        entry.metadata.updated = new Date().toISOString();
+      },
+      getSignedUrl: async ({ expires }: { expires: number }) => [
+        `https://storage.googleapis.com/raoneai-mock/${objectPath}?X-Goog-Expires=${Math.round((expires - Date.now()) / 1000)}`,
+      ],
+      delete: async () => {
+        gcsObjects.delete(objectPath);
+      },
+    }),
+    deleteFiles: async ({ prefix }: { prefix: string }) => {
+      for (const k of Array.from(gcsObjects.keys())) {
+        if (k.startsWith(prefix)) gcsObjects.delete(k);
+      }
+    },
+  };
+
+  const fsProvider = new FirestoreStructuredPersistenceProvider(() => mockDb);
+  const gcsProvider = new GcsMediaStorageProvider(
+    () => mockBucket,
+    () => fsProvider
+  );
+
+  const prevBackend = process.env.STORAGE_BACKEND;
+  const prevBucket = process.env.GCS_BUCKET_NAME;
+
+  try {
+    setCloudAdaptersForTesting({ structured: fsProvider, media: gcsProvider });
+
+    // 1. Firestore singleton + array subcollections + undefined stripping + pagination + tenant isolation
+    await fsProvider.mutateTenantCollection<Record<string, any>>('user_alice', 'settings', {}, () => ({
+      theme: 'dark',
+      language: 'si',
+      optionalEmpty: undefined,
+    }));
+    const aliceSettings = await fsProvider.readTenantCollection<Record<string, any>>('user_alice', 'settings', {});
+    assert.equal(aliceSettings.theme, 'dark');
+    assert.equal('optionalEmpty' in aliceSettings, false);
+
+    const bobSettings = await fsProvider.readTenantCollection<Record<string, any>>('user_bob', 'settings', {});
+    assert.deepEqual(bobSettings, {});
+
+    await fsProvider.mutateTenantCollection<any[]>('user_alice', 'vision_images', [], () => [
+      { id: 'v1', prompt: 'One' },
+      { id: 'v2', prompt: 'Two' },
+      { id: 'v3', prompt: 'Three' },
+    ]);
+    const page1 = await fsProvider.listTenantCollectionPaginated<any>('user_alice', 'vision_images', { limit: 2 });
+    assert.equal(page1.items.length, 2);
+    assert.equal(page1.total, 3);
+    assert.equal(page1.hasMore, true);
+    const page2 = await fsProvider.listTenantCollectionPaginated<any>('user_alice', 'vision_images', {
+      limit: 2,
+      cursor: page1.nextCursor,
+    });
+    assert.equal(page2.items.length, 1);
+    assert.equal(page2.items[0].id, 'v3');
+    assert.equal(page2.hasMore, false);
+
+    // 2. Credit ledger Firestore transaction
+    const { balance } = await getTenantCreditBalance('user_alice');
+    assert.equal(balance, 200);
+    const resTx = await reserveCredits('user_alice', 40, 'cloud_gen', 'ref-cloud-1');
+    assert.equal(resTx.ok, true);
+    assert.equal(resTx.balance, 160);
+
+    // 3. GCS upload, streaming saveFromFile, metadata, signed URL, byte-range HTTP 206, delete
+    const savedImg = await gcsProvider.saveBuffer({
+      tenantId: 'user_alice',
+      category: 'vision',
+      filename: 'render_1.png',
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      mimeType: 'image/png',
+      originalName: 'Hero Render.png',
+    });
+    assert.equal(savedImg.objectPath, 'tenants/user_alice/vision/render_1.png');
+    assert.equal(savedImg.storageProvider, 'cloud');
+    assert.ok(savedImg.checksum);
+    assert.equal(gcsObjects.has('tenants/user_alice/vision/render_1.png'), true);
+    assert.equal(await gcsProvider.exists('user_bob', 'vision', 'render_1.png'), false);
+
+    const signedUrl = await gcsProvider.getSignedDownloadUrl('user_alice', 'vision', 'render_1.png', 1800);
+    assert.ok(signedUrl && signedUrl.includes('tenants/user_alice/vision/render_1.png'));
+
+    // Reject disallowed MIME for vision category
+    await assert.rejects(
+      () =>
+        gcsProvider.saveBuffer({
+          tenantId: 'user_alice',
+          category: 'vision',
+          filename: 'bad.sh',
+          buffer: Buffer.from('#!/bin/sh'),
+          mimeType: 'application/x-sh',
+        }),
+      /not allowed/i
+    );
+
+    // Byte-Range 206 test on Cinema MP4 in mocked GCS
+    const videoPayload = Buffer.from('0123456789ABCDEF');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-gcs-test-'));
+    try {
+      const srcVideo = path.join(tmpDir, 'clip.mp4');
+      fs.writeFileSync(srcVideo, videoPayload);
+      const vidMeta = await gcsProvider.saveFromFile({
+        tenantId: 'user_alice',
+        category: 'cinema',
+        filename: 'clip.mp4',
+        localFilePath: srcVideo,
+        mimeType: 'video/mp4',
+      });
+      assert.equal(vidMeta.objectPath, 'tenants/user_alice/cinema/clip.mp4');
+
+      const mockReq: any = { headers: { range: 'bytes=4-9' } };
+      const headersOut: Record<string, string> = {};
+      const chunksOut: Buffer[] = [];
+      const mockRes: any = Object.assign(new EventEmitter(), {
+        statusCode: 200,
+        headersSent: false,
+        writable: true,
+        setHeader: (k: string, v: string) => {
+          headersOut[k.toLowerCase()] = String(v);
+        },
+        status: (code: number) => {
+          mockRes.statusCode = code;
+          return mockRes;
+        },
+        write: (chunk: any) => {
+          chunksOut.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          return true;
+        },
+        end: (chunk?: any) => {
+          if (chunk) chunksOut.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          mockRes.emit('finish');
+        },
+        destroy: () => {},
+      });
+      const streamed = await gcsProvider.streamHttpResponse(mockReq, mockRes, 'user_alice', 'cinema', 'clip.mp4');
+      assert.equal(streamed, true);
+      await new Promise<void>((r) => mockRes.on('finish', () => r()));
+      assert.equal(mockRes.statusCode, 206);
+      assert.equal(headersOut['content-range'], 'bytes 4-9/16');
+      assert.equal(Buffer.concat(chunksOut).toString('utf-8'), '456789');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    await gcsProvider.deleteAsset('user_alice', 'vision', 'render_1.png');
+    assert.equal(await gcsProvider.exists('user_alice', 'vision', 'render_1.png'), false);
+
+    // 4. Strict Cloud Failure Policy: NEVER silently fall back to local disk when cloud fails or is misconfigured
+    resetCloudAdaptersForTesting();
+    process.env.STORAGE_BACKEND = 'cloud';
+    process.env.GCS_BUCKET_NAME = '';
+    assert.throws(() => getMediaStorageProvider(), CloudPersistenceError);
+
+    const failingFs = new FirestoreStructuredPersistenceProvider(() => {
+      throw new Error('Simulated Firestore network outage');
+    });
+    await assert.rejects(
+      () => failingFs.readTenantCollection('user_alice', 'settings', {}),
+      (err: any) => err instanceof CloudPersistenceError && err.code === 'FIRESTORE_INIT_FAILED'
+    );
+    // Explicitly ensure no local data was written during cloud failures
+    assert.equal(fs.existsSync(path.join(process.cwd(), 'data', 'tenants', 'user_alice', 'settings.json')), false);
+
+    // Migration guard in local mode
+    process.env.STORAGE_BACKEND = 'local';
+    await assert.rejects(() => migrateLocalTenantToCloud('user_alice'), /MIGRATION_REQUIRES_CLOUD_MODE|STORAGE_BACKEND=cloud/);
+  } finally {
+    resetCloudAdaptersForTesting();
+    if (prevBackend === undefined) delete process.env.STORAGE_BACKEND;
+    else process.env.STORAGE_BACKEND = prevBackend;
+    if (prevBucket === undefined) delete process.env.GCS_BUCKET_NAME;
+    else process.env.GCS_BUCKET_NAME = prevBucket;
+  }
+});
+
+test('Authentication middleware enforces Firebase JWTs, derives authoritative tenantId, isolates media cookies, and blocks tampered cookies', async () => {
+  const { resolveActorMiddleware, requireVerifiedAuth, setTokenVerifierForTesting } = await import(
+    '../server_security.ts'
+  );
+
+  const prevStrict = process.env.REQUIRE_FIREBASE_AUTH;
+
+  const invokeMw = (mw: any, opts: { method?: string; path: string; headers?: Record<string, string>; actor?: any }) =>
+    new Promise<{ nextCalled: boolean; status: number; body: any; setCookies: string[]; req: any }>((resolve) => {
+      const setCookies: string[] = [];
+      let status = 200;
+      let body: any = null;
+      const req: any = {
+        method: opts.method || 'GET',
+        baseUrl: '',
+        path: opts.path,
+        headers: opts.headers || {},
+        requestId: 'req_test_1234',
+        actor: opts.actor,
+      };
+      const res: any = {
+        setHeader: () => {},
+        append: (name: string, val: string) => {
+          if (name.toLowerCase() === 'set-cookie') setCookies.push(val);
+        },
+        status: (code: number) => {
+          status = code;
+          return res;
+        },
+        json: (payload: any) => {
+          body = payload;
+          resolve({ nextCalled: false, status, body, setCookies, req });
+          return res;
+        },
+      };
+      mw(req, res, () => resolve({ nextCalled: true, status, body, setCookies, req }));
+    });
+
+  try {
+    process.env.REQUIRE_FIREBASE_AUTH = 'true';
+    setTokenVerifierForTesting(async (tok) => {
+      if (tok === 'valid.alice.jwt') {
+        return { uid: 'alice_123', email: 'alice@raone.ai', emailVerified: true };
+      }
+      if (tok === 'expired.alice.jwt') {
+        throw new Error('Firebase ID token has expired.');
+      }
+      throw new Error('Invalid Firebase ID token signature.');
+    });
+
+    // 1. Missing token rejected with 401 on protected routes
+    const unauthRes = await invokeMw(resolveActorMiddleware, { method: 'POST', path: '/api/chat' });
+    assert.equal(unauthRes.nextCalled, false);
+    assert.equal(unauthRes.status, 401);
+    assert.equal(unauthRes.body.code, 'AUTH_REQUIRED');
+
+    // 2. Public health/capabilities/share routes remain accessible without token
+    const healthRes = await invokeMw(resolveActorMiddleware, { method: 'GET', path: '/api/health' });
+    assert.equal(healthRes.nextCalled, true);
+    const shareRes = await invokeMw(resolveActorMiddleware, { method: 'GET', path: '/api/motion/share/pub123' });
+    assert.equal(shareRes.nextCalled, true);
+
+    // 3. Invalid & expired tokens rejected with 401
+    const expiredRes = await invokeMw(resolveActorMiddleware, {
+      method: 'GET',
+      path: '/api/projects',
+      headers: { authorization: 'Bearer expired.alice.jwt' },
+    });
+    assert.equal(expiredRes.nextCalled, false);
+    assert.equal(expiredRes.status, 401);
+    assert.equal(expiredRes.body.code, 'TOKEN_VERIFICATION_FAILED');
+
+    // 4. Valid token binds authoritative tenant user_alice_123 (even if client sends forged header) & issues signed HttpOnly cookie
+    const aliceRes = await invokeMw(resolveActorMiddleware, {
+      method: 'GET',
+      path: '/api/projects',
+      headers: {
+        authorization: 'Bearer valid.alice.jwt',
+        'x-tenant-id': 'user_attacker_spoof',
+      },
+    });
+    assert.equal(aliceRes.nextCalled, true);
+    assert.equal(aliceRes.req.actor.tenantId, 'user_alice_123');
+    assert.equal(aliceRes.req.actor.isAuthenticated, true);
+    assert.equal(aliceRes.setCookies.length, 1);
+    assert.ok(aliceRes.setCookies[0].includes('HttpOnly'));
+
+    const cookiePair = aliceRes.setCookies[0].split(';')[0];
+
+    // 5. Signed cookie grants GET media asset access for Alice ONLY
+    const mediaCookieOk = await invokeMw(resolveActorMiddleware, {
+      method: 'GET',
+      path: '/api/vision/assets/render.png',
+      headers: { cookie: cookiePair },
+    });
+    assert.equal(mediaCookieOk.nextCalled, true);
+    assert.equal(mediaCookieOk.req.actor.tenantId, 'user_alice_123');
+    assert.equal(mediaCookieOk.req.actor.authSource, 'firebase_media_cookie');
+
+    // 6. Cookie-only is rejected on non-media POST mutations under REQUIRE_FIREBASE_AUTH=true
+    const cookiePostDenied = await invokeMw(resolveActorMiddleware, {
+      method: 'POST',
+      path: '/api/vision/generate',
+      headers: { cookie: cookiePair },
+    });
+    assert.equal(cookiePostDenied.nextCalled, false);
+    assert.equal(cookiePostDenied.status, 401);
+
+    // 7. Tampered media cookie rejected with 401
+    const tamperedCookie = await invokeMw(resolveActorMiddleware, {
+      method: 'GET',
+      path: '/api/vision/assets/render.png',
+      headers: { cookie: `${cookiePair}tampered` },
+    });
+    assert.equal(tamperedCookie.nextCalled, false);
+    assert.equal(tamperedCookie.status, 401);
+
+    // 8. requireVerifiedAuth rejects guest actors
+    const guestBlocked = await invokeMw(requireVerifiedAuth, {
+      method: 'POST',
+      path: '/api/account/delete',
+      actor: { uid: 'guest', tenantId: 'guest_workspace', isAuthenticated: false, authSource: 'guest_workspace' },
+    });
+    assert.equal(guestBlocked.nextCalled, false);
+    assert.equal(guestBlocked.status, 401);
+  } finally {
+    setTokenVerifierForTesting(null);
+    if (prevStrict === undefined) delete process.env.REQUIRE_FIREBASE_AUTH;
+    else process.env.REQUIRE_FIREBASE_AUTH = prevStrict;
+  }
+});
+
+test('Firebase Hosting rewrite, relative /api routing, and .env.example follow Cloud-Native Architecture B', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const firebaseJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase.json'), 'utf-8'));
+  const rewrites: any[] = firebaseJson?.hosting?.rewrites || [];
+  assert.ok(rewrites.length >= 2, 'Expected both API rewrite and SPA fallback rewrite');
+  assert.equal(rewrites[0].source, '/api/**');
+  assert.equal(rewrites[0].run?.serviceId, 'raone-ai-backend');
+  assert.equal(rewrites[0].run?.region, 'asia-southeast1');
+  assert.equal(rewrites[rewrites.length - 1].source, '**');
+  assert.equal(rewrites[rewrites.length - 1].destination, '/index.html');
+
+  const apiTs = fs.readFileSync(path.join(process.cwd(), 'src', 'utils', 'api.ts'), 'utf-8');
+  assert.equal(apiTs.includes('.run.app'), false, 'src/utils/api.ts must not hardcode temporary Cloud Run URLs');
+  assert.equal(apiTs.includes('348832701843'), false);
+
+  const envExample = fs.readFileSync(path.join(process.cwd(), '.env.example'), 'utf-8');
+  for (const requiredKey of [
+    'STORAGE_BACKEND=',
+    'GCS_BUCKET_NAME=',
+    'FIREBASE_PROJECT_ID=raoneai',
+    'REQUIRE_FIREBASE_AUTH=',
+    'ALLOWED_ORIGINS=https://raoneai.web.app',
+    'TENANT_ENCRYPTION_SECRET=',
+    'COMET_API_BASE_URL=',
+    'VITE_API_BASE_URL=',
+  ]) {
+    assert.ok(envExample.includes(requiredKey), `.env.example missing ${requiredKey}`);
+  }
+
+  const { getStorageBackendMode } = await import('../server_cloud_persistence.ts');
+  const { isFirebaseAuthRequired } = await import('../server_security.ts');
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevStorage = process.env.STORAGE_BACKEND;
+  const prevAuth = process.env.REQUIRE_FIREBASE_AUTH;
+  try {
+    delete process.env.STORAGE_BACKEND;
+    delete process.env.REQUIRE_FIREBASE_AUTH;
+    process.env.NODE_ENV = 'production';
+    assert.equal(getStorageBackendMode(), 'cloud');
+    assert.equal(isFirebaseAuthRequired(), true);
+  } finally {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevStorage === undefined) delete process.env.STORAGE_BACKEND;
+    else process.env.STORAGE_BACKEND = prevStorage;
+    if (prevAuth === undefined) delete process.env.REQUIRE_FIREBASE_AUTH;
+    else process.env.REQUIRE_FIREBASE_AUTH = prevAuth;
+  }
+});
+
+
 

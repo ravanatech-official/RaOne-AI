@@ -20,6 +20,7 @@ import {
   getManagedLlamaState,
   isCloudRunRuntime,
 } from './server_local_llm.ts';
+import { getCloudPersistenceHealth } from './server_cloud_persistence.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -190,6 +191,7 @@ export async function runUniversalDiagnostics(
     libraryResult,
     creditsResult,
     planState,
+    cloudHealth,
   ] = await Promise.all([
     checkBinaryExists('ffmpeg'),
     checkBinaryExists('ffprobe'),
@@ -198,6 +200,7 @@ export async function runUniversalDiagnostics(
     listUnifiedLibraryAssets(tenantId),
     getTenantCreditBalance(tenantId),
     getTenantPlan(tenantId),
+    getCloudPersistenceHealth(false),
   ]);
 
   const managed = getManagedLlamaState();
@@ -227,7 +230,7 @@ export async function runUniversalDiagnostics(
 
   return {
     checkedAt: new Date().toISOString(),
-    serverHealthy: true,
+    serverHealthy: cloudHealth.storageBackend !== 'cloud' || !cloudHealth.errorSummary,
     runtime: {
       nodeVersion: process.version,
       platform: process.platform,
@@ -236,6 +239,9 @@ export async function runUniversalDiagnostics(
       ffprobeAvailable,
       llamaServerAvailable: Boolean(findLlamaServerBinary()),
       managedLlamaRunning: managed.running,
+      storageBackend: cloudHealth.storageBackend,
+      firestoreState: cloudHealth.firestore,
+      gcsState: cloudHealth.gcs,
     },
     providers: {
       geminiReady: Boolean(byok.geminiApiKey || process.env.GEMINI_API_KEY),

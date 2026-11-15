@@ -4,7 +4,6 @@ import os from 'os';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { callGroqChat } from './server_groq_service.ts';
@@ -12,6 +11,12 @@ import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_l
 import { extractTextFromUploadedBase64 } from './server_uploads.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import {
+  getMediaStorageProvider,
+  inferMimeFromFilename,
+  normalizeSafeAssetFilename,
+  resolveLocalMediaFilePath,
+} from './server_cloud_persistence.ts';
 import {
   DEFAULT_DOCUMENT_CONFIG,
   type DocumentAuditIssue,
@@ -25,9 +30,6 @@ import {
 import type { DocumentCitation, DocumentItem, DocumentSlide, GraphEntityNode } from './src/types/index.ts';
 
 const execFileAsync = promisify(execFile);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
 
 export interface DocumentPublishedSnapshot {
   shareId: string;
@@ -50,59 +52,77 @@ function safeSegment(value: string): string {
     .slice(0, 96);
 }
 
-export function getTenantDocAssetDir(tenantId: string): string {
-  const dir = path.join(DATA_ROOT, safeSegment(tenantId), 'doc_assets');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
 export function resolveTenantDocAssetPath(tenantId: string, filename: string): string | null {
-  const clean = path.basename(String(filename || '').trim());
-  if (!clean || clean === '.' || clean === '..' || !/^[a-zA-Z0-9._-]+$/.test(clean)) {
-    return null;
-  }
-  const dir = getTenantDocAssetDir(tenantId);
-  const resolved = path.resolve(dir, clean);
-  if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
-    return null;
-  }
-  return resolved;
+  return resolveLocalMediaFilePath(tenantId, 'documents', filename);
 }
 
 export async function saveTenantDocAssetBuffer(
   tenantId: string,
   baseId: string,
-  ext: 'mp3' | 'wav',
+  ext: 'mp3' | 'wav' | 'md' | 'html' | 'docx' | 'pdf' | 'pptx' | 'xlsx',
   buffer: Buffer
 ): Promise<{ filename: string; filePath: string; url: string }> {
-  const dir = getTenantDocAssetDir(tenantId);
   const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 8);
   const filename = `${safeSegment(baseId)}_${hash}.${ext}`;
-  const filePath = path.join(dir, filename);
-  await fs.promises.writeFile(filePath, buffer);
+  const mimeType = inferMimeFromFilename(filename);
+  const meta = await getMediaStorageProvider().saveBuffer({
+    tenantId,
+    category: 'documents',
+    filename,
+    buffer,
+    mimeType,
+    originalName: filename,
+  });
   return {
     filename,
-    filePath,
+    filePath: meta.objectPath,
     url: `/api/documents/assets/${encodeURIComponent(filename)}`,
   };
+}
+
+export async function readTenantDocAssetBuffer(
+  tenantId: string,
+  filename: string
+): Promise<Buffer | null> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return null;
+  return getMediaStorageProvider().readBuffer(tenantId, 'documents', clean);
+}
+
+export async function streamDocAssetByFilename(
+  req: Request,
+  res: Response,
+  tenantId: string,
+  filename: string
+): Promise<boolean> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return false;
+  return getMediaStorageProvider().streamHttpResponse(
+    req,
+    res,
+    tenantId,
+    'documents',
+    clean,
+    inferMimeFromFilename(clean, 'audio/mpeg')
+  );
 }
 
 export async function deleteTenantDocAssets(
   tenantId: string,
   filenames: Array<string | undefined | null>
 ): Promise<void> {
+  const media = getMediaStorageProvider();
   for (const name of filenames) {
     if (!name) continue;
-    const p = resolveTenantDocAssetPath(tenantId, name);
-    if (p && fs.existsSync(p)) {
-      await fs.promises.unlink(p).catch(() => {});
+    const clean = normalizeSafeAssetFilename(name);
+    if (clean) {
+      await media.deleteAsset(tenantId, 'documents', clean).catch(() => {});
     }
   }
 }
 
 export function streamDocAssetWithRange(req: Request, res: Response, filePath: string): void {
-  const ext = path.extname(filePath).toLowerCase();
-  const contentType = ext === '.wav' ? 'audio/wav' : 'audio/mpeg';
+  const contentType = inferMimeFromFilename(filePath, 'audio/mpeg');
   const stat = fs.statSync(filePath);
   const totalSize = stat.size;
   const range = req.headers.range;

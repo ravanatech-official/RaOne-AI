@@ -1,16 +1,18 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
-import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { callGroqChat } from './server_groq_service.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
+import {
+  getMediaStorageProvider,
+  inferMimeFromFilename,
+  normalizeSafeAssetFilename,
+  resolveLocalMediaFilePath,
+  sanitizeTenantId,
+} from './server_cloud_persistence.ts';
+import type { Request, Response } from 'express';
 
 export type VisionResolutionTier = '1K' | '2K' | '4K';
 
@@ -131,15 +133,7 @@ const SUPPORTED_ULTRA_IMAGE_RATIOS = new Set([
 ]);
 
 export function sanitizeTenantIdForVision(tenantId: string): string {
-  return tenantId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || 'guest_workspace';
-}
-
-export function getTenantVisionAssetsDir(tenantId: string): string {
-  const dir = path.join(DATA_ROOT, sanitizeTenantIdForVision(tenantId), 'vision_assets');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
+  return sanitizeTenantId(tenantId);
 }
 
 export function isValidVisionAssetFilename(filename: string): boolean {
@@ -148,12 +142,7 @@ export function isValidVisionAssetFilename(filename: string): boolean {
 
 export function resolveTenantVisionAssetPath(tenantId: string, filename: string): string | null {
   if (!isValidVisionAssetFilename(filename)) return null;
-  const dir = getTenantVisionAssetsDir(tenantId);
-  const resolved = path.resolve(dir, path.basename(filename));
-  if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
-    return null;
-  }
-  return resolved;
+  return resolveLocalMediaFilePath(tenantId, 'vision', filename);
 }
 
 export async function saveTenantVisionAsset(
@@ -169,15 +158,65 @@ export async function saveTenantVisionAsset(
     : 'png';
   const cleanId = imageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
   const assetFilename = `${cleanId}.${ext}`;
-  const dir = getTenantVisionAssetsDir(tenantId);
-  const filePath = path.join(dir, assetFilename);
   const buffer = Buffer.from(base64Data, 'base64');
-  await fs.promises.writeFile(filePath, buffer);
+  const normalizedMime = ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+
+  const meta = await getMediaStorageProvider().saveBuffer({
+    tenantId,
+    category: 'vision',
+    filename: assetFilename,
+    buffer,
+    mimeType: normalizedMime,
+    originalName: assetFilename,
+  });
+
   return {
     assetFilename,
     imageUrl: `/api/vision/assets/${assetFilename}`,
-    filePath,
+    filePath: meta.objectPath,
   };
+}
+
+export async function readTenantVisionAssetBuffer(
+  tenantId: string,
+  filename: string
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean || !isValidVisionAssetFilename(clean)) return null;
+  const buf = await getMediaStorageProvider().readBuffer(tenantId, 'vision', clean);
+  if (!buf) return null;
+  return {
+    buffer: buf,
+    mimeType: inferMimeFromFilename(clean, 'image/png'),
+  };
+}
+
+export async function streamTenantVisionAsset(
+  req: Request,
+  res: Response,
+  tenantId: string,
+  filename: string
+): Promise<boolean> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean || !isValidVisionAssetFilename(clean)) return false;
+  return getMediaStorageProvider().streamHttpResponse(
+    req,
+    res,
+    tenantId,
+    'vision',
+    clean,
+    inferMimeFromFilename(clean, 'image/png')
+  );
+}
+
+export async function deleteTenantVisionAsset(
+  tenantId: string,
+  filename: string | undefined | null
+): Promise<void> {
+  if (!filename) return;
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return;
+  await getMediaStorageProvider().deleteAsset(tenantId, 'vision', clean);
 }
 
 export function parseDataUrlImage(dataUrl: string): { mimeType: string; base64: string } | null {
@@ -202,15 +241,12 @@ export async function resolveImageInputToInlinePart(
     return { mimeType: parsedData.mimeType, data: parsedData.base64 };
   }
 
-  // 2. Local tenant asset URL (/api/vision/assets/<filename>)
+  // 2. Tenant vision asset URL (/api/vision/assets/<filename>) — works in both local and GCS cloud modes
   const assetMatch = trimmed.match(/^\/api\/vision\/assets\/([a-zA-Z0-9._-]+)$/);
   if (assetMatch) {
-    const filePath = resolveTenantVisionAssetPath(tenantId, assetMatch[1]);
-    if (filePath && fs.existsSync(filePath)) {
-      const buf = await fs.promises.readFile(filePath);
-      const ext = path.extname(filePath).toLowerCase();
-      const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
-      return { mimeType, data: buf.toString('base64') };
+    const read = await readTenantVisionAssetBuffer(tenantId, decodeURIComponent(assetMatch[1]));
+    if (read) {
+      return { mimeType: read.mimeType, data: read.buffer.toString('base64') };
     }
   }
 

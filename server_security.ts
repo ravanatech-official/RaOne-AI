@@ -2,12 +2,13 @@ import crypto from 'crypto';
 import dns from 'dns/promises';
 import net from 'net';
 import type { Request, Response, NextFunction } from 'express';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
-
-const FIREBASE_JWKS_URL = new URL(
-  'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'
-);
-const firebaseJwks = createRemoteJWKSet(FIREBASE_JWKS_URL);
+import {
+  getFirebaseAdminAuth,
+  getFirebaseProjectIdFromEnv,
+  getStorageBackendMode,
+  isCloudRunEnvironment,
+  logCloudEvent,
+} from './server_cloud_persistence.ts';
 
 export interface VerifiedActor {
   uid: string;
@@ -15,7 +16,7 @@ export interface VerifiedActor {
   email: string | null;
   emailVerified: boolean;
   isAuthenticated: boolean;
-  authSource: 'firebase_jwt' | 'guest_workspace';
+  authSource: 'firebase_jwt' | 'firebase_media_cookie' | 'guest_workspace';
 }
 
 declare global {
@@ -27,13 +28,32 @@ declare global {
   }
 }
 
+export type TokenVerificationResult = {
+  uid: string;
+  email: string | null;
+  emailVerified: boolean;
+};
+
+type TokenVerifierFn = (token: string) => Promise<TokenVerificationResult>;
+
+let customTokenVerifierForTesting: TokenVerifierFn | null = null;
+
+export function setTokenVerifierForTesting(verifier: TokenVerifierFn | null): void {
+  customTokenVerifierForTesting = verifier;
+}
+
 export function getFirebaseProjectId(): string {
-  return (
-    process.env.FIREBASE_PROJECT_ID ||
-    process.env.VITE_FIREBASE_PROJECT_ID ||
-    process.env.GOOGLE_CLOUD_PROJECT ||
-    'raoneai'
-  ).trim();
+  return getFirebaseProjectIdFromEnv();
+}
+
+export function isFirebaseAuthRequired(): boolean {
+  const raw = String(process.env.REQUIRE_FIREBASE_AUTH || '').trim().toLowerCase();
+  if (raw === 'true') return true;
+  if (raw === 'false') {
+    // Allow explicit override only when intentionally disabled via env
+    return false;
+  }
+  return process.env.NODE_ENV === 'production' || getStorageBackendMode() === 'cloud';
 }
 
 export function attachRequestId(req: Request, res: Response, next: NextFunction) {
@@ -64,29 +84,32 @@ export function sendApiError(
   });
 }
 
-export async function verifyFirebaseBearerToken(token: string): Promise<{
-  uid: string;
-  email: string | null;
-  emailVerified: boolean;
-}> {
-  const projectId = getFirebaseProjectId();
-  const issuer = `https://securetoken.google.com/${projectId}`;
+export async function verifyFirebaseBearerToken(token: string): Promise<TokenVerificationResult> {
+  const cleanToken = String(token || '').trim();
+  if (!cleanToken || cleanToken.split('.').length !== 3) {
+    throw new Error('Malformed or missing JWT Bearer token.');
+  }
 
-  const { payload } = await jwtVerify(token, firebaseJwks, {
-    issuer,
-    audience: projectId,
-    algorithms: ['RS256'],
-  });
+  if (customTokenVerifierForTesting) {
+    const res = await customTokenVerifierForTesting(cleanToken);
+    if (!res?.uid || typeof res.uid !== 'string' || res.uid.length > 128) {
+      throw new Error('Firebase token missing valid subject UID.');
+    }
+    return res;
+  }
 
-  const uid = typeof payload.user_id === 'string' ? payload.user_id : payload.sub;
+  const checkRevoked = process.env.AUTH_CHECK_REVOKED === 'true';
+  const decoded = await getFirebaseAdminAuth().verifyIdToken(cleanToken, checkRevoked);
+  const uid = typeof decoded.uid === 'string' ? decoded.uid : decoded.sub;
+
   if (!uid || typeof uid !== 'string' || uid.length > 128) {
     throw new Error('Firebase token missing valid subject UID');
   }
 
   return {
     uid,
-    email: typeof payload.email === 'string' ? payload.email : null,
-    emailVerified: Boolean(payload.email_verified),
+    email: typeof decoded.email === 'string' ? decoded.email : null,
+    emailVerified: Boolean(decoded.email_verified),
   };
 }
 
@@ -99,17 +122,123 @@ const PUBLIC_UNAUTHENTICATED_ROUTES = new Set<string>([
   '/api/local-llm/status',
 ]);
 
+function isPublicShareGetRoute(method: string, fullPath: string): boolean {
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  return (
+    /^\/api\/motion\/share\/[a-zA-Z0-9_-]+(?:\/stream)?$/.test(fullPath) ||
+    /^\/api\/audio\/share\/[a-zA-Z0-9_-]+(?:\/stream)?$/.test(fullPath) ||
+    /^\/api\/documents\/share\/[a-zA-Z0-9_-]+(?:\/audio)?$/.test(fullPath)
+  );
+}
+
+function isMediaDownloadGetRoute(method: string, fullPath: string): boolean {
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  return (
+    fullPath.startsWith('/api/vision/assets/') ||
+    fullPath.startsWith('/api/motion/assets/') ||
+    fullPath.startsWith('/api/audio/assets/') ||
+    fullPath.startsWith('/api/documents/assets/') ||
+    fullPath === '/api/library/download'
+  );
+}
+
+// =========================================================================
+// Signed HttpOnly Media Session Cookie (for native <img>/<video>/<audio> tags)
+// =========================================================================
+const MEDIA_COOKIE_NAME = 'raone_media_session';
+
+function getMediaCookieSigningKey(): Buffer {
+  const secret =
+    process.env.TENANT_ENCRYPTION_SECRET ||
+    process.env.BYOK_ENCRYPTION_KEY ||
+    process.env.SESSION_SECRET ||
+    process.env.GEMINI_API_KEY ||
+    'raone-local-dev-ephemeral-key-do-not-use-without-env';
+  return crypto.scryptSync(secret, 'raone-media-session-cookie-v1', 32);
+}
+
+function createSignedMediaSessionToken(uid: string, tenantId: string, ttlSec = 3600): string {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  const payload = Buffer.from(JSON.stringify({ uid, tenantId, exp }), 'utf-8').toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', getMediaCookieSigningKey())
+    .update(payload)
+    .digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifySignedMediaSessionToken(
+  token: string
+): { uid: string; tenantId: string; exp: number } | null {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 2) return null;
+  const [payloadB64, sigB64] = parts;
+  const expectedSig = crypto
+    .createHmac('sha256', getMediaCookieSigningKey())
+    .update(payloadB64)
+    .digest('base64url');
+  const a = Buffer.from(sigB64, 'utf-8');
+  const b = Buffer.from(expectedSig, 'utf-8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+    if (
+      typeof parsed?.uid === 'string' &&
+      typeof parsed?.tenantId === 'string' &&
+      typeof parsed?.exp === 'number' &&
+      parsed.exp > Math.floor(Date.now() / 1000)
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  const segments = cookieHeader.split(';');
+  for (const seg of segments) {
+    const eqIdx = seg.indexOf('=');
+    if (eqIdx === -1) continue;
+    const k = seg.slice(0, eqIdx).trim();
+    if (k === name) {
+      return decodeURIComponent(seg.slice(eqIdx + 1).trim());
+    }
+  }
+  return null;
+}
+
+function attachMediaSessionCookie(req: Request, res: Response, uid: string, tenantId: string): void {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const token = createSignedMediaSessionToken(uid, tenantId, 3600);
+  const parts = [
+    `${MEDIA_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/api',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=3600',
+  ];
+  if (isHttps) {
+    parts.push('Secure');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
 /**
  * Default-deny API authentication & tenant binding middleware:
- * - Always cryptographically verifies any supplied Bearer token (never trusts dummy/non-JWT tokens).
- * - If REQUIRE_FIREBASE_AUTH=true, rejects ALL protected routes without a valid Firebase token (401).
- * - Otherwise, unauthenticated requests without a Bearer header bind ONLY to an isolated 'guest-workspace' tenant
- *   (and sensitive account/admin/key/paid-plan mutations still require verified auth).
+ * - Always verifies any supplied Bearer token via Firebase Admin SDK.
+ * - Derives server-authoritative `tenantId = user_${uid}` (never trusting client tenant IDs).
+ * - If REQUIRE_FIREBASE_AUTH=true (or Cloud Run production default), rejects ALL protected routes without valid auth (401).
+ * - Preserves public share GET endpoints (by opaque shareId) and local/dev guest_workspace when auth is optional.
  */
 export async function resolveActorMiddleware(req: Request, res: Response, next: NextFunction) {
   const fullPath = `${req.baseUrl || ''}${req.path || ''}`.replace(/\/+$/, '') || '/';
   const authHeader = req.headers.authorization || '';
-  const strictMode = process.env.REQUIRE_FIREBASE_AUTH === 'true';
+  const strictMode = isFirebaseAuthRequired();
 
   if (req.method === 'OPTIONS') {
     return next();
@@ -125,16 +254,28 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
     }
     try {
       const verified = await verifyFirebaseBearerToken(token);
+      const tenantId = `user_${verified.uid}`;
       req.actor = {
         uid: verified.uid,
-        tenantId: `user_${verified.uid}`,
+        tenantId,
         email: verified.email,
         emailVerified: verified.emailVerified,
         isAuthenticated: true,
         authSource: 'firebase_jwt',
       };
+      // Keep signed HttpOnly media cookie refreshed for native <img>/<video>/<audio> requests
+      const existingCookie = parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME);
+      const decodedCookie = existingCookie ? verifySignedMediaSessionToken(existingCookie) : null;
+      if (!decodedCookie || decodedCookie.uid !== verified.uid || decodedCookie.exp - Math.floor(Date.now() / 1000) < 900) {
+        attachMediaSessionCookie(req, res, verified.uid, tenantId);
+      }
       return next();
     } catch (err: any) {
+      logCloudEvent('warn', 'firebase_token_rejected', {
+        path: fullPath,
+        requestId: req.requestId,
+        reason: String(err?.message || 'Verification failed').slice(0, 120),
+      });
       return sendApiError(
         req,
         res,
@@ -145,7 +286,24 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
     }
   }
 
-  if (PUBLIC_UNAUTHENTICATED_ROUTES.has(fullPath)) {
+  // Allow signed HttpOnly media cookie strictly for GET binary asset streaming & download routes
+  if (isMediaDownloadGetRoute(req.method, fullPath)) {
+    const rawCookie = parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME);
+    const verifiedCookie = rawCookie ? verifySignedMediaSessionToken(rawCookie) : null;
+    if (verifiedCookie) {
+      req.actor = {
+        uid: verifiedCookie.uid,
+        tenantId: verifiedCookie.tenantId,
+        email: null,
+        emailVerified: true,
+        isAuthenticated: true,
+        authSource: 'firebase_media_cookie',
+      };
+      return next();
+    }
+  }
+
+  if (PUBLIC_UNAUTHENTICATED_ROUTES.has(fullPath) || isPublicShareGetRoute(req.method, fullPath)) {
     req.actor = {
       uid: 'public',
       tenantId: 'guest_workspace',
@@ -179,7 +337,7 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
 }
 
 export function requireVerifiedAuth(req: Request, res: Response, next: NextFunction) {
-  if (!req.actor?.isAuthenticated) {
+  if (!req.actor?.isAuthenticated || req.actor.authSource === 'guest_workspace') {
     return sendApiError(
       req,
       res,
@@ -192,19 +350,53 @@ export function requireVerifiedAuth(req: Request, res: Response, next: NextFunct
 }
 
 // =========================================================================
-// AES-256-GCM Encryption for Tenant BYOK Secrets
+// AES-256-GCM Encryption for Tenant BYOK Secrets (v1 backward-compatible)
 // =========================================================================
-function getMasterKeyBuffer(): Buffer {
-  const secret =
+const DEFAULT_DEV_FALLBACK_SECRET = 'raone-local-dev-ephemeral-key-do-not-use-without-env';
+
+function getConfiguredEncryptionSecret(): string {
+  return (
     process.env.TENANT_ENCRYPTION_SECRET ||
     process.env.BYOK_ENCRYPTION_KEY ||
     process.env.SESSION_SECRET ||
     process.env.GEMINI_API_KEY ||
-    'raone-local-dev-ephemeral-key-do-not-use-without-env';
+    DEFAULT_DEV_FALLBACK_SECRET
+  );
+}
+
+export function validateEncryptionConfig(): {
+  configured: boolean;
+  usingFallbackDevKey: boolean;
+  algorithm: 'aes-256-gcm';
+} {
+  const explicit = Boolean(
+    process.env.TENANT_ENCRYPTION_SECRET ||
+      process.env.BYOK_ENCRYPTION_KEY ||
+      process.env.SESSION_SECRET
+  );
+  const hasAny = explicit || Boolean(process.env.GEMINI_API_KEY);
+  const usingFallback = !hasAny;
+
+  if (usingFallback && (process.env.NODE_ENV === 'production' || getStorageBackendMode() === 'cloud')) {
+    logCloudEvent('warn', 'encryption_secret_missing', {
+      message: 'TENANT_ENCRYPTION_SECRET should be explicitly configured in Secret Manager for production.',
+    });
+  }
+
+  return {
+    configured: hasAny,
+    usingFallbackDevKey: usingFallback,
+    algorithm: 'aes-256-gcm',
+  };
+}
+
+function getMasterKeyBuffer(): Buffer {
+  const secret = getConfiguredEncryptionSecret();
   return crypto.scryptSync(secret, 'raone-tenant-byok-salt-v1', 32);
 }
 
 export function encryptSecret(plaintext: string): string {
+  if (!plaintext) return '';
   const key = getMasterKeyBuffer();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -218,6 +410,7 @@ export function decryptSecret(ciphertext: string): string {
   const parts = ciphertext.split(':');
   if (parts.length !== 4) return '';
   const [, ivHex, tagHex, encHex] = parts;
+  if (!ivHex || !tagHex || !encHex) return '';
   const key = getMasterKeyBuffer();
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'));

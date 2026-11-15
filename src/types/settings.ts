@@ -148,6 +148,9 @@ export interface UniversalDiagnosticsSnapshot {
     ffprobeAvailable: boolean;
     llamaServerAvailable: boolean;
     managedLlamaRunning: boolean;
+    storageBackend?: 'local' | 'cloud';
+    firestoreState?: string;
+    gcsState?: string;
   };
   providers: {
     geminiReady: boolean;

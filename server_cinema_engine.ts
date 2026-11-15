@@ -4,13 +4,18 @@ import os from 'os';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import { callGroqChat } from './server_groq_service.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import {
+  getMediaStorageProvider,
+  inferMimeFromFilename,
+  normalizeSafeAssetFilename,
+  resolveLocalMediaFilePath,
+} from './server_cloud_persistence.ts';
 import {
   DEFAULT_CINEMA_CONFIG,
   type CinemaConfig,
@@ -22,9 +27,6 @@ import {
 import type { GeneratedVideoItem } from './src/types/index.ts';
 
 const execFileAsync = promisify(execFile);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
 
 export interface VideoProbeInfo {
   duration: number;
@@ -61,23 +63,8 @@ function safeSegment(value: string): string {
     .slice(0, 96);
 }
 
-export function getTenantCinemaAssetDir(tenantId: string): string {
-  const dir = path.join(DATA_ROOT, safeSegment(tenantId), 'cinema_assets');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
 export function resolveTenantCinemaAssetPath(tenantId: string, filename: string): string | null {
-  const clean = path.basename(String(filename || '').trim());
-  if (!clean || clean === '.' || clean === '..' || !/^[a-zA-Z0-9._-]+$/.test(clean)) {
-    return null;
-  }
-  const dir = getTenantCinemaAssetDir(tenantId);
-  const resolved = path.resolve(dir, clean);
-  if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
-    return null;
-  }
-  return resolved;
+  return resolveLocalMediaFilePath(tenantId, 'cinema', filename);
 }
 
 export async function saveTenantCinemaAssetBuffer(
@@ -86,47 +73,95 @@ export async function saveTenantCinemaAssetBuffer(
   ext: 'mp4' | 'jpg' | 'png' | 'webp' | 'wav' | 'mp3',
   buffer: Buffer
 ): Promise<{ filename: string; filePath: string; url: string }> {
-  const dir = getTenantCinemaAssetDir(tenantId);
   const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 8);
   const filename = `${safeSegment(baseId)}_${hash}.${ext}`;
-  const filePath = path.join(dir, filename);
-  await fs.promises.writeFile(filePath, buffer);
+  const mimeType = inferMimeFromFilename(filename);
+  const meta = await getMediaStorageProvider().saveBuffer({
+    tenantId,
+    category: 'cinema',
+    filename,
+    buffer,
+    mimeType,
+    originalName: filename,
+  });
   return {
     filename,
-    filePath,
+    filePath: meta.objectPath,
     url: `/api/motion/assets/${encodeURIComponent(filename)}`,
   };
 }
 
-export async function deleteTenantCinemaAssets(tenantId: string, filenames: Array<string | undefined | null>): Promise<void> {
+export async function saveTenantCinemaAssetFromFile(
+  tenantId: string,
+  baseId: string,
+  ext: 'mp4' | 'jpg' | 'png' | 'webp' | 'wav' | 'mp3',
+  localFilePath: string
+): Promise<{ filename: string; filePath: string; url: string }> {
+  const randHash = crypto.randomBytes(4).toString('hex');
+  const filename = `${safeSegment(baseId)}_${randHash}.${ext}`;
+  const mimeType = inferMimeFromFilename(filename);
+  const meta = await getMediaStorageProvider().saveFromFile({
+    tenantId,
+    category: 'cinema',
+    filename,
+    localFilePath,
+    mimeType,
+    originalName: filename,
+  });
+  return {
+    filename,
+    filePath: meta.objectPath,
+    url: `/api/motion/assets/${encodeURIComponent(filename)}`,
+  };
+}
+
+export async function readTenantCinemaAssetBuffer(
+  tenantId: string,
+  filename: string
+): Promise<Buffer | null> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return null;
+  return getMediaStorageProvider().readBuffer(tenantId, 'cinema', clean);
+}
+
+export async function materializeCinemaAssetToTemp(
+  tenantId: string,
+  filename: string,
+  targetDir: string
+): Promise<string | null> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return null;
+  return getMediaStorageProvider().materializeToTempFile(tenantId, 'cinema', clean, targetDir);
+}
+
+export async function deleteTenantCinemaAssets(
+  tenantId: string,
+  filenames: Array<string | undefined | null>
+): Promise<void> {
+  const media = getMediaStorageProvider();
   for (const name of filenames) {
     if (!name) continue;
-    const p = resolveTenantCinemaAssetPath(tenantId, name);
-    if (p && fs.existsSync(p)) {
-      await fs.promises.unlink(p).catch(() => {});
+    const clean = normalizeSafeAssetFilename(name);
+    if (clean) {
+      await media.deleteAsset(tenantId, 'cinema', clean).catch(() => {});
     }
   }
 }
 
+export async function streamCinemaAssetByFilename(
+  req: Request,
+  res: Response,
+  tenantId: string,
+  filename: string
+): Promise<boolean> {
+  const clean = normalizeSafeAssetFilename(filename);
+  if (!clean) return false;
+  return getMediaStorageProvider().streamHttpResponse(req, res, tenantId, 'cinema', clean);
+}
+
 export function streamCinemaAssetWithRange(req: Request, res: Response, filePath: string): void {
   const ext = path.extname(filePath).toLowerCase();
-  const contentType =
-    ext === '.mp4'
-      ? 'video/mp4'
-      : ext === '.webm'
-      ? 'video/webm'
-      : ext === '.mov'
-      ? 'video/quicktime'
-      : ext === '.jpg' || ext === '.jpeg'
-      ? 'image/jpeg'
-      : ext === '.png'
-      ? 'image/png'
-      : ext === '.wav'
-      ? 'audio/wav'
-      : ext === '.mp3'
-      ? 'audio/mpeg'
-      : 'application/octet-stream';
-
+  const contentType = inferMimeFromFilename(filePath);
   const stat = fs.statSync(filePath);
   const totalSize = stat.size;
   const range = req.headers.range;
@@ -562,31 +597,31 @@ export async function resolveImageInputToInlinePart(
     return { mimeType: dataMatch[1], data: dataMatch[2] };
   }
 
+  const media = getMediaStorageProvider();
+
   if (trimmed.startsWith('/api/motion/assets/')) {
-    const filename = decodeURIComponent(trimmed.split('/').pop() || '');
-    const assetPath = resolveTenantCinemaAssetPath(tenantId, filename);
-    if (assetPath && fs.existsSync(assetPath)) {
-      const buf = await fs.promises.readFile(assetPath);
-      const ext = path.extname(assetPath).toLowerCase();
-      return {
-        mimeType: ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png',
-        data: buf.toString('base64'),
-      };
+    const filename = normalizeSafeAssetFilename(decodeURIComponent(trimmed.split('/').pop() || ''));
+    if (filename) {
+      const buf = await media.readBuffer(tenantId, 'cinema', filename);
+      if (buf) {
+        return {
+          mimeType: inferMimeFromFilename(filename, 'image/png'),
+          data: buf.toString('base64'),
+        };
+      }
     }
   }
 
   if (trimmed.startsWith('/api/vision/assets/')) {
-    const filename = decodeURIComponent(trimmed.split('/').pop() || '');
-    const visionDir = path.join(DATA_ROOT, safeSegment(tenantId), 'vision_assets');
-    const clean = path.basename(filename);
-    const fullPath = path.resolve(visionDir, clean);
-    if (fullPath.startsWith(path.resolve(visionDir) + path.sep) && fs.existsSync(fullPath)) {
-      const buf = await fs.promises.readFile(fullPath);
-      const ext = path.extname(fullPath).toLowerCase();
-      return {
-        mimeType: ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png',
-        data: buf.toString('base64'),
-      };
+    const filename = normalizeSafeAssetFilename(decodeURIComponent(trimmed.split('/').pop() || ''));
+    if (filename) {
+      const buf = await media.readBuffer(tenantId, 'vision', filename);
+      if (buf) {
+        return {
+          mimeType: inferMimeFromFilename(filename, 'image/png'),
+          data: buf.toString('base64'),
+        };
+      }
     }
   }
 
@@ -1080,7 +1115,8 @@ export async function runGeminiOmniVideoEditOrExtend(params: {
 export async function finalizeCinemaVideoRecord(params: {
   tenantId: string;
   id: string;
-  rawVideoBuffer: Buffer;
+  rawVideoBuffer?: Buffer;
+  rawVideoFilePath?: string;
   prompt: string;
   compiledPrompt: string;
   enhancedFrom?: string;
@@ -1107,7 +1143,13 @@ export async function finalizeCinemaVideoRecord(params: {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-cin-'));
   try {
     let workingPath = path.join(tmpDir, `${params.id}_raw.mp4`);
-    await fs.promises.writeFile(workingPath, params.rawVideoBuffer);
+    if (params.rawVideoFilePath && fs.existsSync(params.rawVideoFilePath)) {
+      await fs.promises.copyFile(params.rawVideoFilePath, workingPath);
+    } else if (params.rawVideoBuffer) {
+      await fs.promises.writeFile(workingPath, params.rawVideoBuffer);
+    } else {
+      throw new Error('Either rawVideoFilePath or rawVideoBuffer must be provided.');
+    }
 
     // Optional crop for 1:1 / 4:3 / 21:9 if newly generated
     if (
@@ -1121,18 +1163,17 @@ export async function finalizeCinemaVideoRecord(params: {
       }
     }
 
-    const finalBuf = await fs.promises.readFile(workingPath);
     const probe = await probeVideoFile(workingPath);
 
     const posterTmpPath = path.join(tmpDir, `${params.id}_poster.jpg`);
     const hasPoster = await extractPosterFrame(workingPath, posterTmpPath, Math.min(0.4, probe.duration / 2));
 
-    const videoAsset = await saveTenantCinemaAssetBuffer(params.tenantId, params.id, 'mp4', finalBuf);
+    // Stream video & poster directly from temp file into GCS/local storage without extra RAM buffers
+    const videoAsset = await saveTenantCinemaAssetFromFile(params.tenantId, params.id, 'mp4', workingPath);
     let posterUrl = '';
     let posterFilename: string | undefined;
     if (hasPoster) {
-      const posterBuf = await fs.promises.readFile(posterTmpPath);
-      const posterAsset = await saveTenantCinemaAssetBuffer(params.tenantId, `${params.id}_poster`, 'jpg', posterBuf);
+      const posterAsset = await saveTenantCinemaAssetFromFile(params.tenantId, `${params.id}_poster`, 'jpg', posterTmpPath);
       posterUrl = posterAsset.url;
       posterFilename = posterAsset.filename;
     }

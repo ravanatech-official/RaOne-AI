@@ -6,3 +6,8 @@ dist
 !.env.example
 *.log
 api_keys_storage.json
+
+data
+*_data.json
+.aistudio
+public/assets/aistudio
