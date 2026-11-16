@@ -55,6 +55,7 @@ import {
   saveUniversalSettingsPatch,
 } from '../utils/settingsClient.ts';
 import { SettingsStudioPanels } from './SettingsStudioPanels.tsx';
+import { PRICING_PLANS } from '../lib/pricingCatalog.ts';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -197,6 +198,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [groqTesting, setGroqTesting] = useState(false);
   const [groqTestResult, setGroqTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
+  const [openRouterKey, setOpenRouterKey] = useState('');
+  const [falKey, setFalKey] = useState('');
+  const [hfToken, setHfToken] = useState('');
+  const [cloudflareAccountId, setCloudflareAccountId] = useState('');
+  const [cloudflareApiToken, setCloudflareApiToken] = useState('');
   const [openAiKey, setOpenAiKey] = useState('');
   const [anthropicKey, setAnthropicKey] = useState('');
   const [deepSeekKey, setDeepSeekKey] = useState('');
@@ -223,6 +229,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [keysConfigured, setKeysConfigured] = useState<{
     geminiConfigured: boolean;
     groqConfigured?: boolean;
+    openRouterConfigured?: boolean;
+    falConfigured?: boolean;
+    hfConfigured?: boolean;
+    cloudflareAiConfigured?: boolean;
     openAiConfigured: boolean;
     anthropicConfigured: boolean;
     deepSeekConfigured: boolean;
@@ -232,6 +242,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }>({
     geminiConfigured: false,
     groqConfigured: false,
+    openRouterConfigured: false,
+    falConfigured: false,
+    hfConfigured: false,
+    cloudflareAiConfigured: false,
     openAiConfigured: false,
     anthropicConfigured: false,
     deepSeekConfigured: false,
@@ -627,7 +641,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       // Save API keys if any entered or updated (requires verified Firebase sign-in)
       const hasAnyKeyChange = Boolean(
-        geminiKey || groqKey || openAiKey || anthropicKey || deepSeekKey || xaiKey || cometKey || localApiKey
+        geminiKey ||
+          groqKey ||
+          openRouterKey ||
+          falKey ||
+          hfToken ||
+          cloudflareAccountId ||
+          cloudflareApiToken ||
+          openAiKey ||
+          anthropicKey ||
+          deepSeekKey ||
+          xaiKey ||
+          cometKey ||
+          localApiKey
       );
       const localProxyConfigChanged =
         localTransport === 'backend_proxy' &&
@@ -645,6 +671,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           body: JSON.stringify({
             geminiApiKey: geminiKey || undefined,
             groqApiKey: groqKey || undefined,
+            openRouterApiKey: openRouterKey || undefined,
+            falApiKey: falKey || undefined,
+            hfApiToken: hfToken || undefined,
+            cloudflareAccountId: cloudflareAccountId || undefined,
+            cloudflareApiToken: cloudflareApiToken || undefined,
             openAiApiKey: openAiKey || undefined,
             anthropicApiKey: anthropicKey || undefined,
             deepSeekApiKey: deepSeekKey || undefined,
@@ -668,6 +699,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         }
         setGeminiKey('');
         setGroqKey('');
+        setOpenRouterKey('');
+        setFalKey('');
+        setHfToken('');
+        setCloudflareAccountId('');
+        setCloudflareApiToken('');
         setOpenAiKey('');
         setAnthropicKey('');
         setDeepSeekKey('');
@@ -2256,6 +2292,108 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                   <div>
                     <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-[#b4b4b4]">OpenRouter API Key (Free :free Coding &amp; Chat)</span>
+                      <span
+                        className={`text-[9px] px-2 py-0.5 rounded-full ${
+                          keysConfigured.openRouterConfigured
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-[#2a2a2a] text-[#737373]'
+                        }`}
+                      >
+                        {keysConfigured.openRouterConfigured ? 'Active' : 'Not Set'}
+                      </span>
+                    </div>
+                    <input
+                      type="password"
+                      value={openRouterKey}
+                      onChange={(e) => setOpenRouterKey(e.target.value)}
+                      placeholder="sk-or-v1-... (0 credits deducted)"
+                      className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-[#b4b4b4]">Hugging Face Token (Free FLUX Images &amp; MusicGen Audio)</span>
+                      <span
+                        className={`text-[9px] px-2 py-0.5 rounded-full ${
+                          keysConfigured.hfConfigured
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-[#2a2a2a] text-[#737373]'
+                        }`}
+                      >
+                        {keysConfigured.hfConfigured ? 'Active' : 'Not Set'}
+                      </span>
+                    </div>
+                    <input
+                      type="password"
+                      value={hfToken}
+                      onChange={(e) => setHfToken(e.target.value)}
+                      placeholder="hf_..."
+                      className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-[#b4b4b4]">fal.ai API Key (Low-Cost FLUX &amp; Cinema LTX-Video)</span>
+                      <span
+                        className={`text-[9px] px-2 py-0.5 rounded-full ${
+                          keysConfigured.falConfigured
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-[#2a2a2a] text-[#737373]'
+                        }`}
+                      >
+                        {keysConfigured.falConfigured ? 'Active' : 'Not Set'}
+                      </span>
+                    </div>
+                    <input
+                      type="password"
+                      value={falKey}
+                      onChange={(e) => setFalKey(e.target.value)}
+                      placeholder="fal_..."
+                      className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-medium text-[#b4b4b4]">Cloudflare Account ID (Free 10K Neurons)</span>
+                        <span
+                          className={`text-[9px] px-2 py-0.5 rounded-full ${
+                            keysConfigured.cloudflareAiConfigured
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-[#2a2a2a] text-[#737373]'
+                          }`}
+                        >
+                          {keysConfigured.cloudflareAiConfigured ? 'Active' : 'Optional'}
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        value={cloudflareAccountId}
+                        onChange={(e) => setCloudflareAccountId(e.target.value)}
+                        placeholder="Cloudflare Account ID"
+                        className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-medium text-[#b4b4b4]">Cloudflare Workers AI Token</span>
+                      </div>
+                      <input
+                        type="password"
+                        value={cloudflareApiToken}
+                        onChange={(e) => setCloudflareApiToken(e.target.value)}
+                        placeholder="Cloudflare API Token"
+                        className="w-full bg-[#242424] border border-[#383838] rounded-xl p-2 text-xs text-white focus:outline-none placeholder-[#555]"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-medium text-[#b4b4b4]">Anthropic API Key (Optional)</span>
                       <span
                         className={`text-[9px] px-2 py-0.5 rounded-full ${
@@ -2322,10 +2460,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                     <div className="text-[11px] text-[#737373] mt-1">
                       {currentPlan === 'free'
-                        ? '$0 USD / month · Standard access'
+                        ? `$${PRICING_PLANS.free.monthlyPriceUsd} USD / month · ${PRICING_PLANS.free.monthlyCredits.toLocaleString()} credits · 0-credit BYOK`
                         : currentPlan === 'plus'
-                        ? '$20 USD / month · Full reasoning & studios'
-                        : '$200 USD / month · Sovereign execution & priority compute'}
+                        ? `$${PRICING_PLANS.plus.monthlyPriceUsd} USD / month · ${PRICING_PLANS.plus.monthlyCredits.toLocaleString()} credits · All 5 Studios`
+                        : `$${PRICING_PLANS.ultimate.monthlyPriceUsd} USD / month · ${PRICING_PLANS.ultimate.monthlyCredits.toLocaleString()} credits · 4K Cinema & Priority`}
                     </div>
                   </div>
 
@@ -2460,7 +2598,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="flex items-center justify-between pb-3 border-b border-[#2a2a2a]">
               <div>
                 <h3 className="text-sm font-bold text-white">Memory Manager</h3>
-                <p className="text-[11px] text-[#8e8e8e]">Things ChatGPT has remembered about you</p>
+                <p className="text-[11px] text-[#8e8e8e]">Things RaOne AI has remembered about you</p>
               </div>
               <button
                 onClick={() => setIsMemoryManagerOpen(false)}

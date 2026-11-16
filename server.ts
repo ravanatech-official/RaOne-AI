@@ -54,11 +54,30 @@ import {
   getTenantCreditBalance,
   reserveCredits,
   refundCredits,
+  checkAndConsumeDailyFreeQuota,
+  recordWebhookEventIdempotent,
   exportAllTenantData,
   purgeAllTenantData,
   PLAN_ALLOWANCES,
   type PlanState,
 } from './server_tenant_store.ts';
+import {
+  PRICING_PLANS,
+  TOPUP_PACKS,
+  CREDIT_COSTS,
+  FREE_TIER_DAILY_LIMITS,
+  computeEffectiveCreditCost,
+  type PlanId,
+} from './src/lib/pricingCatalog.ts';
+import {
+  callOpenRouterChat,
+  isBillingOrQuotaFailure,
+  generateMultiProviderImage,
+  generateMultiProviderMusic,
+  generateMultiProviderVideo,
+  generateMultiProviderSpeech,
+  getServerMediaEnvKeys,
+} from './server_media_providers.ts';
 import {
   normalizeStudioMode,
   decomposeHtmlIntoFiles,
@@ -578,6 +597,11 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const XAI_API_KEY = process.env.XAI_API_KEY || '';
 const COMET_API_KEY = process.env.COMET_API_KEY || '';
 const COMET_API_BASE_URL = process.env.COMET_API_BASE_URL || 'https://api.cometapi.com/v1';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const FAL_API_KEY = process.env.FAL_KEY || process.env.FAL_API_KEY || '';
+const HF_TOKEN = process.env.HF_TOKEN || process.env.HUGGINGFACE_API_KEY || '';
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 
 // Core RaOne AI Persona, Bilingual Fluency & Runtime Awareness are imported from ./src/lib/systemPrompts.ts (SYSTEM_PROMPT)
 
@@ -823,15 +847,20 @@ app.get('/api/health', async (req, res) => {
     brandSignature: 'RaOne AI by RavanaTec',
     activeProvider: storedLocalSettings.activeProvider || 'auto',
     selectedModel: storedLocalSettings.selectedModel || 'gemini-4-hydrogen',
-    hasApiKey: Boolean(apiKey || GROQ_API_KEY || COMET_API_KEY),
+    hasApiKey: Boolean(apiKey || GROQ_API_KEY || COMET_API_KEY || OPENROUTER_API_KEY),
     providers: {
       gemini: Boolean(apiKey),
       groq: Boolean(GROQ_API_KEY),
+      openrouter: Boolean(OPENROUTER_API_KEY),
       openai: Boolean(OPENAI_API_KEY),
       anthropic: Boolean(ANTHROPIC_API_KEY),
       deepseek: Boolean(DEEPSEEK_API_KEY),
       xai: Boolean(XAI_API_KEY),
       cometapi: Boolean(COMET_API_KEY),
+      fal: Boolean(FAL_API_KEY),
+      huggingface: Boolean(HF_TOKEN),
+      cloudflareAi: Boolean(CLOUDFLARE_ACCOUNT_ID && CLOUDFLARE_API_TOKEN),
+      pollinationsFree: true,
     },
     persistence: {
       storageBackend: persistenceHealth.storageBackend,
@@ -996,25 +1025,25 @@ app.get('/api/models', (_req, res) => {
 app.get('/api/capabilities', async (_req, res) => {
   const hasGemini = Boolean(apiKey || process.env.GEMINI_API_KEY);
   const hasGroq = Boolean(GROQ_API_KEY || process.env.GROQ_API_KEY);
-  const hasTextLlm = hasGemini || hasGroq || Boolean(OPENAI_API_KEY || ANTHROPIC_API_KEY || COMET_API_KEY);
+  const hasTextLlm = hasGemini || hasGroq || Boolean(OPENROUTER_API_KEY || OPENAI_API_KEY || ANTHROPIC_API_KEY || COMET_API_KEY);
   const persistenceHealth = await getCloudPersistenceHealth(false);
 
   res.json({
     chat: { status: hasTextLlm ? 'real' : 'provider_required', streaming: true, attachments: ['pdf', 'docx', 'txt', 'md', 'csv', 'json'] },
     codeStudio: { status: hasTextLlm ? 'real' : 'template_fallback', sandboxMode: 'opaque_iframe_isolated', autoAudit: true },
     vision: {
-      generate: hasGemini ? 'real' : 'provider_required',
+      generate: 'real',
       enhancePrompt: hasTextLlm ? 'real' : 'provider_required',
-      inpaintEdit: hasGemini ? 'real' : 'provider_required',
+      inpaintEdit: hasGemini ? 'real' : 'fallback_supported',
       darkroomExport: 'real',
     },
     cinema: {
-      generate: hasGemini ? 'real' : 'provider_required',
+      generate: 'real',
       enhancePrompt: hasTextLlm ? 'real' : 'provider_required',
       ffmpegPostProcess: 'real',
     },
     audio: {
-      generate: hasGemini ? 'real' : 'provider_required',
+      generate: 'real',
       enhanceLyrics: hasTextLlm ? 'real' : 'provider_required',
       ffmpegDspMastering: 'real',
     },
@@ -1238,7 +1267,69 @@ app.post('/api/user/plan/cancel', requireVerifiedAuth, async (req, res) => {
   }
 });
 
-// Payment Webhook Receiver (HMAC-SHA256 verified against STRIPE_WEBHOOK_SECRET / BILLING_WEBHOOK_SECRET)
+app.get('/api/billing/catalog', (_req, res) => {
+  const checkoutConfigured = Boolean(
+    process.env.CHECKOUT_URL_PLUS_MONTHLY ||
+      process.env.CHECKOUT_URL_ULTIMATE_MONTHLY ||
+      process.env.POLAR_CHECKOUT_URL_PLUS ||
+      process.env.LEMONSQUEEZY_CHECKOUT_URL_PLUS
+  );
+  res.json({
+    plans: Object.values(PRICING_PLANS),
+    topUpPacks: TOPUP_PACKS,
+    creditCosts: CREDIT_COSTS,
+    freeDailyLimits: FREE_TIER_DAILY_LIMITS,
+    checkoutConfigured,
+    byokEnabled: true,
+  });
+});
+
+app.post('/api/billing/checkout', requireVerifiedAuth, async (req, res) => {
+  try {
+    const tenantId = getReqTenant(req);
+    const { plan, packId, billingCycle = 'monthly' } = req.body || {};
+
+    let rawTargetUrl = '';
+    if (packId === 'pack_1k') {
+      rawTargetUrl = process.env.CHECKOUT_URL_PACK_1K || '';
+    } else if (packId === 'pack_3500') {
+      rawTargetUrl = process.env.CHECKOUT_URL_PACK_3500 || '';
+    } else if (plan === 'plus') {
+      rawTargetUrl =
+        billingCycle === 'yearly'
+          ? process.env.CHECKOUT_URL_PLUS_YEARLY || process.env.CHECKOUT_URL_PLUS_MONTHLY || process.env.LEMONSQUEEZY_CHECKOUT_URL_PLUS || ''
+          : process.env.CHECKOUT_URL_PLUS_MONTHLY || process.env.POLAR_CHECKOUT_URL_PLUS || process.env.LEMONSQUEEZY_CHECKOUT_URL_PLUS || '';
+    } else if (plan === 'ultimate') {
+      rawTargetUrl =
+        billingCycle === 'yearly'
+          ? process.env.CHECKOUT_URL_ULTIMATE_YEARLY || process.env.CHECKOUT_URL_ULTIMATE_MONTHLY || process.env.LEMONSQUEEZY_CHECKOUT_URL_ULTIMATE || ''
+          : process.env.CHECKOUT_URL_ULTIMATE_MONTHLY || process.env.POLAR_CHECKOUT_URL_ULTIMATE || process.env.LEMONSQUEEZY_CHECKOUT_URL_ULTIMATE || '';
+    }
+
+    if (!rawTargetUrl) {
+      return sendApiError(
+        req,
+        res,
+        402,
+        'CHECKOUT_URL_NOT_CONFIGURED',
+        'Payment checkout link is not yet connected in Cloud Run env (CHECKOUT_URL_PLUS_MONTHLY / CHECKOUT_URL_ULTIMATE_MONTHLY). You can still use Free tier or BYOK keys at 0 credit cost!'
+      );
+    }
+
+    const url = new URL(rawTargetUrl);
+    url.searchParams.set('checkout[custom][tenant_id]', tenantId);
+    url.searchParams.set('metadata[tenantId]', tenantId);
+    if (req.actor?.email) {
+      url.searchParams.set('checkout[email]', req.actor.email);
+      url.searchParams.set('customer_email', req.actor.email);
+    }
+    return res.json({ success: true, checkoutUrl: url.toString() });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'CHECKOUT_ERROR', err?.message || 'Unable to start checkout.');
+  }
+});
+
+// Payment Webhook Receiver (HMAC-SHA256 verified against BILLING_WEBHOOK_SECRET / LemonSqueezy / Polar)
 app.post('/api/billing/webhook', async (req, res) => {
   try {
     const secret = process.env.BILLING_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
@@ -1251,7 +1342,12 @@ app.post('/api/billing/webhook', async (req, res) => {
         'Payment webhook verification secret is not configured on this server.'
       );
     }
-    const sig = String(req.headers['x-billing-signature'] || '');
+    const sig = String(
+      req.headers['x-billing-signature'] ||
+        req.headers['x-signature'] ||
+        req.headers['x-webhook-signature'] ||
+        ''
+    ).trim();
     const payloadString = JSON.stringify(req.body || {});
     const expected = crypto.createHmac('sha256', secret).update(payloadString).digest('hex');
     if (
@@ -1262,21 +1358,42 @@ app.post('/api/billing/webhook', async (req, res) => {
       return sendApiError(req, res, 401, 'INVALID_WEBHOOK_SIGNATURE', 'Invalid webhook signature.');
     }
 
-    const { tenantId, plan, billingCycle = 'monthly', eventId } = req.body || {};
+    const body: any = req.body || {};
+    const customData = body?.meta?.custom_data || body?.data?.metadata || {};
+    const tenantId = String(body.tenantId || customData.tenant_id || customData.tenantId || '').trim();
+    const plan = String(body.plan || customData.plan || '').trim() as PlanId;
+    const packId = String(body.packId || customData.packId || '').trim();
+    const billingCycle = body.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+    const eventId = String(body.eventId || body?.meta?.event_name || `evt_${Date.now()}`);
+
+    const isNew = await recordWebhookEventIdempotent(eventId);
+    if (!isNew) {
+      return res.json({ received: true, deduplicated: true });
+    }
+
+    if (tenantId && packId) {
+      const pack = TOPUP_PACKS.find((p) => p.id === packId);
+      if (!pack) {
+        return sendApiError(req, res, 400, 'INVALID_PACK_ID', 'Unknown top-up pack.');
+      }
+      const newBalance = await refundCredits(tenantId, pack.credits, `topup_${pack.id}`, `wh_${eventId}`);
+      return res.json({ received: true, creditsBalance: newBalance, packId: pack.id });
+    }
+
     if (!tenantId || !['free', 'plus', 'ultimate'].includes(plan)) {
-      return sendApiError(req, res, 400, 'INVALID_WEBHOOK_PAYLOAD', 'Valid tenantId and plan required.');
+      return sendApiError(req, res, 400, 'INVALID_WEBHOOK_PAYLOAD', 'Valid tenantId and plan (or packId) required.');
     }
 
     const updatedPlan: PlanState = {
       plan,
-      billingCycle: billingCycle === 'yearly' ? 'yearly' : 'monthly',
+      billingCycle,
       status: 'active',
-      monthlyAllowance: PLAN_ALLOWANCES[plan as 'free' | 'plus' | 'ultimate'],
+      monthlyAllowance: PLAN_ALLOWANCES[plan],
       updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + (billingCycle === 'yearly' ? 365 : 30) * 24 * 60 * 60 * 1000).toISOString(),
     };
     await mutateTenantCollection<PlanState>(tenantId, 'plan', updatedPlan, () => updatedPlan);
-    await refundCredits(tenantId, updatedPlan.monthlyAllowance, `plan_grant_${plan}`, `wh_${eventId || Date.now()}`);
+    await refundCredits(tenantId, updatedPlan.monthlyAllowance, `plan_grant_${plan}`, `wh_${eventId}`);
     return res.json({ received: true, plan: updatedPlan });
   } catch (err: any) {
     return sendApiError(req, res, 500, 'WEBHOOK_ERROR', err.message);
@@ -2463,6 +2580,7 @@ async function resolveStudioAiContext(req: express.Request, bodyApiKey?: string)
       deepSeekApiKey: DEEPSEEK_API_KEY,
       cometApiKey: COMET_API_KEY,
       cometApiBaseUrl: COMET_API_BASE_URL,
+      openRouterApiKey: OPENROUTER_API_KEY,
     },
   };
 }
@@ -4183,6 +4301,10 @@ app.get('/api/keys', async (req, res) => {
       deepSeekConfigured: Boolean(byok.deepSeekApiKey || DEEPSEEK_API_KEY),
       xaiConfigured: Boolean(byok.xaiApiKey || XAI_API_KEY),
       cometApiConfigured: Boolean(byok.cometApiKey || COMET_API_KEY),
+      openRouterConfigured: Boolean(byok.openRouterApiKey || OPENROUTER_API_KEY),
+      falConfigured: Boolean(byok.falApiKey || FAL_API_KEY),
+      hfConfigured: Boolean(byok.hfApiToken || HF_TOKEN),
+      cloudflareAiConfigured: Boolean((byok.cloudflareAccountId || CLOUDFLARE_ACCOUNT_ID) && (byok.cloudflareApiToken || CLOUDFLARE_API_TOKEN)),
       cometApiBaseUrl: byok.cometApiBaseUrl || COMET_API_BASE_URL || 'https://api.cometapi.com/v1',
       localLlmConfigured: Boolean(byok.localLlmBaseUrl || getManagedLlamaState().running || process.env.LOCAL_LLM_BASE_URL),
       localLlmBaseUrl: byok.localLlmBaseUrl || getManagedLlamaState().endpointUrl || process.env.LOCAL_LLM_BASE_URL || '',
@@ -4195,6 +4317,10 @@ app.get('/api/keys', async (req, res) => {
           byok.deepSeekApiKey ||
           byok.xaiApiKey ||
           byok.cometApiKey ||
+          byok.openRouterApiKey ||
+          byok.falApiKey ||
+          byok.hfApiToken ||
+          byok.cloudflareApiToken ||
           byok.localLlmBaseUrl
       ),
     });
@@ -4215,6 +4341,11 @@ app.post('/api/keys', requireVerifiedAuth, async (req, res) => {
       xaiApiKey,
       cometApiKey,
       cometApiBaseUrl,
+      openRouterApiKey,
+      falApiKey,
+      hfApiToken,
+      cloudflareAccountId,
+      cloudflareApiToken,
       localLlmBaseUrl,
       localLlmModel,
       localLlmApiKey,
@@ -4243,6 +4374,11 @@ app.post('/api/keys', requireVerifiedAuth, async (req, res) => {
       ...(xaiApiKey !== undefined ? { xaiApiKey: String(xaiApiKey).trim() } : {}),
       ...(cometApiKey !== undefined ? { cometApiKey: String(cometApiKey).trim() } : {}),
       ...(cometApiBaseUrl !== undefined ? { cometApiBaseUrl: String(cometApiBaseUrl).trim() } : {}),
+      ...(openRouterApiKey !== undefined ? { openRouterApiKey: String(openRouterApiKey).trim() } : {}),
+      ...(falApiKey !== undefined ? { falApiKey: String(falApiKey).trim() } : {}),
+      ...(hfApiToken !== undefined ? { hfApiToken: String(hfApiToken).trim() } : {}),
+      ...(cloudflareAccountId !== undefined ? { cloudflareAccountId: String(cloudflareAccountId).trim() } : {}),
+      ...(cloudflareApiToken !== undefined ? { cloudflareApiToken: String(cloudflareApiToken).trim() } : {}),
       ...(localLlmBaseUrl !== undefined ? { localLlmBaseUrl: String(localLlmBaseUrl).trim() } : {}),
       ...(localLlmModel !== undefined ? { localLlmModel: String(localLlmModel).trim() } : {}),
       ...(localLlmApiKey !== undefined ? { localLlmApiKey: String(localLlmApiKey).trim() } : {}),
@@ -4366,6 +4502,7 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
   let effectiveProvider: AIProviderMode = 'auto';
   const tenantId = getReqTenant(req);
   let activeGroqKey = GROQ_API_KEY;
+  let activeOpenRouterKey = OPENROUTER_API_KEY;
   try {
     const [storedSettings, tenantCtx] = await Promise.all([
       getStoredUserSettings(tenantId),
@@ -4379,6 +4516,7 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
     const activeCometKey = byok.cometApiKey || COMET_API_KEY;
     const activeCometBase = byok.cometApiBaseUrl || COMET_API_BASE_URL;
     activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    activeOpenRouterKey = byok.openRouterApiKey || OPENROUTER_API_KEY;
 
     const {
       messages = [],
@@ -4660,6 +4798,28 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
       });
     }
 
+    // Automatic OpenRouter free-tier fallback
+    if (!tenantClient && effectiveProvider === 'auto' && activeOpenRouterKey) {
+      const chatStart = Date.now();
+      const orOut = await callOpenRouterChat({
+        apiKey: activeOpenRouterKey,
+        messages: [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
+        systemPrompt: fullSystemInstruction,
+      });
+      return res.json({
+        text: orOut.text,
+        mode,
+        model: orOut.modelUsed,
+        source: 'openrouter',
+        verifiedModel: orOut.modelUsed,
+        modelVersion: orOut.modelUsed,
+        latencyMs: Date.now() - chatStart,
+        groundingSources: [],
+        mapsSources: [],
+        brandSignature: 'RaOne AI by RavanaTec',
+      });
+    }
+
     if (!tenantClient) {
       return sendApiError(
         req,
@@ -4789,33 +4949,57 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
     });
   } catch (error: any) {
     console.error('RaOne Chat Error:', error);
-    if (effectiveProvider === 'auto' && activeGroqKey && isGeminiFallbackEligibleError(error)) {
-      try {
-        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body || {};
-        const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
-        const chatStart = Date.now();
-        const groqOut = await callGroqChat(
-          activeGroqKey,
-          'raone-llama3-70b',
-          [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
-          sysPrompt
-        );
-        return res.json({
-          text: groqOut.text,
-          mode,
-          model: groqOut.modelUsed,
-          source: 'groq',
-          verifiedModel: groqOut.modelUsed,
-          modelVersion: groqOut.modelUsed,
-          responseId: groqOut.responseId,
-          usage: groqOut.usage,
-          latencyMs: Date.now() - chatStart,
-          groundingSources: [],
-          mapsSources: [],
-          brandSignature: 'RaOne AI by RavanaTec',
-        });
-      } catch (groqFallbackErr: any) {
-        console.error('Groq failover error:', groqFallbackErr);
+    if (effectiveProvider === 'auto' && (isGeminiFallbackEligibleError(error) || isBillingOrQuotaFailure(error))) {
+      const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body || {};
+      const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
+      const combinedMessages = [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])];
+
+      if (activeGroqKey) {
+        try {
+          const chatStart = Date.now();
+          const groqOut = await callGroqChat(activeGroqKey, 'raone-llama3-70b', combinedMessages, sysPrompt);
+          return res.json({
+            text: groqOut.text,
+            mode,
+            model: groqOut.modelUsed,
+            source: 'groq',
+            verifiedModel: groqOut.modelUsed,
+            modelVersion: groqOut.modelUsed,
+            responseId: groqOut.responseId,
+            usage: groqOut.usage,
+            latencyMs: Date.now() - chatStart,
+            groundingSources: [],
+            mapsSources: [],
+            brandSignature: 'RaOne AI by RavanaTec',
+          });
+        } catch (groqFallbackErr: any) {
+          console.error('Groq failover error:', groqFallbackErr);
+        }
+      }
+
+      if (activeOpenRouterKey) {
+        try {
+          const chatStart = Date.now();
+          const orOut = await callOpenRouterChat({
+            apiKey: activeOpenRouterKey,
+            messages: combinedMessages,
+            systemPrompt: sysPrompt,
+          });
+          return res.json({
+            text: orOut.text,
+            mode,
+            model: orOut.modelUsed,
+            source: 'openrouter',
+            verifiedModel: orOut.modelUsed,
+            modelVersion: orOut.modelUsed,
+            latencyMs: Date.now() - chatStart,
+            groundingSources: [],
+            mapsSources: [],
+            brandSignature: 'RaOne AI by RavanaTec',
+          });
+        } catch (orFallbackErr: any) {
+          console.error('OpenRouter failover error:', orFallbackErr);
+        }
       }
     }
 
@@ -4859,6 +5043,7 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
   let effectiveProvider: AIProviderMode = 'auto';
   const tenantId = getReqTenant(req);
   let activeGroqKey = GROQ_API_KEY;
+  let activeOpenRouterKey = OPENROUTER_API_KEY;
 
   try {
     const [storedSettings, tenantCtx] = await Promise.all([
@@ -4873,6 +5058,7 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
     const activeCometKey = byok.cometApiKey || COMET_API_KEY;
     const activeCometBase = byok.cometApiBaseUrl || COMET_API_BASE_URL;
     activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    activeOpenRouterKey = byok.openRouterApiKey || OPENROUTER_API_KEY;
 
     const {
       messages = [],
@@ -4983,6 +5169,27 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
       hasStartedStream = true;
       const formattedMessages = formatGroqMessages(messages, prompt, fullSystemInstruction);
       await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
+      return endStream();
+    }
+
+    if (!tenantClient && effectiveProvider === 'auto' && activeOpenRouterKey) {
+      const orOut = await callOpenRouterChat({
+        apiKey: activeOpenRouterKey,
+        messages: [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
+        systemPrompt: fullSystemInstruction,
+      });
+      hasStartedStream = true;
+      sendEvent({ type: 'start', source: 'openrouter', model: orOut.modelUsed });
+      sendEvent({ type: 'chunk', text: orOut.text });
+      sendEvent({
+        type: 'done',
+        source: 'openrouter',
+        verifiedModel: orOut.modelUsed,
+        modelVersion: orOut.modelUsed,
+        latencyMs: Date.now() - startTime,
+        groundingSources: [],
+        mapsSources: [],
+      });
       return endStream();
     }
 
@@ -5153,16 +5360,48 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
       return endStream();
     }
     console.error('RaOne Stream Chat Error:', error);
-    // Only fail over to Groq BEFORE streaming any tokens to avoid corrupting a partial message (A24)
-    if (!hasStartedStream && effectiveProvider === 'auto' && activeGroqKey && isGeminiFallbackEligibleError(error)) {
-      try {
-        const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body || {};
-        const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
-        const formattedMessages = formatGroqMessages(messages, prompt, sysPrompt);
-        await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
-        return endStream();
-      } catch (groqFallbackErr: any) {
-        console.error('Groq stream failover error:', groqFallbackErr);
+    // Only fail over BEFORE streaming any tokens to avoid corrupting a partial message (A24)
+    if (
+      !hasStartedStream &&
+      effectiveProvider === 'auto' &&
+      (isGeminiFallbackEligibleError(error) || isBillingOrQuotaFailure(error))
+    ) {
+      const { messages = [], mode = 'think', prompt = '', context = '', isTemporary = false } = req.body || {};
+      const sysPrompt = buildRaOneSystemPrompt({ mode, isTemporary, context });
+
+      if (activeGroqKey) {
+        try {
+          const formattedMessages = formatGroqMessages(messages, prompt, sysPrompt);
+          await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
+          return endStream();
+        } catch (groqFallbackErr: any) {
+          console.error('Groq stream failover error:', groqFallbackErr);
+        }
+      }
+
+      if (activeOpenRouterKey) {
+        try {
+          const orOut = await callOpenRouterChat({
+            apiKey: activeOpenRouterKey,
+            messages: [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
+            systemPrompt: sysPrompt,
+          });
+          hasStartedStream = true;
+          sendEvent({ type: 'start', source: 'openrouter', model: orOut.modelUsed });
+          sendEvent({ type: 'chunk', text: orOut.text });
+          sendEvent({
+            type: 'done',
+            source: 'openrouter',
+            verifiedModel: orOut.modelUsed,
+            modelVersion: orOut.modelUsed,
+            latencyMs: Date.now() - startTime,
+            groundingSources: [],
+            mapsSources: [],
+          });
+          return endStream();
+        } catch (orFallbackErr: any) {
+          console.error('OpenRouter stream failover error:', orFallbackErr);
+        }
       }
     }
 
@@ -5175,18 +5414,26 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
   }
 });
 
-// 2. High-Quality Image Generation & Editing (Requires configured Gemini key - no silent logo fallback)
+// 2. High-Quality Image Generation & Editing (Multi-provider fallback when Gemini Billing/Key is unavailable)
 app.post('/api/ai/image', apiHeavyAiLimiter, async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
     const { prompt, aspectRatio = '1:1', imageSize = '1K', base64Image = null } = req.body || {};
     if (!prompt) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for image generation.');
     }
 
-    const { client: tenantClient } = await getTenantGeminiClient(req);
-    if (!tenantClient) {
-      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini API key is not configured for image generation.');
-    }
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
+
+    const resTier: VisionResolutionTier =
+      tenantPlan.plan === 'free' && !byok.geminiApiKey && !byok.falApiKey
+        ? '1K'
+        : imageSize === '4K' || imageSize === '2K'
+        ? imageSize
+        : '1K';
 
     const parts: any[] = [];
     if (base64Image) {
@@ -5201,31 +5448,47 @@ app.post('/api/ai/image', apiHeavyAiLimiter, async (req, res) => {
       parts.push({ text: prompt });
     }
 
-    const response = await tenantClient.models.generateContent({
-      model: 'gemini-nano-banana-2.1',
-      contents: { parts },
-      config: {
-        imageConfig: {
-          aspectRatio: aspectRatio as any,
-          imageSize: imageSize as any,
-        },
-      },
+    const imgResult = await generateMultiProviderImage({
+      prompt: String(prompt),
+      aspectRatio: String(aspectRatio),
+      resolution: resTier,
+      plan: tenantPlan.plan,
+      byok,
+      geminiAttempt: tenantClient
+        ? async () => {
+            const response = await tenantClient.models.generateContent({
+              model: 'gemini-nano-banana-2.1',
+              contents: { parts },
+              config: {
+                imageConfig: {
+                  aspectRatio: aspectRatio as any,
+                  imageSize: resTier as any,
+                },
+              },
+            });
+            for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+              if (part.inlineData?.data) {
+                return {
+                  base64Data: part.inlineData.data,
+                  mimeType: part.inlineData.mimeType ?? 'image/png',
+                  engineModelUsed: 'gemini-nano-banana-2.1',
+                };
+              }
+            }
+            throw new Error('Upstream Gemini image model returned empty output.');
+          }
+        : undefined,
     });
 
-    let imageUrl = '';
-    for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-      if (part.inlineData?.data) {
-        const mime = part.inlineData.mimeType ?? 'image/png';
-        imageUrl = `data:${mime};base64,${part.inlineData.data}`;
-        break;
-      }
-    }
-
-    if (!imageUrl) {
-      return sendApiError(req, res, 502, 'IMAGE_GENERATION_EMPTY', 'Upstream image model returned no image output.');
-    }
-
-    return res.json({ imageUrl, prompt, aspectRatio, imageSize });
+    const imageUrl = `data:${imgResult.mimeType};base64,${imgResult.base64Data}`;
+    return res.json({
+      imageUrl,
+      prompt,
+      aspectRatio,
+      imageSize: resTier,
+      providerUsed: imgResult.providerUsed,
+      engineModelUsed: imgResult.engineModelUsed,
+    });
   } catch (error: any) {
     console.error('Image API error:', error);
     return sendApiError(req, res, 503, 'IMAGE_PROVIDER_UNAVAILABLE', error?.message || 'Image generation failed.');
@@ -5475,36 +5738,57 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for image generation.');
   }
 
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(
-      req,
-      res,
-      503,
-      'VISION_PROVIDER_UNAVAILABLE',
-      'Image synthesis requires an active Gemini API key configured on the backend or in your personal settings.'
-    );
+  const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
+
+  const userHasImageByok = Boolean(
+    byok.geminiApiKey || byok.falApiKey || byok.hfApiToken || byok.cloudflareApiToken
+  );
+
+  // Free-tier cost guard: clamp 2K/4K to 1K unless Plus/Ultimate/BYOK, and enforce daily free cap
+  const requestedTier: VisionResolutionTier =
+    resolution === '4K' || resolution === '2K' ? resolution : '1K';
+  const resTier: VisionResolutionTier =
+    tenantPlan.plan === 'free' && !userHasImageByok ? '1K' : requestedTier;
+
+  if (tenantPlan.plan === 'free' && !userHasImageByok) {
+    const quota = await checkAndConsumeDailyFreeQuota(tenantId, 'vision', FREE_TIER_DAILY_LIMITS.vision);
+    if (!quota.allowed) {
+      return sendApiError(
+        req,
+        res,
+        429,
+        'FREE_DAILY_QUOTA_REACHED',
+        `Free tier daily image limit (${quota.limit}/day) reached. Upgrade to Plus ($12/mo) or add a free BYOK key in Settings.`
+      );
+    }
   }
 
-  const resTier: VisionResolutionTier =
-    resolution === '4K' || resolution === '2K' ? resolution : '1K';
-  const numToGenerate = Math.min(Math.max(1, Number(count) || 1), 4);
-  const tierMultiplier = resTier === '4K' ? 4 : resTier === '2K' ? 3 : 2;
-  const creditCost = numToGenerate * tierMultiplier;
-  const reservation = await reserveCredits(
-    tenantId,
-    creditCost,
-    'vision_generate',
-    req.requestId || `vis_${Date.now()}`
-  );
-  if (!reservation.ok) {
-    return sendApiError(
-      req,
-      res,
-      402,
-      'INSUFFICIENT_CREDITS',
-      `Insufficient credits for image generation (required: ${creditCost}, remaining: ${reservation.balance}).`
+  const numToGenerate = Math.min(Math.max(1, Number(count) || 1), tenantPlan.plan === 'free' && !userHasImageByok ? 1 : 4);
+  const perImageBaseCost =
+    resTier === '4K' ? CREDIT_COSTS.vision4K : resTier === '2K' ? CREDIT_COSTS.vision2K : CREDIT_COSTS.vision1K;
+  const creditCost = computeEffectiveCreditCost(numToGenerate * perImageBaseCost, userHasImageByok);
+
+  let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
+  if (creditCost > 0) {
+    const reservation = await reserveCredits(
+      tenantId,
+      creditCost,
+      'vision_generate',
+      req.requestId || `vis_${Date.now()}`
     );
+    if (!reservation.ok) {
+      return sendApiError(
+        req,
+        res,
+        402,
+        'INSUFFICIENT_CREDITS',
+        `Insufficient credits for image generation (required: ${creditCost}, remaining: ${reservation.balance}).`
+      );
+    }
+    remainingBalance = reservation.balance;
   }
 
   try {
@@ -5554,14 +5838,26 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
         },
       ];
 
-      const callResult = await runGeminiImageContentCall({
-        client: tenantClient,
-        engineModel,
-        parts,
+      const callResult = await generateMultiProviderImage({
+        prompt: compiledPrompt,
+        negativePrompt: String(negativePrompt || ''),
         aspectRatio: String(aspectRatio),
         resolution: resTier,
         seed: currentSeed,
-        googleSearchGrounding: Boolean(googleSearchGrounding),
+        plan: tenantPlan.plan,
+        byok,
+        geminiAttempt: tenantClient
+          ? () =>
+              runGeminiImageContentCall({
+                client: tenantClient,
+                engineModel,
+                parts,
+                aspectRatio: String(aspectRatio),
+                resolution: resTier,
+                seed: currentSeed,
+                googleSearchGrounding: Boolean(googleSearchGrounding),
+              })
+          : undefined,
       });
 
       const id = `gen-${Date.now()}-${Math.random().toString(36).substring(2, 7)}-${i}`;
@@ -5620,10 +5916,12 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
       success: true,
       items: generatedItems,
       totalCount: updated.length,
-      creditsBalance: reservation.balance,
+      creditsBalance: remainingBalance,
     });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'vision_generate_failed', req.requestId || `vis_err_${Date.now()}`);
+    if (creditCost > 0) {
+      await refundCredits(tenantId, creditCost, 'vision_generate_failed', req.requestId || `vis_err_${Date.now()}`);
+    }
     console.error('Vision Generation Error:', err);
     return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', err?.message || 'Image synthesis failed. Credits refunded.');
   }
@@ -5657,22 +5955,49 @@ app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 400, 'SOURCE_IMAGE_REQUIRED', 'A base generated or uploaded image is required for editing.');
   }
 
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', 'Image editing requires an active Gemini API key.');
-  }
+  const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
+
+  const userHasImageByok = Boolean(
+    byok.geminiApiKey || byok.falApiKey || byok.hfApiToken || byok.cloudflareApiToken
+  );
 
   const baseInline = await resolveImageInputToInlinePart(tenantId, String(sourceImage));
   if (!baseInline) {
     return sendApiError(req, res, 400, 'INVALID_SOURCE_IMAGE', 'Could not decode source image. Upload a valid PNG, JPEG, or WebP.');
   }
 
-  const resTier: VisionResolutionTier =
+  const requestedTier: VisionResolutionTier =
     resolution === '4K' || resolution === '2K' ? resolution : '1K';
-  const creditCost = resTier === '4K' ? 4 : resTier === '2K' ? 3 : 2;
-  const reservation = await reserveCredits(tenantId, creditCost, 'vision_edit', req.requestId || `vised_${Date.now()}`);
-  if (!reservation.ok) {
-    return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for image editing (required: ${creditCost}, remaining: ${reservation.balance}).`);
+  const resTier: VisionResolutionTier =
+    tenantPlan.plan === 'free' && !userHasImageByok ? '1K' : requestedTier;
+
+  if (tenantPlan.plan === 'free' && !userHasImageByok) {
+    const quota = await checkAndConsumeDailyFreeQuota(tenantId, 'vision', FREE_TIER_DAILY_LIMITS.vision);
+    if (!quota.allowed) {
+      return sendApiError(
+        req,
+        res,
+        429,
+        'FREE_DAILY_QUOTA_REACHED',
+        `Free tier daily image limit (${quota.limit}/day) reached. Upgrade to Plus ($12/mo) or add a free BYOK key in Settings.`
+      );
+    }
+  }
+
+  const baseCost =
+    resTier === '4K' ? CREDIT_COSTS.vision4K : resTier === '2K' ? CREDIT_COSTS.vision2K : CREDIT_COSTS.visionEdit;
+  const creditCost = computeEffectiveCreditCost(baseCost, userHasImageByok);
+
+  let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
+  if (creditCost > 0) {
+    const reservation = await reserveCredits(tenantId, creditCost, 'vision_edit', req.requestId || `vised_${Date.now()}`);
+    if (!reservation.ok) {
+      return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for image editing (required: ${creditCost}, remaining: ${reservation.balance}).`);
+    }
+    remainingBalance = reservation.balance;
   }
 
   try {
@@ -5714,13 +6039,25 @@ app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
 
     parts.push({ text: compiledPrompt });
 
-    const callResult = await runGeminiImageContentCall({
-      client: tenantClient,
-      engineModel: 'gemini-nano-banana-2.1',
-      parts,
+    const callResult = await generateMultiProviderImage({
+      prompt: compiledPrompt,
+      negativePrompt: String(negativePrompt || ''),
       aspectRatio: String(aspectRatio),
       resolution: resTier,
       seed: Number(seed),
+      plan: tenantPlan.plan,
+      byok,
+      geminiAttempt: tenantClient
+        ? () =>
+            runGeminiImageContentCall({
+              client: tenantClient,
+              engineModel: 'gemini-nano-banana-2.1',
+              parts,
+              aspectRatio: String(aspectRatio),
+              resolution: resTier,
+              seed: Number(seed),
+            })
+        : undefined,
     });
 
     const id = `edit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -5767,10 +6104,12 @@ app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
     return res.json({
       success: true,
       item: editedRecord,
-      creditsBalance: reservation.balance,
+      creditsBalance: remainingBalance,
     });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'vision_edit_failed', req.requestId || `vised_err_${Date.now()}`);
+    if (creditCost > 0) {
+      await refundCredits(tenantId, creditCost, 'vision_edit_failed', req.requestId || `vised_err_${Date.now()}`);
+    }
     console.error('Vision Edit Error:', err);
     return sendApiError(req, res, 503, 'VISION_EDIT_FAILED', err?.message || 'Image edit failed. Credits refunded.');
   }
@@ -5780,10 +6119,14 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
   const tenantId = getReqTenant(req);
   const { id, targetResolution = '4K', sourceImage } = req.body || {};
 
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', '4K AI Upscaling requires an active Gemini API key.');
-  }
+  const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
+
+  const userHasImageByok = Boolean(
+    byok.geminiApiKey || byok.falApiKey || byok.hfApiToken || byok.cloudflareApiToken
+  );
 
   const list = await readTenantCollection<any[]>(tenantId, 'vision_images', []);
   const targetItem = id ? list.find((item) => item.id === id) : null;
@@ -5797,11 +6140,29 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 400, 'INVALID_SOURCE_IMAGE', 'Could not read image asset for upscaling.');
   }
 
-  const resTier: VisionResolutionTier = targetResolution === '2K' ? '2K' : '4K';
-  const creditCost = resTier === '4K' ? 4 : 3;
-  const reservation = await reserveCredits(tenantId, creditCost, 'vision_upscale', req.requestId || `visup_${Date.now()}`);
-  if (!reservation.ok) {
-    return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for ${resTier} upscale.`);
+  const requestedTier: VisionResolutionTier = targetResolution === '2K' ? '2K' : '4K';
+  if (tenantPlan.plan === 'free' && !userHasImageByok && requestedTier === '4K') {
+    return sendApiError(
+      req,
+      res,
+      402,
+      'PLAN_UPGRADE_REQUIRED',
+      '4K Ultra Clarity upscaling requires Plus/Ultimate plan or your own Vision BYOK key in Settings.'
+    );
+  }
+  const resTier: VisionResolutionTier =
+    tenantPlan.plan === 'free' && !userHasImageByok ? '1K' : requestedTier;
+
+  const baseCost = resTier === '4K' ? CREDIT_COSTS.vision4K : resTier === '2K' ? CREDIT_COSTS.vision2K : CREDIT_COSTS.vision1K;
+  const creditCost = computeEffectiveCreditCost(baseCost, userHasImageByok);
+
+  let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
+  if (creditCost > 0) {
+    const reservation = await reserveCredits(tenantId, creditCost, 'vision_upscale', req.requestId || `visup_${Date.now()}`);
+    if (!reservation.ok) {
+      return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for ${resTier} upscale.`);
+    }
+    remainingBalance = reservation.balance;
   }
 
   try {
@@ -5815,13 +6176,24 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
       style: targetItem?.style || 'Cinematic Photoreal',
     });
 
-    const callResult = await runGeminiImageContentCall({
-      client: tenantClient,
-      engineModel: 'gemini-nano-banana-2.1',
-      parts: [{ inlineData: baseInline }, { text: upscalePrompt }],
+    const callResult = await generateMultiProviderImage({
+      prompt: upscalePrompt,
       aspectRatio,
       resolution: resTier,
       seed: targetItem?.seed,
+      plan: tenantPlan.plan,
+      byok,
+      geminiAttempt: tenantClient
+        ? () =>
+            runGeminiImageContentCall({
+              client: tenantClient,
+              engineModel: 'gemini-nano-banana-2.1',
+              parts: [{ inlineData: baseInline }, { text: upscalePrompt }],
+              aspectRatio,
+              resolution: resTier,
+              seed: targetItem?.seed,
+            })
+        : undefined,
     });
 
     const newId = `up-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -5868,10 +6240,12 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
     return res.json({
       success: true,
       item: upscaledRecord,
-      creditsBalance: reservation.balance,
+      creditsBalance: remainingBalance,
     });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'vision_upscale_failed', req.requestId || `visup_err_${Date.now()}`);
+    if (creditCost > 0) {
+      await refundCredits(tenantId, creditCost, 'vision_upscale_failed', req.requestId || `visup_err_${Date.now()}`);
+    }
     return sendApiError(req, res, 503, 'VISION_UPSCALE_FAILED', err?.message || 'Upscale failed. Credits refunded.');
   }
 });
@@ -6157,16 +6531,12 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for video generation.');
   }
 
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(
-      req,
-      res,
-      503,
-      'VIDEO_PROVIDER_NOT_CONFIGURED',
-      'Video synthesis requires an active Gemini API key configured on the backend or in your personal settings.'
-    );
-  }
+  const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
+
+  const userHasVideoByok = Boolean(byok.geminiApiKey || byok.falApiKey);
 
   const cfg = normalizeCinemaConfig({
     ...(cinemaConfig || {}),
@@ -6184,21 +6554,46 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
     },
   });
 
-  const creditCost = cfg.resolution === '4k' ? 12 : cfg.resolution === '1080p' ? 8 : 5;
-  const reservation = await reserveCredits(
-    tenantId,
-    creditCost,
-    'motion_generate',
-    req.requestId || `mot_${Date.now()}`
-  );
-  if (!reservation.ok) {
-    return sendApiError(
-      req,
-      res,
-      402,
-      'INSUFFICIENT_CREDITS',
-      `Insufficient credits for cinema video generation (required: ${creditCost}, remaining: ${reservation.balance}).`
+  if (tenantPlan.plan === 'free' && !userHasVideoByok) {
+    cfg.resolution = '720p';
+    const quota = await checkAndConsumeDailyFreeQuota(tenantId, 'cinema', FREE_TIER_DAILY_LIMITS.cinema);
+    if (!quota.allowed) {
+      return sendApiError(
+        req,
+        res,
+        429,
+        'FREE_DAILY_QUOTA_REACHED',
+        `Free tier daily Cinema preview limit (${quota.limit}/day) reached. Upgrade to Plus ($12/mo) or add your own fal.ai/Gemini key in Settings.`
+      );
+    }
+  }
+
+  const baseVideoCost =
+    tenantPlan.plan === 'free' && !userHasVideoByok
+      ? CREDIT_COSTS.cinemaMotionPreview
+      : cfg.resolution === '4k'
+      ? CREDIT_COSTS.cinema4K
+      : CREDIT_COSTS.cinemaStandard;
+  const creditCost = computeEffectiveCreditCost(baseVideoCost, userHasVideoByok);
+
+  let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
+  if (creditCost > 0) {
+    const reservation = await reserveCredits(
+      tenantId,
+      creditCost,
+      'motion_generate',
+      req.requestId || `mot_${Date.now()}`
     );
+    if (!reservation.ok) {
+      return sendApiError(
+        req,
+        res,
+        402,
+        'INSUFFICIENT_CREDITS',
+        `Insufficient credits for cinema video generation (required: ${creditCost}, remaining: ${reservation.balance}).`
+      );
+    }
+    remainingBalance = reservation.balance;
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-gen-'));
@@ -6227,16 +6622,29 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
     }
 
     const compiledPrompt = compileCinemaPrompt(promptBody, cfg);
-    const omniRes = await runGeminiOmniVideoGeneration({
-      client: tenantClient,
+    const videoRes = await generateMultiProviderVideo({
       compiledPrompt,
+      rawPrompt: String(prompt).trim(),
       aspectRatio: cfg.aspectRatio,
       durationSec: cfg.duration,
       resolution: cfg.resolution,
-      referenceInlineImages: inlineRefs,
+      cameraMotion: cfg.camera.trajectory,
+      plan: tenantPlan.plan,
+      byok,
+      geminiAttempt: tenantClient
+        ? () =>
+            runGeminiOmniVideoGeneration({
+              client: tenantClient,
+              compiledPrompt,
+              aspectRatio: cfg.aspectRatio,
+              durationSec: cfg.duration,
+              resolution: cfg.resolution,
+              referenceInlineImages: inlineRefs,
+            })
+        : undefined,
     });
 
-    let workingBuffer = omniRes.buffer;
+    let workingBuffer = videoRes.buffer;
 
     // Optional post-process: 60fps smooth motion interpolation if requested upfront
     if (cfg.fps === 60) {
@@ -6249,7 +6657,7 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
       }
     }
 
-    // Optional Lyria AI music/foley score muxing if user chose lyria_score or ambient_foley with prompt
+    // Optional audio score muxing (uses multi-provider music engine when Lyria is unavailable)
     let didAudioSync = false;
     if (
       (cfg.audio.audioMode === 'lyria_score' || cfg.audio.audioMode === 'ambient_foley') &&
@@ -6259,19 +6667,31 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
         const scorePrompt =
           cfg.audio.audioPrompt.trim() ||
           `${cfg.audio.musicMood} cinematic score matching: ${String(prompt).slice(0, 120)}`;
-        const lyria = await generateLyriaAudioBuffer(tenantClient, scorePrompt);
+        const scoreOut = await generateMultiProviderMusic({
+          compiledPrompt: scorePrompt,
+          bpm: 96,
+          keySignature: 'D minor',
+          durationSec: cfg.duration,
+          byok,
+          geminiAttempt: tenantClient
+            ? async () => {
+                const l = await generateLyriaAudioBuffer(tenantClient, scorePrompt);
+                return { buffer: l.buffer, mimeType: 'audio/wav', modelUsed: 'lyria-3-clip-preview' };
+              }
+            : undefined,
+        });
         const vPath = path.join(tmpDir, 'pre_audio.mp4');
-        const aPath = path.join(tmpDir, 'score.wav');
+        const aPath = path.join(tmpDir, scoreOut.mimeType.includes('mpeg') ? 'score.mp3' : 'score.wav');
         const outAudioMp4 = path.join(tmpDir, 'with_audio.mp4');
         await fs.promises.writeFile(vPath, workingBuffer);
-        await fs.promises.writeFile(aPath, lyria.buffer);
+        await fs.promises.writeFile(aPath, scoreOut.buffer);
         await muxAudioFfmpeg(vPath, aPath, outAudioMp4);
         if (fs.existsSync(outAudioMp4) && fs.statSync(outAudioMp4).size > 0) {
           workingBuffer = await fs.promises.readFile(outAudioMp4);
           didAudioSync = true;
         }
       } catch (audioErr: any) {
-        console.warn('Optional Lyria audio post-mux skipped:', audioErr?.message || audioErr);
+        console.warn('Optional audio post-mux skipped:', audioErr?.message || audioErr);
       }
     }
 
@@ -6293,13 +6713,13 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
       config: cfg,
       operationType: opType,
       version: 1,
-      interactionId: omniRes.interactionId,
+      interactionId: videoRes.interactionId,
       referenceImage: referenceImage || null,
       referenceImages: Array.isArray(referenceImages) ? referenceImages : undefined,
       endKeyframeImage: endKeyframeImage || null,
-      engineModelUsed: 'gemini-omni-1.2-flash',
+      engineModelUsed: videoRes.engineModelUsed,
       audioSynced: didAudioSync,
-      aiNotes: `Synthesized with Gemini Omni 1.2 Flash (${cfg.resolution}, ${cfg.aspectRatio}).`,
+      aiNotes: `Synthesized with ${videoRes.engineModelUsed} (${cfg.resolution}, ${cfg.aspectRatio}).`,
     });
 
     await mutateTenantCollection<any[]>(tenantId, 'motion_videos', [], (existing) => [
@@ -6311,10 +6731,12 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
       success: true,
       video: record,
       item: record,
-      creditsBalance: reservation.balance,
+      creditsBalance: remainingBalance,
     });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'motion_generate_failed', req.requestId || `mot_err_${Date.now()}`);
+    if (creditCost > 0) {
+      await refundCredits(tenantId, creditCost, 'motion_generate_failed', req.requestId || `mot_err_${Date.now()}`);
+    }
     console.error('Motion Generate Error:', err);
     return sendApiError(
       req,
@@ -7214,27 +7636,40 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 400, 'INVALID_AUDIO_REQUEST', 'Enter a music prompt or lyrics.');
   }
 
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(
-      req,
-      res,
-      503,
-      'AUDIO_PROVIDER_NOT_CONFIGURED',
-      'Gemini API key is required for Lyria 3 music generation.'
-    );
+  const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
+
+  const userHasAudioByok = Boolean(byok.geminiApiKey || byok.falApiKey || byok.hfApiToken);
+  if (tenantPlan.plan === 'free' && !userHasAudioByok) {
+    const quota = await checkAndConsumeDailyFreeQuota(tenantId, 'music', FREE_TIER_DAILY_LIMITS.music);
+    if (!quota.allowed) {
+      return sendApiError(
+        req,
+        res,
+        429,
+        'FREE_DAILY_QUOTA_REACHED',
+        `Free tier daily Music preview limit (${quota.limit}/day) reached. Upgrade to Plus ($12/mo) or add a free HuggingFace/fal.ai key in Settings.`
+      );
+    }
   }
 
-  const creditCost = 4;
-  const reservation = await reserveCredits(tenantId, creditCost, 'music_generate', req.requestId || `mus_${Date.now()}`);
-  if (!reservation.ok) {
-    return sendApiError(
-      req,
-      res,
-      402,
-      'INSUFFICIENT_CREDITS',
-      `Insufficient credits for music generation (required: ${creditCost}, remaining: ${reservation.balance}).`
-    );
+  const baseAudioCost = tenantPlan.plan === 'free' ? CREDIT_COSTS.musicPreview : CREDIT_COSTS.musicFull;
+  const creditCost = computeEffectiveCreditCost(baseAudioCost, userHasAudioByok);
+  let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
+  if (creditCost > 0) {
+    const reservation = await reserveCredits(tenantId, creditCost, 'music_generate', req.requestId || `mus_${Date.now()}`);
+    if (!reservation.ok) {
+      return sendApiError(
+        req,
+        res,
+        402,
+        'INSUFFICIENT_CREDITS',
+        `Insufficient credits for music generation (required: ${creditCost}, remaining: ${reservation.balance}).`
+      );
+    }
+    remainingBalance = reservation.balance;
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-musgen-'));
@@ -7269,27 +7704,40 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
       config: cfg,
     });
 
-    const lyria = await generateLyriaTrackBuffer(
-      tenantClient,
+    const trackAudio = await generateMultiProviderMusic({
       compiledPrompt,
-      cfg.enginePreference === 'lyria-3-clip-preview' ? 'lyria-3-clip-preview' : 'lyria-3-pro-preview'
-    );
+      bpm: cfg.bpm,
+      keySignature: cfg.keySignature,
+      durationSec: tenantPlan.plan === 'free' ? 16 : 30,
+      byok,
+      geminiAttempt:
+        tenantClient && (tenantPlan.plan !== 'free' || userHasAudioByok)
+          ? () =>
+              generateLyriaTrackBuffer(
+                tenantClient,
+                compiledPrompt,
+                cfg.enginePreference === 'lyria-3-clip-preview' ? 'lyria-3-clip-preview' : 'lyria-3-pro-preview'
+              )
+          : undefined,
+    });
 
-    let finalRawBuffer = lyria.buffer;
-    let rawExt = lyria.mimeType.includes('mpeg') || lyria.mimeType.includes('mp3') ? '.mp3' : '.wav';
+    let finalRawBuffer = trackAudio.buffer;
+    let rawExt = trackAudio.mimeType.includes('mpeg') || trackAudio.mimeType.includes('mp3') ? '.mp3' : '.wav';
 
     if (cfg.vocal.producerTagText.trim()) {
       try {
-        const tagBuf = await generateTtsProducerTagBuffer(
-          tenantClient,
-          cfg.vocal.producerTagText.trim(),
-          cfg.vocal.producerTagVoice || 'Kore'
-        );
+        const tagSpeech = await generateMultiProviderSpeech({
+          text: cfg.vocal.producerTagText.trim(),
+          voiceName: cfg.vocal.producerTagVoice || 'Kore',
+          geminiClient: tenantClient,
+          byok,
+          fallbackGroqKey: GROQ_API_KEY,
+        });
         const trackTmp = path.join(tmpDir, `base${rawExt}`);
-        const tagTmp = path.join(tmpDir, 'tag.wav');
+        const tagTmp = path.join(tmpDir, tagSpeech.mimeType.includes('mpeg') ? 'tag.mp3' : 'tag.wav');
         const mixedTmp = path.join(tmpDir, 'mixed.wav');
         await fs.promises.writeFile(trackTmp, finalRawBuffer);
-        await fs.promises.writeFile(tagTmp, tagBuf);
+        await fs.promises.writeFile(tagTmp, tagSpeech.buffer);
         await mixProducerTagIntoTrackFfmpeg(trackTmp, tagTmp, mixedTmp, 'wav');
         finalRawBuffer = await fs.promises.readFile(mixedTmp);
         rawExt = '.wav';
@@ -7309,19 +7757,21 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
       prompt: String(prompt || safeTitle),
       compiledPrompt,
       enhancedFrom: enhancedFrom || undefined,
-      lyrics: String(lyrics || lyria.lyrics || '').trim() || undefined,
+      lyrics: String(lyrics || trackAudio.lyrics || '').trim() || undefined,
       styleTags: tags,
       config: cfg,
       operationType: 'generate',
       version: 1,
-      engineModelUsed: lyria.modelUsed,
-      aiNotes: `Synthesized with ${lyria.modelUsed} (${cfg.bpm} BPM · ${cfg.keySignature})`,
+      engineModelUsed: trackAudio.modelUsed,
+      aiNotes: `Synthesized with ${trackAudio.modelUsed} via ${trackAudio.providerUsed} (${cfg.bpm} BPM · ${cfg.keySignature})`,
     });
 
     await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [record, ...existing]);
-    return res.json({ success: true, track: record, item: record, creditsBalance: reservation.balance });
+    return res.json({ success: true, track: record, item: record, creditsBalance: remainingBalance });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'music_generate_failed', req.requestId || `mus_err_${Date.now()}`);
+    if (creditCost > 0) {
+      await refundCredits(tenantId, creditCost, 'music_generate_failed', req.requestId || `mus_err_${Date.now()}`);
+    }
     console.error('Music Generate Error:', err);
     return sendApiError(
       req,
@@ -8344,9 +8794,6 @@ app.post('/api/documents/audio-overview', apiHeavyAiLimiter, async (req, res) =>
     if (!doc) return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', 'Document not found.');
 
     const { client: tenantClient, byok } = await getTenantGeminiClient(req);
-    if (!tenantClient) {
-      return sendApiError(req, res, 503, 'TTS_PROVIDER_UNAVAILABLE', 'Gemini API key is required for Podcast Audio Overview.');
-    }
 
     const pod = await generateDocumentPodcastAudio({
       tenantId,

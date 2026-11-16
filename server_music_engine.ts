@@ -964,8 +964,23 @@ export async function generateMusicCoverArtBuffer(
         }
       }
     } catch (err: any) {
-      console.warn('Music cover art generation fallback to SVG:', err?.message || err);
+      console.warn('Music cover art Gemini fallback triggered:', err?.message || err);
     }
+  }
+  try {
+    const { generateMultiProviderImage } = await import('./server_media_providers.ts');
+    const art = await generateMultiProviderImage({
+      prompt: `Minimalist album cover artwork for "${title}", ${genre}, ${mood}, editorial vinyl design, no text`,
+      aspectRatio: '1:1',
+      resolution: '1K',
+      seed,
+      plan: 'free',
+    });
+    if (art.providerUsed !== 'procedural' && art.base64Data) {
+      return { buffer: Buffer.from(art.base64Data, 'base64'), ext: 'jpg' };
+    }
+  } catch {
+    // fall back cleanly to procedural vector vinyl cover
   }
   return {
     buffer: buildProceduralCoverSvg(title, genre, seed),

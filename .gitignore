@@ -6,8 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
-
-/data/
-*_data.json
 .aistudio/
-public/assets/aistudio/
+.firebase/
+data/
+public/assets/aistudio/Paste_*
+public/assets/aistudio/image_*

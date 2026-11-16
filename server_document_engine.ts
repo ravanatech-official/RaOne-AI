@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import type { Request, Response } from 'express';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { callGroqChat } from './server_groq_service.ts';
+import { generateMultiProviderSpeech } from './server_media_providers.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { extractTextFromUploadedBase64 } from './server_uploads.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
@@ -477,10 +478,6 @@ export async function generateDocumentPodcastAudio(params: {
   byok: ByokKeyMap;
   fallbackGroqKey?: string;
 }): Promise<{ audioUrl: string; audioFilename: string; transcript: string }> {
-  if (!params.geminiClient) {
-    throw new Error('Gemini API key is required for Studio Audio Overview generation.');
-  }
-
   let script = '';
   try {
     const scriptRes = await runTextLlmJsonOrText({
@@ -498,43 +495,27 @@ Output ONLY natural spoken narration text suitable for voice synthesis (no markd
     script = `${params.title}. ${params.summary || params.content.slice(0, 500).replace(/[#*_`]/g, '')}`;
   }
 
-  const ttsRes = await params.geminiClient.models.generateContent({
-    model: 'gemini-3.8-flash-lite-tts',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            text: script,
-            speechMetadata: { style: 'Clear warm executive podcast presenter' },
-          } as any,
-        ],
-      },
-    ],
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: params.voiceName || 'Kore' },
-        },
-      },
-    },
+  const speech = await generateMultiProviderSpeech({
+    text: script,
+    voiceName: params.voiceName || 'Kore',
+    geminiClient: params.geminiClient,
+    byok: params.byok,
+    fallbackGroqKey: params.fallbackGroqKey,
   });
 
-  const base64Audio = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) {
-    throw new Error('TTS service returned no audio bytes.');
+  if (speech.mimeType.includes('mpeg') || speech.mimeType.includes('mp3')) {
+    const saved = await saveTenantDocAssetBuffer(params.tenantId, `${params.docId}_pod`, 'mp3', speech.buffer);
+    return { audioUrl: saved.url, audioFilename: saved.filename, transcript: script };
   }
 
-  const wavBuf = Buffer.from(base64Audio, 'base64');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-docpod-'));
   try {
-    const wavPath = path.join(tmpDir, 'overview.wav');
+    const inPath = path.join(tmpDir, 'overview.wav');
     const mp3Path = path.join(tmpDir, 'overview.mp3');
-    await fs.promises.writeFile(wavPath, wavBuf);
+    await fs.promises.writeFile(inPath, speech.buffer);
     await execFileAsync(
       'ffmpeg',
-      ['-y', '-i', wavPath, '-af', 'loudnorm=I=-14:TP=-1.5', '-c:a', 'libmp3lame', '-b:a', '192k', mp3Path],
+      ['-y', '-i', inPath, '-af', 'loudnorm=I=-14:TP=-1.5', '-c:a', 'libmp3lame', '-b:a', '192k', mp3Path],
       { timeout: 45000 }
     );
     const mp3Buf = await fs.promises.readFile(mp3Path);

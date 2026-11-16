@@ -1054,5 +1054,77 @@ test('Firebase Hosting rewrite, relative /api routing, and .env.example follow C
   }
 });
 
+test('SaaS pricing catalog, daily free-tier quotas, webhook idempotency, disposable email check, and multi-provider fallbacks operate reliably', async () => {
+  const {
+    PLAN_ALLOWANCES,
+    CREDIT_COSTS,
+    PRICING_PLANS,
+    TOPUP_PACKS,
+    computeEffectiveCreditCost,
+  } = await import('../src/lib/pricingCatalog.ts');
+  const { isDisposableEmailDomain } = await import('../server_security.ts');
+  const {
+    checkAndConsumeDailyFreeQuota,
+    recordWebhookEventIdempotent,
+    purgeAllTenantData,
+  } = await import('../server_tenant_store.ts');
+  const {
+    isBillingOrQuotaFailure,
+    synthesizeProceduralMusicFfmpeg,
+  } = await import('../server_media_providers.ts');
+
+  // 1. Competitive Pricing Catalog & BYOK 0-credit guarantee
+  assert.equal(PLAN_ALLOWANCES.free, 200);
+  assert.equal(PLAN_ALLOWANCES.plus, 2500);
+  assert.equal(PLAN_ALLOWANCES.ultimate, 8000);
+  assert.equal(PRICING_PLANS.plus.monthlyPriceUsd, 12);
+  assert.equal(PRICING_PLANS.ultimate.monthlyPriceUsd, 29);
+  assert.equal(TOPUP_PACKS.length, 2);
+  assert.equal(computeEffectiveCreditCost(CREDIT_COSTS.vision1K, false), CREDIT_COSTS.vision1K);
+  assert.equal(computeEffectiveCreditCost(CREDIT_COSTS.cinemaStandard, true), 0);
+
+  // 2. Disposable email protection & SSRF new providers
+  assert.equal(isDisposableEmailDomain('abuser@mailinator.com'), true);
+  assert.equal(isDisposableEmailDomain('creator@gmail.com'), false);
+  const orCheck = await validateSafeHttpsEgress('https://openrouter.ai/api/v1');
+  assert.equal(orCheck.ok, true);
+
+  // 3. Billing / Quota 402 error classifier
+  assert.equal(
+    isBillingOrQuotaFailure(new Error('{"error":{"code":402,"message":"Your prepayment credits are depleted.","status":"RESOURCE_EXHAUSTED"}}')),
+    true
+  );
+  assert.equal(isBillingOrQuotaFailure(new Error('Syntax error in prompt')), false);
+
+  // 4. Daily Free-Tier Quota Enforcement & Webhook Idempotency
+  const quotaTenant = `test_quota_${crypto.randomUUID().slice(0, 8)}`;
+  try {
+    const q1 = await checkAndConsumeDailyFreeQuota(quotaTenant, 'vision', 2);
+    const q2 = await checkAndConsumeDailyFreeQuota(quotaTenant, 'vision', 2);
+    const q3 = await checkAndConsumeDailyFreeQuota(quotaTenant, 'vision', 2);
+    assert.equal(q1.allowed, true);
+    assert.equal(q1.used, 1);
+    assert.equal(q2.allowed, true);
+    assert.equal(q2.used, 2);
+    assert.equal(q3.allowed, false);
+    assert.equal(q3.used, 2);
+
+    const evtId = `evt_test_${crypto.randomUUID().slice(0, 8)}`;
+    assert.equal(await recordWebhookEventIdempotent(evtId), true);
+    assert.equal(await recordWebhookEventIdempotent(evtId), false);
+  } finally {
+    await purgeAllTenantData(quotaTenant);
+  }
+
+  // 5. Procedural Music Synth Fallback (runs if ffmpeg binary is installed)
+  try {
+    const mp3 = await synthesizeProceduralMusicFfmpeg({ bpm: 120, keySignature: 'Am', durationSec: 2 });
+    assert.ok(Buffer.isBuffer(mp3) && mp3.length > 500, 'Expected synthesized MP3 output from FFmpeg');
+  } catch (err: any) {
+    if (!String(err?.message || '').includes('ENOENT')) throw err;
+  }
+});
+
+
 
 

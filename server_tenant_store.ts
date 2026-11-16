@@ -5,6 +5,9 @@ import {
   getMediaStorageProvider,
   type PaginatedCollectionResult,
 } from './server_cloud_persistence.ts';
+import { PLAN_ALLOWANCES, type PlanId } from './src/lib/pricingCatalog.ts';
+
+export { PLAN_ALLOWANCES };
 
 export async function readTenantCollection<T>(
   tenantId: string,
@@ -72,6 +75,11 @@ export type ByokKeyMap = {
   xaiApiKey?: string;
   cometApiKey?: string;
   cometApiBaseUrl?: string;
+  openRouterApiKey?: string;
+  falApiKey?: string;
+  hfApiToken?: string;
+  cloudflareAccountId?: string;
+  cloudflareApiToken?: string;
   localLlmBaseUrl?: string;
   localLlmModel?: string;
   localLlmApiKey?: string;
@@ -88,6 +96,11 @@ export async function getTenantByokKeys(tenantId: string): Promise<ByokKeyMap> {
     xaiApiKey: stored.xaiApiKey ? decryptSecret(stored.xaiApiKey) : undefined,
     cometApiKey: stored.cometApiKey ? decryptSecret(stored.cometApiKey) : undefined,
     cometApiBaseUrl: stored.cometApiBaseUrl || undefined,
+    openRouterApiKey: stored.openRouterApiKey ? decryptSecret(stored.openRouterApiKey) : undefined,
+    falApiKey: stored.falApiKey ? decryptSecret(stored.falApiKey) : undefined,
+    hfApiToken: stored.hfApiToken ? decryptSecret(stored.hfApiToken) : undefined,
+    cloudflareAccountId: stored.cloudflareAccountId || undefined,
+    cloudflareApiToken: stored.cloudflareApiToken ? decryptSecret(stored.cloudflareApiToken) : undefined,
     localLlmBaseUrl: stored.localLlmBaseUrl || undefined,
     localLlmModel: stored.localLlmModel || undefined,
     localLlmApiKey: stored.localLlmApiKey ? decryptSecret(stored.localLlmApiKey) : undefined,
@@ -105,6 +118,10 @@ export async function saveTenantByokKeys(tenantId: string, updates: ByokKeyMap):
       'deepSeekApiKey',
       'xaiApiKey',
       'cometApiKey',
+      'openRouterApiKey',
+      'falApiKey',
+      'hfApiToken',
+      'cloudflareApiToken',
       'localLlmApiKey',
     ] as const;
 
@@ -121,6 +138,9 @@ export async function saveTenantByokKeys(tenantId: string, updates: ByokKeyMap):
     if (updates.cometApiBaseUrl !== undefined) {
       next.cometApiBaseUrl = updates.cometApiBaseUrl.trim();
     }
+    if (updates.cloudflareAccountId !== undefined) {
+      next.cloudflareAccountId = updates.cloudflareAccountId.trim();
+    }
     if (updates.localLlmBaseUrl !== undefined) {
       next.localLlmBaseUrl = updates.localLlmBaseUrl.trim();
     }
@@ -135,7 +155,7 @@ export async function saveTenantByokKeys(tenantId: string, updates: ByokKeyMap):
 // Immutable Credit Ledger & Entitlements (A09 & Section 11 Billing)
 // =========================================================================
 export interface PlanState {
-  plan: 'free' | 'plus' | 'ultimate';
+  plan: PlanId;
   billingCycle: 'monthly' | 'yearly';
   status: 'active' | 'past_due' | 'canceled';
   monthlyAllowance: number;
@@ -151,12 +171,6 @@ export interface CreditLedgerEntry {
   referenceId: string;
   createdAt: string;
 }
-
-export const PLAN_ALLOWANCES: Record<'free' | 'plus' | 'ultimate', number> = {
-  free: 200,
-  plus: 2500,
-  ultimate: 12000,
-};
 
 export async function getTenantPlan(tenantId: string): Promise<PlanState> {
   return readTenantCollection<PlanState>(tenantId, 'plan', {
@@ -274,6 +288,61 @@ export async function refundCredits(
       return entries.reduce((s, e) => s + e.amount, 0);
     }
   );
+}
+
+export async function checkAndConsumeDailyFreeQuota(
+  tenantId: string,
+  category: 'vision' | 'music' | 'cinema' | 'documentAudio',
+  dailyLimit: number
+): Promise<{ allowed: boolean; used: number; limit: number }> {
+  const today = new Date().toISOString().slice(0, 10);
+  let allowed = false;
+  let used = 0;
+
+  await mutateTenantCollection<Record<string, Record<string, number>>>(
+    tenantId,
+    'daily_quotas',
+    {},
+    (current) => {
+      const todayMap = { ...(current[today] || {}) };
+      const currCount = Number(todayMap[category] || 0);
+      if (currCount >= dailyLimit) {
+        allowed = false;
+        used = currCount;
+        return current;
+      }
+      allowed = true;
+      used = currCount + 1;
+      todayMap[category] = used;
+      // Keep only the latest 7 UTC days to keep document tiny
+      const pruned: Record<string, Record<string, number>> = { [today]: todayMap };
+      for (const k of Object.keys(current).sort().slice(-6)) {
+        if (k !== today) pruned[k] = current[k];
+      }
+      return pruned;
+    }
+  );
+
+  return { allowed, used, limit: dailyLimit };
+}
+
+export async function recordWebhookEventIdempotent(eventId: string): Promise<boolean> {
+  const cleanId = String(eventId || '').trim();
+  if (!cleanId) return true;
+  let isNew = false;
+  await mutateSharedCollection<Array<{ id: string; processedAt: string }>>(
+    'billing_webhook_events',
+    [],
+    (current) => {
+      if (current.some((e) => e.id === cleanId)) {
+        isNew = false;
+        return current;
+      }
+      isNew = true;
+      return [{ id: cleanId, processedAt: new Date().toISOString() }, ...current].slice(0, 500);
+    }
+  );
+  return isNew;
 }
 
 // =========================================================================

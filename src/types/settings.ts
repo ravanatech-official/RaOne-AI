@@ -155,6 +155,10 @@ export interface UniversalDiagnosticsSnapshot {
   providers: {
     geminiReady: boolean;
     groqReady: boolean;
+    openRouterReady?: boolean;
+    falReady?: boolean;
+    hfReady?: boolean;
+    cloudflareAiReady?: boolean;
     openAiReady: boolean;
     anthropicReady: boolean;
     deepSeekReady: boolean;

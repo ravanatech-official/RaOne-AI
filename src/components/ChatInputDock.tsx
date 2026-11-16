@@ -410,7 +410,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
               ? 'Ask anything privately (Temporary Chat)...'
               : isSearchActive
               ? 'Search the web in real time with RaOne...'
-              : 'Ask ChatGPT'
+              : 'Ask RaOne AI...'
           }
           className="w-full bg-transparent text-[#ECECEC] placeholder-[#8E8E8E] text-[15px] focus:outline-none resize-none px-1 py-1 max-h-40 leading-normal font-normal"
         />

@@ -431,7 +431,46 @@ const DEFAULT_ALLOWED_EGRESS_HOSTS = new Set<string>([
   'api.anthropic.com',
   'api.deepseek.com',
   'api.x.ai',
+  'openrouter.ai',
+  'api.cloudflare.com',
+  'image.pollinations.ai',
+  'gen.pollinations.ai',
+  'api-inference.huggingface.co',
+  'router.huggingface.co',
+  'fal.run',
+  'queue.fal.run',
+  'api.runware.ai',
+  'api.lemonsqueezy.com',
+  'api.polar.sh',
+  'sandbox.payhere.lk',
+  'www.payhere.lk',
 ]);
+
+const DISPOSABLE_EMAIL_DOMAINS = new Set<string>([
+  '10minutemail.com',
+  '10minutemail.net',
+  'guerrillamail.com',
+  'guerrillamailblock.com',
+  'mailinator.com',
+  'tempmail.com',
+  'temp-mail.org',
+  'throwawaymail.com',
+  'yopmail.com',
+  'trashmail.com',
+  'sharklasers.com',
+  'dispostable.com',
+  'getnada.com',
+  'maildrop.cc',
+  'mohmal.com',
+]);
+
+export function isDisposableEmailDomain(email: string | null | undefined): boolean {
+  if (!email || typeof email !== 'string') return false;
+  const atIdx = email.lastIndexOf('@');
+  if (atIdx === -1) return false;
+  const domain = email.slice(atIdx + 1).trim().toLowerCase();
+  return DISPOSABLE_EMAIL_DOMAINS.has(domain);
+}
 
 function isPrivateOrReservedIp(ip: string): boolean {
   const normalized = ip.replace(/^::ffff:/i, '');

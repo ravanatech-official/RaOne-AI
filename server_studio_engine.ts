@@ -625,6 +625,7 @@ export interface ExecuteStudioAiOptions {
     deepSeekApiKey: string;
     cometApiKey: string;
     cometApiBaseUrl: string;
+    openRouterApiKey?: string;
   };
   onDelta?: (delta: string, accumulated: string) => void;
   onStatus?: (providerLabel: string, modelLabel: string) => void;
@@ -719,13 +720,13 @@ export async function executeStudioAiPrompt(
   opts: ExecuteStudioAiOptions
 ): Promise<ExecuteStudioAiResult | null> {
   const pref = opts.providerChoice || 'auto';
-  const order: Array<'gemini' | 'groq' | 'local' | 'openai' | 'deepseek' | 'anthropic' | 'comet'> =
+  const order: Array<'gemini' | 'groq' | 'openrouter' | 'local' | 'openai' | 'deepseek' | 'anthropic' | 'comet'> =
     pref === 'auto'
-      ? ['gemini', 'groq', 'local', 'openai', 'deepseek', 'anthropic', 'comet']
+      ? ['gemini', 'groq', 'openrouter', 'deepseek', 'local', 'openai', 'anthropic', 'comet']
       : [
-          pref,
+          pref as any,
           ...(
-            ['gemini', 'groq', 'local', 'openai', 'deepseek', 'anthropic', 'comet'] as const
+            ['gemini', 'groq', 'openrouter', 'deepseek', 'local', 'openai', 'anthropic', 'comet'] as const
           ).filter((p) => p !== pref),
         ];
 
@@ -912,6 +913,28 @@ export async function executeStudioAiPrompt(
         }
       } catch (err: any) {
         console.warn('Studio Anthropic notice:', err?.message || err);
+      }
+    }
+
+    if (provider === 'openrouter') {
+      const orKey = opts.byok.openRouterApiKey || opts.serverKeys.openRouterApiKey;
+      if (!orKey) continue;
+      try {
+        const orModel = process.env.OPENROUTER_FREE_MODEL || 'qwen/qwen3-coder:free';
+        opts.onStatus?.('OpenRouter', orModel);
+        const out = await streamOpenAiCompatibleStudio({
+          url: 'https://openrouter.ai/api/v1/chat/completions',
+          apiKey: orKey,
+          model: orModel,
+          systemInstruction: opts.systemInstruction,
+          userPromptText: opts.userPromptText,
+          onDelta: opts.onDelta,
+        });
+        if (out.text.trim().length > 80) {
+          return { rawText: out.text, providerUsed: 'openrouter', modelUsed: out.model };
+        }
+      } catch (err: any) {
+        console.warn('Studio OpenRouter notice:', err?.message || err);
       }
     }
 

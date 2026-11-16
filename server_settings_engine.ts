@@ -246,6 +246,13 @@ export async function runUniversalDiagnostics(
     providers: {
       geminiReady: Boolean(byok.geminiApiKey || process.env.GEMINI_API_KEY),
       groqReady: Boolean(byok.groqApiKey || process.env.GROQ_API_KEY),
+      openRouterReady: Boolean(byok.openRouterApiKey || process.env.OPENROUTER_API_KEY),
+      falReady: Boolean(byok.falApiKey || process.env.FAL_KEY || process.env.FAL_API_KEY),
+      hfReady: Boolean(byok.hfApiToken || process.env.HF_TOKEN || process.env.HUGGINGFACE_API_KEY),
+      cloudflareAiReady: Boolean(
+        (byok.cloudflareAccountId || process.env.CLOUDFLARE_ACCOUNT_ID) &&
+          (byok.cloudflareApiToken || process.env.CLOUDFLARE_API_TOKEN)
+      ),
       openAiReady: Boolean(byok.openAiApiKey || process.env.OPENAI_API_KEY),
       anthropicReady: Boolean(byok.anthropicApiKey || process.env.ANTHROPIC_API_KEY),
       deepSeekReady: Boolean(byok.deepSeekApiKey || process.env.DEEPSEEK_API_KEY),
