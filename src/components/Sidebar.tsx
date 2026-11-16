@@ -17,6 +17,8 @@ import {
   FolderKanban,
   Plus,
   X,
+  LogIn,
+  UserPlus,
 } from 'lucide-react';
 import { Conversation, ProjectItem } from '../types/index.ts';
 
@@ -34,7 +36,7 @@ interface SidebarProps {
   selectedModel: string;
   onSelectModel: (model: string) => void;
   currentUser?: any;
-  onOpenAuth?: () => void;
+  onOpenAuth?: (mode?: 'signin' | 'signup') => void;
   onOpenStudioHub?: (tab?: 'image' | 'music' | 'video' | 'transcribe') => void;
   searchTrigger?: number;
   onOpenShortcuts?: () => void;
@@ -490,6 +492,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
+      {/* Unauthenticated Sign In / Sign Up Card */}
+      {!currentUser && onOpenAuth && (
+        <div className="px-3 pb-2 pt-1 shrink-0 bg-[#000000]">
+          <div className="p-2.5 rounded-xl bg-[#111111] border border-[#242424] space-y-2">
+            <div className="text-[11px] text-[#9E9E9E] leading-tight">
+              Sign in or create an account to save workspaces & media in the cloud.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onOpenAuth('signin')}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border border-white/15 bg-[#1b1b1b] hover:bg-[#262626] text-xs font-medium text-white transition-colors"
+              >
+                <LogIn className="w-3.5 h-3.5 text-amber-400" />
+                <span>Sign in</span>
+              </button>
+              <button
+                onClick={() => onOpenAuth('signup')}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white hover:bg-neutral-200 text-xs font-semibold text-black transition-colors"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Sign up</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bottom Profile Bar matching exact screenshot (Targeted by CSS Selector 1) */}
       <div className="p-3 border-t border-[#1a1a1a] flex items-center justify-between shrink-0 bg-[#000000]">
         <button
@@ -497,7 +526,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           className="flex items-center gap-2.5 p-1 -ml-1 rounded-xl hover:bg-[#1a1a1a] transition-all text-left min-w-0 group"
           title="Open Settings Center"
         >
-          {/* Circular SS badge with Settings indicator icon */}
+          {/* Circular badge with Settings indicator icon */}
           <div className="relative w-8 h-8 rounded-full bg-[#2a2a2a] text-white flex items-center justify-center text-xs font-semibold shrink-0 group-hover:ring-1 group-hover:ring-white/20 transition-all">
             {currentUser?.displayName
               ? currentUser.displayName
@@ -506,7 +535,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   .join('')
                   .slice(0, 2)
                   .toUpperCase()
-              : 'SS'}
+              : currentUser?.email
+              ? currentUser.email.slice(0, 2).toUpperCase()
+              : 'GS'}
             <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#111111] border border-[#333333] flex items-center justify-center text-[#8e8e8e] group-hover:text-amber-400 group-hover:border-amber-500/40 transition-colors">
               <Settings className="w-2.5 h-2.5" />
             </div>
@@ -514,7 +545,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-medium text-white truncate max-w-[90px] group-hover:text-white transition-colors">
-                {currentUser?.displayName || 'Shanthapriya Silva'}
+                {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Guest Session'}
               </span>
               <Settings className="w-3 h-3 text-[#737373] group-hover:text-amber-400 transition-colors opacity-70 group-hover:opacity-100" />
             </div>

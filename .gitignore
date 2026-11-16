@@ -7,7 +7,7 @@ coverage/
 .env*
 !.env.example
 
-data/
+/data/
 *_data.json
 .aistudio/
 public/assets/aistudio/

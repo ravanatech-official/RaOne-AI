@@ -1,5 +1,5 @@
 import React from 'react';
-import { PanelLeft, Sparkles, Shield, EyeOff } from 'lucide-react';
+import { PanelLeft, Sparkles, Shield, EyeOff, LogIn, UserPlus, User } from 'lucide-react';
 
 interface ChatHeaderProps {
   isSidebarOpen: boolean;
@@ -19,6 +19,8 @@ interface ChatHeaderProps {
   onToggleTemporaryChat?: () => void;
   currentPlan?: 'free' | 'plus' | 'ultimate';
   onOpenUpgrade?: () => void;
+  currentUser?: any;
+  onOpenAuth?: (mode?: 'signin' | 'signup') => void;
 }
 
 export const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -29,6 +31,8 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   onToggleTemporaryChat,
   currentPlan = 'free',
   onOpenUpgrade,
+  currentUser,
+  onOpenAuth,
 }) => {
   return (
     <header className="h-14 px-4 bg-[#000000] flex items-center justify-between text-[#ECECEC] shrink-0 select-none z-30">
@@ -119,6 +123,48 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
             )}
           </div>
         </button>
+        {/* Account / Sign In & Sign Up Actions */}
+        {onOpenAuth && !currentUser && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onOpenAuth('signin')}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/15 bg-[#111111] hover:bg-[#1e1e1e] text-xs font-medium text-white transition-colors"
+              title="Sign in to your RaOne AI account"
+            >
+              <LogIn className="w-3.5 h-3.5 text-amber-400" />
+              <span>Sign in</span>
+            </button>
+            <button
+              onClick={() => onOpenAuth('signup')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-neutral-200 text-black text-xs font-semibold transition-colors shadow-sm"
+              title="Create a new RaOne AI account"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Sign up</span>
+            </button>
+          </div>
+        )}
+
+        {onOpenAuth && currentUser && (
+          <button
+            onClick={() => onOpenAuth('signin')}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 bg-[#141414] hover:bg-[#1f1f1f] text-xs font-medium text-[#ECECEC] transition-colors"
+            title={currentUser.email || 'Manage RaOne Account'}
+          >
+            {currentUser.photoURL ? (
+              <img
+                src={currentUser.photoURL}
+                alt={currentUser.displayName || 'Account'}
+                className="w-4 h-4 rounded-full object-cover"
+              />
+            ) : (
+              <User className="w-3.5 h-3.5 text-amber-400" />
+            )}
+            <span className="hidden sm:inline max-w-[110px] truncate">
+              {currentUser.displayName || currentUser.email?.split('@')[0] || 'Account'}
+            </span>
+          </button>
+        )}
       </div>
     </header>
   );

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Mail, Lock, LogIn, LogOut, Check, AlertCircle, ShieldCheck } from 'lucide-react';
 import { loginWithGoogle, loginWithEmail, signupWithEmail, logoutUser } from '../lib/firebase.ts';
 
@@ -6,15 +6,29 @@ interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentUser: any;
+  initialMode?: 'signin' | 'signup';
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, currentUser }) => {
-  const [isSignUp, setIsSignUp] = useState(false);
+export const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  currentUser,
+  initialMode = 'signin',
+}) => {
+  const [isSignUp, setIsSignUp] = useState(initialMode === 'signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setIsSignUp(initialMode === 'signup');
+      setError(null);
+      setSuccess(null);
+    }
+  }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
 

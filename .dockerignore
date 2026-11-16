@@ -7,7 +7,7 @@ dist
 *.log
 api_keys_storage.json
 
-data
+/data
 *_data.json
 .aistudio
 public/assets/aistudio

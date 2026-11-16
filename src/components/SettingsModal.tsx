@@ -72,6 +72,7 @@ interface SettingsModalProps {
   onClearAllChats?: () => void;
   onOpenPlugins?: () => void;
   onOpenLibrary?: () => void;
+  onOpenAuth?: (mode?: 'signin' | 'signup') => void;
 }
 
 type NavGroupItem = {
@@ -136,6 +137,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClearAllChats,
   onOpenPlugins,
   onOpenLibrary,
+  onOpenAuth,
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsSectionId>(initialSection);
   const [sectionSearch, setSectionSearch] = useState<string>('');
@@ -2355,10 +2357,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span className="text-[#8e8e8e]">Platform Provider</span>
                     <span className="text-amber-400 font-semibold">RaOne AI by RavanaTec</span>
                   </div>
-                  <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center justify-between text-xs pb-3 border-b border-[#262626]">
                     <span className="text-[#8e8e8e]">Encryption Architecture</span>
                     <span className="text-emerald-400">AES-256-GCM Per-Tenant Vault</span>
                   </div>
+                  {onOpenAuth && (
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      {auth?.currentUser ? (
+                        <button
+                          onClick={() => {
+                            onClose();
+                            onOpenAuth('signin');
+                          }}
+                          className="px-3.5 py-2 rounded-xl bg-[#262626] hover:bg-[#333333] border border-[#3a3a3a] text-white text-xs font-medium transition-colors"
+                        >
+                          Manage Account / Sign Out
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => {
+                              onClose();
+                              onOpenAuth('signin');
+                            }}
+                            className="px-3.5 py-2 rounded-xl bg-[#262626] hover:bg-[#333333] border border-[#3a3a3a] text-white text-xs font-medium transition-colors"
+                          >
+                            Sign In
+                          </button>
+                          <button
+                            onClick={() => {
+                              onClose();
+                              onOpenAuth('signup');
+                            }}
+                            className="px-3.5 py-2 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-semibold transition-colors"
+                          >
+                            Create Account (Sign Up)
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

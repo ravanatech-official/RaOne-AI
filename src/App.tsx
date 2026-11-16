@@ -131,6 +131,7 @@ export default function App() {
   const [shareCopied, setShareCopied] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
   const [isStudioHubOpen, setIsStudioHubOpen] = useState<boolean>(false);
   const [studioHubTab, setStudioHubTab] = useState<'image' | 'music' | 'video' | 'transcribe'>('image');
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
@@ -1049,7 +1050,10 @@ export default function App() {
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
         currentUser={currentUser}
-        onOpenAuth={() => setIsAuthModalOpen(true)}
+        onOpenAuth={(mode = 'signin') => {
+          setAuthModalMode(mode);
+          setIsAuthModalOpen(true);
+        }}
         onOpenStudioHub={(tab) => {
           if (tab) setStudioHubTab(tab);
           setIsStudioHubOpen(true);
@@ -1131,6 +1135,11 @@ export default function App() {
           onToggleTemporaryChat={handleToggleTemporaryChat}
           currentPlan={currentPlan}
           onOpenUpgrade={() => setIsUpgradeModalOpen(true)}
+          currentUser={currentUser}
+          onOpenAuth={(mode = 'signin') => {
+            setAuthModalMode(mode);
+            setIsAuthModalOpen(true);
+          }}
         />
 
         {/* Share notification toast */}
@@ -1323,6 +1332,10 @@ export default function App() {
               setOpenPluginsCustomBuilder(false);
               setIsPluginsOpen(true);
             }}
+            onOpenAuth={(mode = 'signin') => {
+              setAuthModalMode(mode);
+              setIsAuthModalOpen(true);
+            }}
           />
         )}
       </Suspense>
@@ -1358,6 +1371,7 @@ export default function App() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         currentUser={currentUser}
+        initialMode={authModalMode}
       />
 
       {/* RaOne AI Studio Hub Modal (Visual, Music, Video, Transcribe) */}
