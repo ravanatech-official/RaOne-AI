@@ -8,6 +8,6 @@ dist
 api_keys_storage.json
 .aistudio
 .firebase
-data
+/data
 public/assets/aistudio/Paste_*
 public/assets/aistudio/image_*
