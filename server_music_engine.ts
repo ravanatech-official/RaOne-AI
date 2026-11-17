@@ -805,7 +805,7 @@ Return STRICT VALID JSON with keys:
   }
 
   const localCfg = getActiveLocalEndpointConfig(params.byok || {});
-  if (localCfg) {
+  if (localCfg.baseUrl) {
     try {
       const res = await callLocalLlmChat({
         baseUrl: localCfg.baseUrl,
@@ -957,9 +957,11 @@ export async function generateMusicCoverArtBuffer(
   title: string,
   genre: string,
   mood: string,
-  seed: number
+  seed: number,
+  opts?: { plan?: PlanId; byok?: ByokKeyMap }
 ): Promise<{ buffer: Buffer; ext: 'jpg' | 'svg' }> {
-  if (client) {
+  const allowPaidGeminiCover = Boolean(client) && (opts?.plan !== 'free' || Boolean(opts?.byok?.geminiApiKey));
+  if (allowPaidGeminiCover && client) {
     try {
       const response = await client.models.generateContent({
         model: 'gemini-3.1-flash-lite-image',
@@ -989,7 +991,8 @@ export async function generateMusicCoverArtBuffer(
       aspectRatio: '1:1',
       resolution: '1K',
       seed,
-      plan: 'free',
+      plan: opts?.plan || 'free',
+      byok: opts?.byok,
     });
     if (art.providerUsed !== 'procedural' && art.base64Data) {
       return { buffer: Buffer.from(art.base64Data, 'base64'), ext: 'jpg' };
@@ -1010,6 +1013,8 @@ export async function finalizeMusicTrackRecord(params: {
   rawAudioFilePath?: string;
   rawInputExt?: string;
   coverClient?: GoogleGenAI | null;
+  plan?: PlanId;
+  byok?: ByokKeyMap;
   existingCoverUrl?: string;
   existingCoverFilename?: string;
   title: string;
@@ -1077,7 +1082,8 @@ export async function finalizeMusicTrackRecord(params: {
         params.title,
         params.styleTags[0] || params.config.primaryGenre,
         params.config.production.mood,
-        params.config.seed
+        params.config.seed,
+        { plan: params.plan, byok: params.byok }
       );
       const savedCover = await saveTenantMusicAssetBuffer(
         params.tenantId,

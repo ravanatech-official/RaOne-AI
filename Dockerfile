@@ -9,7 +9,7 @@ RUN npm ci
 
 COPY . .
 
-RUN npm run build && mkdir -p /app/data && chown -R node:node /app
+RUN npm run build && npm prune --omit=dev && mkdir -p /app/data && chown -R node:node /app
 
 ENV NODE_ENV=production
 ENV PORT=8080

@@ -14,3 +14,16 @@ tests
 *_data.json
 public/assets/aistudio/Paste_*
 public/assets/aistudio/image_*
+public/assets/aistudio/*.mp3
+public/assets/aistudio/*.mp4
+public/assets/aistudio/*.pdf
+public/assets/aistudio/*.md
+public/assets/aistudio/*.json
+public/assets/aistudio/*.html
+public/assets/aistudio/*.js
+public/assets/aistudio/*.css
+public/assets/aistudio/Cyan-gold_*
+public/assets/aistudio/Futuristic_*
+public/assets/aistudio/Geometric_*
+public/assets/aistudio/RaOne_R_Play_*
+public/assets/aistudio/raone-vision-gen-*

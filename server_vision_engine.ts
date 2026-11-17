@@ -661,7 +661,7 @@ User input: "${cleanPrompt}"`;
   }
 
   const localCfg = getActiveLocalEndpointConfig(opts.byok || {});
-  if (localCfg) {
+  if (localCfg.baseUrl) {
     try {
       const res = await callLocalLlmChat({
         baseUrl: localCfg.baseUrl,

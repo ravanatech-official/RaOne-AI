@@ -236,7 +236,7 @@ export async function runTextLlmJsonOrText(params: {
   }
 
   const localCfg = getActiveLocalEndpointConfig(params.byok || {});
-  if (localCfg) {
+  if (localCfg.baseUrl) {
     try {
       const res = await callLocalLlmChat({
         baseUrl: localCfg.baseUrl,
@@ -492,6 +492,7 @@ export async function generateDocumentPodcastAudio(params: {
   summary?: string;
   voiceName?: string;
   style?: string;
+  plan?: PlanId;
   geminiClient: GoogleGenAI | null;
   byok: ByokKeyMap;
   fallbackGroqKey?: string;
@@ -504,6 +505,7 @@ Summary: ${params.summary || ''}
 Excerpt: ${params.content.slice(0, 6000)}
 Output ONLY natural spoken narration text suitable for voice synthesis (no markdown symbols or asterisks).`,
       systemPrompt: 'Write clear, warm, natural broadcast narration without markdown syntax.',
+      plan: params.plan,
       geminiClient: params.geminiClient,
       byok: params.byok,
       fallbackGroqKey: params.fallbackGroqKey,
@@ -516,6 +518,7 @@ Output ONLY natural spoken narration text suitable for voice synthesis (no markd
   const speech = await generateMultiProviderSpeech({
     text: script,
     voiceName: params.voiceName || 'Kore',
+    plan: params.plan,
     geminiClient: params.geminiClient,
     byok: params.byok,
     fallbackGroqKey: params.fallbackGroqKey,
@@ -546,6 +549,7 @@ Output ONLY natural spoken narration text suitable for voice synthesis (no markd
 
 export async function auditDocumentQuality(params: {
   doc: DocumentItem;
+  plan?: PlanId;
   geminiClient: GoogleGenAI | null;
   byok: ByokKeyMap;
   fallbackGroqKey?: string;
@@ -605,6 +609,7 @@ Content:\n${content.slice(0, 6000)}
 
 Return JSON: { "issues": [{ "severity": "medium", "area": "...", "description": "...", "suggestedFix": "..." }], "autoFixPrompt": "Single concise edit instruction fixing the top gaps" }`,
         systemPrompt: 'Be concise, factual, and constructive. Output strict JSON.',
+        plan: params.plan,
         geminiClient: params.geminiClient,
         byok: params.byok,
         fallbackGroqKey: params.fallbackGroqKey,

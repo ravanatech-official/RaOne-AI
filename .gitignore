@@ -11,3 +11,4 @@ coverage/
 /data/
 public/assets/aistudio/Paste_*
 public/assets/aistudio/image_*
+*_data.json

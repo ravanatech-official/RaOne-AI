@@ -7,7 +7,22 @@
     "ignore": [
       "firebase.json",
       "**/.*",
-      "**/node_modules/**"
+      "**/node_modules/**",
+      "assets/aistudio/Paste_*",
+      "assets/aistudio/image_*",
+      "assets/aistudio/*.mp3",
+      "assets/aistudio/*.mp4",
+      "assets/aistudio/*.pdf",
+      "assets/aistudio/*.md",
+      "assets/aistudio/*.json",
+      "assets/aistudio/*.html",
+      "assets/aistudio/*.js",
+      "assets/aistudio/*.css",
+      "assets/aistudio/Cyan-gold_*",
+      "assets/aistudio/Futuristic_*",
+      "assets/aistudio/Geometric_*",
+      "assets/aistudio/RaOne_R_Play_*",
+      "assets/aistudio/raone-vision-gen-*"
     ],
     "headers": [
       {

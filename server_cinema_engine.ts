@@ -863,7 +863,7 @@ Return STRICT VALID JSON with keys:
   }
 
   const localCfg = getActiveLocalEndpointConfig(params.byok || {});
-  if (localCfg) {
+  if (localCfg.baseUrl) {
     try {
       const res = await callLocalLlmChat({
         baseUrl: localCfg.baseUrl,

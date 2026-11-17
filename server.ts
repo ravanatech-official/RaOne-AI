@@ -5788,43 +5788,112 @@ app.post('/api/ai/video', apiHeavyAiLimiter, async (req, res) => {
   }
 });
 
-// 5. Audio Transcription (Requires live Gemini transcription - no hardcoded transcript)
+// 5. Audio Transcription (Free-tier Groq Whisper $0 first -> Gemini 3.5 Transcribe -> failover)
 app.post('/api/ai/transcribe', apiHeavyAiLimiter, async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
     const { audioBase64, mimeType = 'audio/webm' } = req.body || {};
     if (!audioBase64) {
       return sendApiError(req, res, 400, 'INVALID_AUDIO', 'Audio data is required for transcription.');
     }
 
-    const { client: tenantClient } = await getTenantGeminiClient(req);
-    if (!tenantClient) {
-      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini API key is not configured for audio transcription.');
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
+    const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    if (!tenantClient && !activeGroqKey) {
+      return sendApiError(
+        req,
+        res,
+        503,
+        'PROVIDER_NOT_CONFIGURED',
+        'Groq or Gemini API key is required for audio transcription.'
+      );
     }
 
-    const cleanBase64 = String(audioBase64).replace(/^data:audio\/\w+;base64,/, '');
-    const response = await tenantClient.models.generateContent({
-      model: 'gemini-3.5-transcribe',
-      contents: {
-        parts: [
-          { inlineData: { mimeType, data: cleanBase64 } },
-          { text: 'Transcribe this audio verbatim in its original language (Sinhala, English, or Singlish).' },
-        ],
-      },
-      config: {
-        systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
-          provider: 'Google Gemini API',
+    const cleanBase64 = String(audioBase64).replace(/^data:audio\/[^;]+;base64,/i, '');
+    const preferFreeTranscribe = tenantPlan.plan === 'free' && !byok.geminiApiKey;
+
+    const tryGroqWhisper = async (): Promise<string | null> => {
+      if (!activeGroqKey) return null;
+      const buf = Buffer.from(cleanBase64, 'base64');
+      if (!buf.length) return null;
+      const safeMime = String(mimeType || 'audio/webm');
+      const ext = safeMime.includes('mp4') || safeMime.includes('m4a')
+        ? 'm4a'
+        : safeMime.includes('mpeg') || safeMime.includes('mp3')
+        ? 'mp3'
+        : safeMime.includes('wav')
+        ? 'wav'
+        : safeMime.includes('ogg')
+        ? 'ogg'
+        : 'webm';
+      const form = new FormData();
+      form.append('file', new Blob([buf], { type: safeMime }), `recording.${ext}`);
+      form.append('model', 'whisper-large-v3-turbo');
+      form.append('response_format', 'json');
+      const groqResp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${activeGroqKey}` },
+        body: form,
+        signal: AbortSignal.timeout(45000),
+      });
+      if (!groqResp.ok) {
+        const errBody = await groqResp.text().catch(() => '');
+        throw new Error(`Groq Whisper failed (${groqResp.status}): ${errBody.slice(0, 160)}`);
+      }
+      const data = (await groqResp.json()) as { text?: string };
+      const text = String(data?.text || '').trim();
+      return text || null;
+    };
+
+    if (preferFreeTranscribe && activeGroqKey) {
+      try {
+        const groqTranscript = await tryGroqWhisper();
+        if (groqTranscript) {
+          return res.json({ transcript: groqTranscript, providerUsed: 'groq_whisper' });
+        }
+      } catch (err: any) {
+        console.warn('Free-tier Groq Whisper fallback warning:', err?.message || err);
+      }
+    }
+
+    if (tenantClient) {
+      try {
+        const response = await tenantClient.models.generateContent({
           model: 'gemini-3.5-transcribe',
-          subsystem: 'Audio Transcription Engine',
-        }),
-      },
-    });
-
-    const transcript = (response.text || '').trim();
-    if (!transcript) {
-      return sendApiError(req, res, 502, 'TRANSCRIPTION_EMPTY', 'Upstream transcription model returned empty text.');
+          contents: {
+            parts: [
+              { inlineData: { mimeType, data: cleanBase64 } },
+              { text: 'Transcribe this audio verbatim in its original language (Sinhala, English, or Singlish).' },
+            ],
+          },
+          config: {
+            systemInstruction: appendRuntimeMetadata(SYSTEM_PROMPT, {
+              provider: 'Google Gemini API',
+              model: 'gemini-3.5-transcribe',
+              subsystem: 'Audio Transcription Engine',
+            }),
+          },
+        });
+        const transcript = (response.text || '').trim();
+        if (transcript) {
+          return res.json({ transcript, providerUsed: 'gemini' });
+        }
+      } catch (gemErr: any) {
+        console.warn('Gemini transcribe warning, trying Groq failover:', gemErr?.message || gemErr);
+      }
     }
 
-    return res.json({ transcript });
+    if (!preferFreeTranscribe && activeGroqKey) {
+      const groqTranscript = await tryGroqWhisper();
+      if (groqTranscript) {
+        return res.json({ transcript: groqTranscript, providerUsed: 'groq_whisper' });
+      }
+    }
+
+    return sendApiError(req, res, 502, 'TRANSCRIPTION_EMPTY', 'Upstream transcription model returned empty text.');
   } catch (error: any) {
     console.error('Transcription API error:', error);
     return sendApiError(req, res, 503, 'TRANSCRIPTION_PROVIDER_UNAVAILABLE', error?.message || 'Audio transcription failed.');
@@ -8007,6 +8076,8 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
       rawAudioBuffer: finalRawBuffer,
       rawInputExt: rawExt,
       coverClient: tenantClient,
+      plan: tenantPlan.plan,
+      byok,
       title: safeTitle,
       prompt: String(prompt || safeTitle),
       compiledPrompt,
@@ -8129,7 +8200,10 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
     }
 
     // 2. AI Music-to-Music Re-Imagine / Style Transfer via Gemini Audio Understanding + Lyria 3
-    const { client: tenantClient } = await getTenantGeminiClient(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     if (!tenantClient) {
       return sendApiError(req, res, 503, 'AUDIO_PROVIDER_NOT_CONFIGURED', 'Gemini API key is required for AI Music Remixing.');
     }
@@ -8163,6 +8237,8 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
         rawAudioBuffer: lyria.buffer,
         rawInputExt: rawExt,
         coverClient: tenantClient,
+        plan: tenantPlan.plan,
+        byok,
         title: `${sourceItem.title} (Remix)`,
         prompt: `${sourceItem.prompt} → Remix: ${cleanInstruction}`,
         compiledPrompt: compiledEdit,
@@ -8451,9 +8527,15 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
     return sendApiError(req, res, 404, 'TRACK_NOT_FOUND', 'Track asset not found.');
   }
 
-  const { client: tenantClient } = await getTenantGeminiClient(req);
-  if (!tenantClient) {
-    return sendApiError(req, res, 503, 'TTS_PROVIDER_UNAVAILABLE', 'Gemini API key is required for Studio Producer Tag TTS.');
+  const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
+  const hasSpeechProvider = Boolean(
+    tenantClient || byok.groqApiKey || GROQ_API_KEY || byok.openAiApiKey || OPENAI_API_KEY
+  );
+  if (!hasSpeechProvider) {
+    return sendApiError(req, res, 503, 'TTS_PROVIDER_UNAVAILABLE', 'Groq, Gemini, or OpenAI API key is required for Studio Producer Tag TTS.');
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raone-tag-'));
@@ -8464,10 +8546,18 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
     }
     const cfg = normalizeMusicConfig(sourceItem.configSnapshot);
     const outFmt = cfg.production.outputFormat === 'wav' ? 'wav' : 'mp3';
-    const tagBuf = await generateTtsProducerTagBuffer(tenantClient, String(tagText).trim(), String(voiceName));
-    const tagTmp = path.join(tmpDir, 'tag.wav');
+    const tagSpeech = await generateMultiProviderSpeech({
+      text: String(tagText).trim(),
+      voiceName: String(voiceName),
+      plan: tenantPlan.plan,
+      geminiClient: tenantClient,
+      byok,
+      fallbackGroqKey: GROQ_API_KEY,
+    });
+    const tagExt = tagSpeech.mimeType.includes('mpeg') || tagSpeech.mimeType.includes('mp3') ? 'mp3' : 'wav';
+    const tagTmp = path.join(tmpDir, `tag.${tagExt}`);
     const outTmp = path.join(tmpDir, `tagged.${outFmt}`);
-    await fs.promises.writeFile(tagTmp, tagBuf);
+    await fs.promises.writeFile(tagTmp, tagSpeech.buffer);
     await mixProducerTagIntoTrackFfmpeg(sourcePath, tagTmp, outTmp, outFmt);
 
     const newId = `trk-tag-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -8489,9 +8579,9 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
       rootId: sourceItem.rootId || sourceItem.id,
       version: Math.max(2, Number(sourceItem.version || 1) + 1),
       sourceAudioUrl: sourceItem.audioUrl,
-      engineModelUsed: `gemini-3.8-flash-lite-tts (${voiceName}) + FFmpeg Mix`,
+      engineModelUsed: `${tagSpeech.providerUsed} (${voiceName}) + FFmpeg Mix`,
       skipNormalize: true,
-      aiNotes: `Mixed TTS Producer Tag "${String(tagText).trim()}" (${voiceName}).`,
+      aiNotes: `Mixed TTS Producer Tag "${String(tagText).trim()}" (${voiceName}) via ${tagSpeech.providerUsed}.`,
     });
 
     await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [taggedRecord, ...existing]);
@@ -8794,7 +8884,7 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
-    if (!tenantClient && !activeGroqKey && !localCfg) {
+    if (!tenantClient && !activeGroqKey && !localCfg.baseUrl) {
       return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'No AI provider is configured to synthesize documents.');
     }
 
@@ -8832,23 +8922,42 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
     let audioFilename: string | undefined;
     let audioTranscript: string | undefined;
 
-    if ((includeAudioOverview ?? cfg.audio.autoGenerateOverview) && tenantClient) {
+    const wantsAudioOverview = Boolean(includeAudioOverview ?? cfg.audio.autoGenerateOverview);
+    const hasSpeechEngine = Boolean(tenantClient || activeGroqKey || byok.openAiApiKey || OPENAI_API_KEY);
+    if (wantsAudioOverview && hasSpeechEngine) {
       try {
-        const pod = await generateDocumentPodcastAudio({
-          tenantId,
-          docId,
-          title: generatedTitle,
-          content: generatedContent,
-          summary: parsed.summary,
-          voiceName: cfg.audio.voiceName,
-          style: cfg.audio.style,
-          geminiClient: tenantClient,
-          byok,
-          fallbackGroqKey: GROQ_API_KEY,
-        });
-        audioUrl = pod.audioUrl;
-        audioFilename = pod.audioFilename;
-        audioTranscript = pod.transcript;
+        const userHasSpeechByok = Boolean(byok.geminiApiKey || byok.groqApiKey || byok.openAiApiKey);
+        let audioAllowed = true;
+        if (tenantPlan.plan === 'free' && !userHasSpeechByok) {
+          if (isDisposableEmailDomain(req.actor?.email)) {
+            audioAllowed = false;
+          } else {
+            const quota = await checkAndConsumeDailyFreeQuota(
+              tenantId,
+              'documentAudio',
+              FREE_TIER_DAILY_LIMITS.documentAudio
+            );
+            audioAllowed = quota.allowed;
+          }
+        }
+        if (audioAllowed) {
+          const pod = await generateDocumentPodcastAudio({
+            tenantId,
+            docId,
+            title: generatedTitle,
+            content: generatedContent,
+            summary: parsed.summary,
+            voiceName: cfg.audio.voiceName,
+            style: cfg.audio.style,
+            plan: tenantPlan.plan,
+            geminiClient: tenantClient,
+            byok,
+            fallbackGroqKey: GROQ_API_KEY,
+          });
+          audioUrl = pod.audioUrl;
+          audioFilename = pod.audioFilename;
+          audioTranscript = pod.transcript;
+        }
       } catch (podErr: any) {
         console.warn('Doc Podcast warning:', podErr?.message || podErr);
       }
@@ -8917,7 +9026,7 @@ app.post('/api/documents/edit', apiHeavyAiLimiter, async (req, res) => {
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
-    if (!tenantClient && !activeGroqKey && !localCfg) {
+    if (!tenantClient && !activeGroqKey && !localCfg.baseUrl) {
       return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'No AI provider configured for document editing.');
     }
 
@@ -9060,7 +9169,37 @@ app.post('/api/documents/audio-overview', apiHeavyAiLimiter, async (req, res) =>
     const doc = list.find((d) => d.id === id);
     if (!doc) return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', 'Document not found.');
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
+
+    const userHasSpeechByok = Boolean(byok.geminiApiKey || byok.groqApiKey || byok.openAiApiKey);
+    if (tenantPlan.plan === 'free' && !userHasSpeechByok) {
+      if (isDisposableEmailDomain(req.actor?.email)) {
+        return sendApiError(
+          req,
+          res,
+          403,
+          'DISPOSABLE_EMAIL_BLOCKED',
+          'Disposable email addresses are not eligible for free audio briefing quotas.'
+        );
+      }
+      const quota = await checkAndConsumeDailyFreeQuota(
+        tenantId,
+        'documentAudio',
+        FREE_TIER_DAILY_LIMITS.documentAudio
+      );
+      if (!quota.allowed) {
+        return sendApiError(
+          req,
+          res,
+          429,
+          'FREE_DAILY_QUOTA_REACHED',
+          `Free tier daily Document Audio limit (${quota.limit}/day) reached. Upgrade to Plus ($12/mo) or add your own Groq/Gemini key in Settings.`
+        );
+      }
+    }
 
     const pod = await generateDocumentPodcastAudio({
       tenantId,
@@ -9070,6 +9209,7 @@ app.post('/api/documents/audio-overview', apiHeavyAiLimiter, async (req, res) =>
       summary: doc.summary,
       voiceName,
       style,
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -9105,9 +9245,13 @@ app.post('/api/documents/audit', apiHeavyAiLimiter, async (req, res) => {
     const doc = list.find((d) => d.id === id);
     if (!doc) return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', 'Document not found.');
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const audit = await auditDocumentQuality({
       doc,
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -9144,7 +9288,7 @@ app.post('/api/documents/analyze', apiHeavyAiLimiter, async (req, res) => {
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
-    if (!tenantClient && !activeGroqKey && !localCfg) {
+    if (!tenantClient && !activeGroqKey && !localCfg.baseUrl) {
       return sendApiError(req, res, 503, 'DOCUMENT_PROVIDER_UNAVAILABLE', 'No AI provider is configured to analyze the document.');
     }
 

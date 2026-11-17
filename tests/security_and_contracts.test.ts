@@ -1276,8 +1276,53 @@ test('Zero-cost free-tier routing, raw-body webhook downgrades, public Firebase 
   assert.ok(fs.existsSync(path.join(process.cwd(), '.gitattributes')));
 });
 
+test('Free-tier music cover art skips paid Gemini client, documentAudio daily quota enforces limit, and deploy ignores keep bundle lean', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { generateMusicCoverArtBuffer } = await import('../server_music_engine.ts');
+  const { FREE_TIER_DAILY_LIMITS } = await import('../src/lib/pricingCatalog.ts');
+  const { checkAndConsumeDailyFreeQuota, purgeAllTenantData } = await import('../server_tenant_store.ts');
 
+  // 1. Ensure Free plan + no Gemini BYOK NEVER triggers client.models.generateContent for album cover art
+  let geminiCoverCalled = false;
+  const mockGeminiClient: any = {
+    models: {
+      generateContent: async () => {
+        geminiCoverCalled = true;
+        throw new Error('Should not call paid Gemini for free-tier music cover');
+      },
+    },
+  };
+  const cover = await generateMusicCoverArtBuffer(mockGeminiClient, 'Lanka Synth', 'Synthwave', 'Neon', 1234, {
+    plan: 'free',
+    byok: {},
+  });
+  assert.equal(geminiCoverCalled, false, 'Free tier music cover art must skip paid Gemini image synthesis');
+  assert.ok(Buffer.isBuffer(cover.buffer) && cover.buffer.length > 100);
+  assert.ok(cover.ext === 'svg' || cover.ext === 'jpg');
 
+  // 2. Enforce FREE_TIER_DAILY_LIMITS.documentAudio (3/day)
+  assert.equal(FREE_TIER_DAILY_LIMITS.documentAudio, 3);
+  const t = `test_docaud_${crypto.randomUUID().slice(0, 8)}`;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const q = await checkAndConsumeDailyFreeQuota(t, 'documentAudio', FREE_TIER_DAILY_LIMITS.documentAudio);
+      assert.equal(q.allowed, true);
+    }
+    const q4 = await checkAndConsumeDailyFreeQuota(t, 'documentAudio', FREE_TIER_DAILY_LIMITS.documentAudio);
+    assert.equal(q4.allowed, false);
+  } finally {
+    await purgeAllTenantData(t);
+  }
 
+  // 3. Verify firebase.json hosting.ignore strips unused dev attachment bloat while Dockerfile prunes devDependencies
+  const firebaseJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase.json'), 'utf-8'));
+  const ignores: string[] = firebaseJson?.hosting?.ignore || [];
+  assert.ok(ignores.includes('assets/aistudio/Paste_*'));
+  assert.ok(ignores.includes('assets/aistudio/image_*'));
+  assert.ok(ignores.includes('assets/aistudio/*.mp4'));
 
-
+  const dockerfile = fs.readFileSync(path.join(process.cwd(), 'Dockerfile'), 'utf-8');
+  assert.ok(dockerfile.includes('npm prune --omit=dev'));
+  assert.ok(dockerfile.includes('CMD ["node", "server.ts"]'));
+});
