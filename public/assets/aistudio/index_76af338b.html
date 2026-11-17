@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ExpenseTracker Pro</title>
+    <meta name="description" content="Offline‑first dark‑mode expense dashboard with charts and CSV export." />
+    <meta property="og:title" content="ExpenseTracker Pro" />
+    <meta property="og:description" content="Track personal expenses offline with beautiful charts." />
+    <link rel="icon" href="/favicon.ico" />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Tailwind config for dark mode accent
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              primary: '#ff9800'
+            },
+            fontFamily: {
+              sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+              mono: ['"JetBrains Mono"', 'monospace']
+            }
+          }
+        }
+      };
+    </script>
+  </head>
+  <body class="bg-gray-900 text-gray-100 font-sans">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

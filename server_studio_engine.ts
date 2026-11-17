@@ -188,6 +188,11 @@ export function decomposeHtmlIntoFiles(
   const scriptBlocks: string[] = [];
 
   const cleanHtmlWithoutStylesAndScripts = rawHtml
+    // Strip dead unbundled Vite/TSX module entrypoints that 404 inside browser srcDoc iframes
+    .replace(
+      /<script\b[^>]*src\s*=\s*["'](?:\.?\/)?src\/(?:main|index)\.(?:ts|tsx|js|jsx)["'][^>]*>\s*<\/script>/gi,
+      ''
+    )
     .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_m, cssBody) => {
       if (cssBody && cssBody.trim()) styleBlocks.push(unescapeAccidentalJsonEscapes(cssBody).trim());
       return '';
@@ -196,7 +201,12 @@ export function decomposeHtmlIntoFiles(
       if (/\bsrc\s*=/i.test(attrs || '')) {
         return full;
       }
-      if (jsBody && jsBody.trim()) scriptBlocks.push(unescapeAccidentalJsonEscapes(jsBody).trim());
+      const trimmedJs = jsBody ? unescapeAccidentalJsonEscapes(jsBody).trim() : '';
+      // Keep Tailwind CDN inline config in <head> so Tailwind applies on load instead of treating it as app.js
+      if (trimmedJs && /\btailwind\.config\s*=/.test(trimmedJs) && trimmedJs.length < 1500) {
+        return `<script>\n${trimmedJs}\n</script>`;
+      }
+      if (trimmedJs) scriptBlocks.push(trimmedJs);
       return '';
     });
 
@@ -205,10 +215,12 @@ export function decomposeHtmlIntoFiles(
     (existingFiles?.['styles.css'] ? unescapeAccidentalJsonEscapes(existingFiles['styles.css']) : '') ||
     '/* Tailwind CSS CDN utilities + Studio tokens */\n:root { color-scheme: dark; }\nbody { margin: 0; }';
 
+  const existingAppJs = existingFiles?.['app.js'] ? unescapeAccidentalJsonEscapes(existingFiles['app.js']).trim() : '';
+  const rawExtractedJs = scriptBlocks.join('\n\n') || existingAppJs;
   const extractedJs =
-    scriptBlocks.join('\n\n') ||
-    (existingFiles?.['app.js'] ? unescapeAccidentalJsonEscapes(existingFiles['app.js']) : '') ||
-    '// Application interactive runtime\nconsole.log("RaOne app ready");';
+    rawExtractedJs && !/^(?:\/\/[^\n]*\n\s*)*tailwind\.config\s*=/.test(rawExtractedJs)
+      ? rawExtractedJs
+      : '// Application interactive runtime\nconsole.log("RaOne app ready");';
 
   // Ensure index.html remains clean and readable while referencing styles.css and app.js logically
   let cleanIndexHtml = cleanHtmlWithoutStylesAndScripts
@@ -312,7 +324,11 @@ export function compileFilesIntoHtmlBundle(files: Record<string, string>): strin
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script><style>${css}</style></head><body class="bg-[#0b0c10] text-white"><div id="app"></div><script>${apiRoutesJs}\n${js}</script></body></html>`;
   }
 
-  // Strip local link/script placeholders to ./styles.css and ./app.js so inline bundle is self-contained
+  // Strip unbundled Vite/TSX entry scripts and local stylesheet/script placeholders so inline bundle is self-contained
+  html = html.replace(
+    /<script\b[^>]*src\s*=\s*["'](?:\.?\/)?src\/(?:main|index)\.(?:ts|tsx|js|jsx)["'][^>]*>\s*<\/script>/gi,
+    ''
+  );
   html = html.replace(/<link[^>]*href=["'](?:\.\/)?styles\.css["'][^>]*>/gi, '');
   html = html.replace(/<script[^>]*src=["'](?:\.\/)?app\.js["'][^>]*>\s*<\/script>/gi, '');
   html = html.replace(/<script[^>]*src=["'](?:\.\/)?api_routes\.js["'][^>]*>\s*<\/script>/gi, '');
@@ -368,6 +384,40 @@ export function validateStudioProject(
       errors.push(`JavaScript Syntax Error (block #${idx + 1}): ${err?.message || 'Invalid JS syntax'}`);
     }
   });
+
+  // Detect hollow/unrunnable Vite or TSX stubs (e.g. <div id="root"></div> + /src/main.tsx with no real browser JS)
+  const rawIndexHtml = String(files['index.html'] || '');
+  const rawAppJs = String(files['app.js'] || '').trim();
+  if (/<script\b[^>]*src\s*=\s*["'](?:\.?\/)?src\/(?:main|index)\.(?:ts|tsx|js|jsx)["']/i.test(rawIndexHtml)) {
+    errors.push(
+      'index.html references an unbundled /src/main.tsx module script that cannot execute inside live iframe preview.'
+    );
+  }
+  if (/^\s*import\s+[\s\S]+?\s+from\s+["'][^./"'][^"']*["']/m.test(rawAppJs)) {
+    errors.push(
+      'app.js uses bare npm ES module imports that cannot execute in a browser <script> tag without a bundler.'
+    );
+  }
+
+  const bodyMatch = compiledHtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  const bodyHtml = bodyMatch ? bodyMatch[1] : '';
+  const visibleBodyText = bodyHtml
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const hasDomMountLogic =
+    /(?:getElementById|querySelector|createElement|innerHTML|insertAdjacentHTML|textContent|ReactDOM|createRoot|document\.write)/i.test(
+      rawAppJs
+    ) ||
+    /(?:getElementById|querySelector|innerHTML|createElement)/i.test(bodyHtml);
+
+  if (visibleBodyText.length === 0 && !hasDomMountLogic) {
+    errors.push(
+      'Preview HTML body is an empty root shell (<div id="root"></div>) with no rendered markup or DOM mounting JavaScript in app.js.'
+    );
+  }
 
   if (files['schema.json']) {
     try {
@@ -673,14 +723,20 @@ ${cfgBlock}
 ${formatAttachmentContext(opts.attachments)}
 
 TECHNICAL & OUTPUT CONTRACT:
-1. Return a clean JSON object (preferred — no markdown prose outside JSON) with multi-file architecture:
+1. CRITICAL LIVE PREVIEW EXECUTION RULE:
+   - \`files["index.html"]\`, \`files["styles.css"]\`, and \`files["app.js"]\` execute DIRECTLY in a sandboxed browser iframe with NO Vite/Webpack/TypeScript compiler.
+   - NEVER output an empty \`<div id="root"></div>\` paired with \`<script type="module" src="/src/main.tsx"></script>\`!
+   - NEVER put bare npm \`import ... from 'react'\` or TypeScript/JSX inside \`app.js\` or \`index.html\`.
+   - Write COMPLETE, directly runnable semantic HTML + Tailwind CDN (\`<script src="https://cdn.tailwindcss.com"></script>\`) in \`index.html\` AND complete Vanilla ES6+ DOM manipulation, state management, event listeners, and \`localStorage\` persistence in \`app.js\`.
+   - Keep any \`tailwind.config = {...}\` script inline inside \`<head>\` (NOT in \`app.js\`).
+2. Return a clean JSON object (preferred — no markdown prose outside JSON) with multi-file architecture:
    {
      "title": "Short clean project title",
      "description": "1-sentence summary",
      "files": {
-       "index.html": "<!DOCTYPE html>... complete runnable HTML preview with Tailwind CDN (<script src=\\"https://cdn.tailwindcss.com\\"></script>) & semantic DOM ...",
+       "index.html": "<!DOCTYPE html>... complete runnable HTML preview with Tailwind CDN & semantic UI containers ...",
        "styles.css": "Custom CSS tokens & layout styles",
-       "app.js": "Complete ES6+ interactive logic, event listeners & persistence",
+       "app.js": "Complete browser-runnable Vanilla ES6+ interactive logic, DOM rendering, event listeners & localStorage persistence",
        "api_routes.js": "Optional client-side REST API simulation bridge for preview",
        "backend/server.ts": "Optional real backend server source when backendRuntime != none",
        "database/schema.sql": "Optional SQL schema or firestore.rules when database requires it",
@@ -690,8 +746,8 @@ TECHNICAL & OUTPUT CONTRACT:
      }
    }
    (If returning single-file HTML fallback, wrap cleanly in <!DOCTYPE html> with Tailwind CDN, Plus Jakarta Sans + JetBrains Mono Google Fonts, inline <style> and inline <script>.)
-2. Use Chart.js (https://cdn.jsdelivr.net/npm/chart.js) if analytics/charts are requested, or Leaflet (https://unpkg.com/leaflet@1.9.4/dist/leaflet.js + leaflet.css) if maps are requested.
-3. Every single button, form, modal, search, filter, and export action MUST have working JavaScript handlers — zero dead buttons or placeholder alerts.`;
+3. Use Chart.js (https://cdn.jsdelivr.net/npm/chart.js) if analytics/charts are requested, or Leaflet (https://unpkg.com/leaflet@1.9.4/dist/leaflet.js + leaflet.css) if maps are requested.
+4. Every single button, form, modal, search, filter, and export action MUST have working JavaScript handlers — zero dead buttons or placeholder alerts.`;
 }
 
 export function buildStudioRefinePrompt(opts: {
@@ -750,9 +806,10 @@ ${existingCode.slice(0, 32000)}
 \`\`\`
 
 TASK:
-1. Fix the exact root causes of every error above while preserving all existing UI and features.
-2. Output ONLY a single valid, self-contained HTML document starting with <!DOCTYPE html> and ending with </html> (with inline <style> and <script>).
-3. Do NOT wrap the HTML in JSON, do NOT output literal \\n escape sequences, and make sure every <script> block parses with zero SyntaxErrors.`;
+1. Fix the exact root causes of every error above while preserving all UI and features intended for "${opts.app.title || 'the application'}".
+2. If the code is an empty skeleton (<div id="root"></div>) or references unbundled /src/main.tsx or bare npm imports, REPLACE it completely with a full, rich, working HTML5 + Tailwind CDN + Vanilla ES6+ JavaScript implementation that renders the complete interactive UI immediately on load.
+3. Output ONLY a single valid, self-contained HTML document starting with <!DOCTYPE html> and ending with </html> (with inline <style> and <script>).
+4. Do NOT wrap the HTML in JSON, do NOT output literal \\n escape sequences, and make sure every <script> block parses cleanly with zero SyntaxErrors.`;
 }
 
 // =========================================================================
@@ -1145,12 +1202,13 @@ SELECTED STACK & TARGET:
 
 RULES:
 - Output ONLY the expanded prompt text directly (no markdown headings like "Enhanced Prompt:" or conversational intro).
+- CRITICAL: Specify that the live preview UI MUST be implemented as a directly browser-runnable HTML5 + Tailwind CDN + Vanilla ES6+ JavaScript SPA (\`index.html\`, \`styles.css\`, \`app.js\`) with zero Vite/TSX build steps or \`/src/main.tsx\` stubs (keep Express/DB schema/tests only in auxiliary backend/config files).
 - Make it concrete, detailed, and tailored specifically to the category and stack above:
   1. Core product goal & primary user workflow
-  2. Exact screens / views / commands / extension panels or API endpoints needed
-  3. Data entities, fields, validation rules & persistence behavior
-  4. Design aesthetic, responsive layout, keyboard/empty states & real interactive controls (search, filter, CRUD, export)
-  5. Security, error handling & production readiness.`;
+  2. Exact screens / views / panels, interactive modals & controls needed
+  3. Data entities, fields, validation rules & localStorage/REST persistence behavior
+  4. Design aesthetic, responsive layout, keyboard/empty states & real interactive controls (search, filter, CRUD, charts/export)
+  5. Security (XSS escaping), error handling & production readiness.`;
 
   try {
     const out = await executeStudioAiPrompt({

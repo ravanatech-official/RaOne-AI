@@ -1188,6 +1188,27 @@ test('Firebase Hosting __session media cookie and Code Studio escaped JSON recov
   assert.ok(recovered, 'Should recover partial/truncated JSON project');
   assert.equal(recovered?.diagnostics?.syntaxOk, true, 'Recovered app JS syntax should validate cleanly');
   assert.equal(recovered?.code.includes('\\n \\n \\n'), false, 'Rendered bundle must not contain literal \\n spam');
+
+  // 3. Reject hollow Vite /src/main.tsx empty-root stubs so Code Studio never renders a blank dark preview
+  const hollowViteStub = JSON.stringify({
+    title: 'ExpenseTracker Pro',
+    description: 'Stub',
+    files: {
+      'index.html':
+        '<!DOCTYPE html><html><head><script src="https://cdn.tailwindcss.com"></script><script>tailwind.config = { darkMode: "class" };</script></head><body class="bg-gray-900"><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>',
+    },
+  });
+  const hollowProject = materializeProjectFromRawOutput({
+    rawText: hollowViteStub,
+    prompt: 'Build ExpenseTracker Pro',
+    category: 'webapp',
+    mode: 'Default mode',
+    providerUsed: 'groq',
+    modelUsed: 'raone-llama3-70b',
+  });
+  assert.ok(hollowProject);
+  assert.equal(hollowProject?.diagnostics?.syntaxOk, false, 'Empty #root + /src/main.tsx stub must fail syntaxOk');
+  assert.equal(hollowProject?.code.includes('/src/main.tsx'), false, 'Dead /src/main.tsx tag must be stripped from compiled preview bundle');
 });
 
 

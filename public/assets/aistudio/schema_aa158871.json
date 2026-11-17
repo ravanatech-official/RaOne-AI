@@ -1,0 +1,19 @@
+{
+  "app": "ExpenseTracker Pro",
+  "mode": "Default mode",
+  "bundleHash": "76af338b5807",
+  "persistence": "LocalStorage",
+  "entities": [
+    {
+      "name": "records",
+      "primaryKey": "id",
+      "fields": [
+        "id",
+        "title",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  ]
+}

@@ -411,6 +411,18 @@ export async function generateTrueXlsxBuffer(input: ExportDocumentInput): Promis
 }
 
 export async function generateTruePdfBuffer(input: ExportDocumentInput): Promise<Buffer> {
+  const pdfSafe = (value: string): string =>
+    String(value || '')
+      .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\u00AD]/g, '-')
+      .replace(/[\u2018\u2019\u201A\u2032]/g, "'")
+      .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+      .replace(/\u2026/g, '...')
+      .replace(/[\u00A0\u2007\u202F]/g, ' ')
+      .replace(/\u2192/g, '->')
+      .replace(/\u2190/g, '<-')
+      .replace(/\u2022/g, '-')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '');
+
   return new Promise((resolve, reject) => {
     const size = input.pageSize === 'Letter' ? 'LETTER' : input.pageSize === 'Legal' ? 'LEGAL' : 'A4';
     const layout = input.orientation === 'landscape' ? 'landscape' : 'portrait';
@@ -422,26 +434,26 @@ export async function generateTruePdfBuffer(input: ExportDocumentInput): Promise
     doc.on('error', reject);
 
     if (input.companyName) {
-      doc.fontSize(9).fillColor('#0284C7').text(input.companyName.toUpperCase());
+      doc.fontSize(9).fillColor('#0284C7').text(pdfSafe(input.companyName).toUpperCase());
       doc.moveDown(0.25);
     }
 
-    doc.fontSize(20).fillColor('#0F172A').text(input.title || 'RaOne Document');
+    doc.fontSize(20).fillColor('#0F172A').text(pdfSafe(input.title || 'RaOne Document'));
     doc.moveDown(0.35);
     doc
       .fontSize(9)
       .fillColor('#64748B')
       .text(
-        `${input.authorName ? `${input.authorName} · ` : ''}Generated ${new Date().toISOString().slice(0, 10)}`
+        pdfSafe(`${input.authorName ? `${input.authorName} - ` : ''}Generated ${new Date().toISOString().slice(0, 10)}`)
       );
     doc.moveDown(0.9);
 
     if (input.summary) {
-      doc.fontSize(10.5).fillColor('#334155').text(input.summary, { lineGap: 3 });
+      doc.fontSize(10.5).fillColor('#334155').text(pdfSafe(input.summary), { lineGap: 3 });
       doc.moveDown(0.8);
     }
 
-    const lines = (input.content || '').split(/\r?\n/);
+    const lines = pdfSafe(input.content || '').split(/\r?\n/);
     for (const raw of lines) {
       const line = raw.trim();
       if (!line) {
@@ -468,7 +480,7 @@ export async function generateTruePdfBuffer(input: ExportDocumentInput): Promise
 
     if (input.footerNote) {
       doc.moveDown(1.2);
-      doc.fontSize(8.5).fillColor('#94A3B8').text(input.footerNote, { align: 'center' });
+      doc.fontSize(8.5).fillColor('#94A3B8').text(pdfSafe(input.footerNote), { align: 'center' });
     }
 
     doc.end();

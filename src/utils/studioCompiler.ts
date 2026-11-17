@@ -38,6 +38,10 @@ export function bundleFilesToHtml(files: Record<string, string | undefined>): st
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script><style>${css}</style></head><body class="bg-[#0b0c10] text-white"><div id="app"></div><script>${apiRoutesJs}\n${js}</script></body></html>`;
   }
 
+  html = html.replace(
+    /<script\b[^>]*src\s*=\s*["'](?:\.?\/)?src\/(?:main|index)\.(?:ts|tsx|js|jsx)["'][^>]*>\s*<\/script>/gi,
+    ''
+  );
   html = html.replace(/<link[^>]*href=["'](?:\.\/)?styles\.css["'][^>]*>/gi, '');
   html = html.replace(/<script[^>]*src=["'](?:\.\/)?app\.js["'][^>]*>\s*<\/script>/gi, '');
   html = html.replace(/<script[^>]*src=["'](?:\.\/)?api_routes\.js["'][^>]*>\s*<\/script>/gi, '');

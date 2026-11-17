@@ -300,6 +300,26 @@ export function runFullStudioAudit(
     fixHint: 'Fix bracket matching, missing tokens, or invalid expressions in app.js.',
   });
 
+  const rawIndexHtml = String(files['index.html'] || '');
+  const rawAppJs = String(files['app.js'] || '').trim();
+  const hasDeadModuleEntry = /<script\b[^>]*src\s*=\s*["'](?:\.?\/)?src\/(?:main|index)\.(?:ts|tsx|js|jsx)["']/i.test(rawIndexHtml);
+  const hasBareImport = /^\s*import\s+[\s\S]+?\s+from\s+["'][^./"'][^"']*["']/m.test(rawAppJs);
+  const bodyInner = (compiledHtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1] || '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const hasDomRender = /(?:getElementById|querySelector|createElement|innerHTML|insertAdjacentHTML|textContent)/i.test(rawAppJs);
+  check(!hasDeadModuleEntry && !hasBareImport && (bodyInner.length > 0 || hasDomRender), {
+    severity: 'critical',
+    category: 'syntax',
+    file: 'index.html',
+    title: 'Runnable Live Preview Entry Verification',
+    description: 'Detected an empty root stub or unbundled /src/main.tsx entrypoint that produces a blank preview.',
+    fixHint: 'Render the full UI via semantic HTML + Tailwind CDN + Vanilla ES6+ DOM logic inside app.js.',
+  });
+
   // 2. JSON Validity Checks (schema.json, package.json, manifest.json)
   for (const jsonName of ['schema.json', 'package.json', 'manifest.json', 'extension/manifest.json', 'firebase.json']) {
     const raw = files[jsonName];

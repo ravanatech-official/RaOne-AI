@@ -275,9 +275,13 @@ app.use((req, res, next) => {
     [
       "default-src 'self'",
       isDevPreview
-        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://apis.google.com"
+        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://apis.google.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
+        : allowPreviewFraming
+        ? "script-src 'self' 'unsafe-inline' blob: https://apis.google.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
         : "script-src 'self' 'unsafe-inline' blob: https://apis.google.com",
-      "style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com",
+      allowPreviewFraming
+        ? "style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com https://unpkg.com"
+        : "style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com",
       "font-src 'self' data: https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",
       "media-src 'self' data: blob: https:",
@@ -2749,7 +2753,7 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
       }
     }
 
-    if (!project) {
+    if (!project || (project.diagnostics && !project.diagnostics.syntaxOk)) {
       project = fallbackSynthesizeStudioProject({
         prompt,
         category: typedConfig?.category || category,
@@ -3075,7 +3079,43 @@ app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
         })
       : null;
 
-    if (!generatedProject) {
+    if (generatedProject && generatedProject.diagnostics && !generatedProject.diagnostics.syntaxOk && generatedProject.providerUsed !== 'synthesizer') {
+      try {
+        const repairPrompt = buildStudioAutoFixPrompt({
+          app: generatedProject,
+          runtimeErrors: generatedProject.diagnostics.errors,
+        });
+        const repairOut = await executeStudioAiPrompt({
+          providerChoice,
+          requestedModel: typeof model === 'string' ? model : undefined,
+          userPromptText: repairPrompt,
+          systemInstruction: SYSTEM_PROMPT,
+          byok: ctx.byok,
+          geminiClient: ctx.geminiClient,
+          serverKeys: ctx.serverKeys,
+        });
+        if (repairOut?.rawText) {
+          const repaired = materializeProjectFromRawOutput({
+            rawText: repairOut.rawText,
+            prompt,
+            category: typedConfig?.category || category,
+            mode: normalizedMode,
+            providerUsed: repairOut.providerUsed,
+            modelUsed: repairOut.modelUsed,
+            existingApp: generatedProject,
+            isRefinement: true,
+            projectConfig: typedConfig,
+          });
+          if (repaired && repaired.diagnostics?.syntaxOk) {
+            generatedProject = repaired;
+          }
+        }
+      } catch (repairErr) {
+        console.warn('Studio sync build auto-repair skipped:', repairErr);
+      }
+    }
+
+    if (!generatedProject || (generatedProject.diagnostics && !generatedProject.diagnostics.syntaxOk)) {
       generatedProject = fallbackSynthesizeStudioProject({
         prompt,
         category: typedConfig?.category || category,
