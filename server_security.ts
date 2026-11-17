@@ -483,6 +483,66 @@ export function isDisposableEmailDomain(email: string | null | undefined): boole
   return DISPOSABLE_EMAIL_DOMAINS.has(domain);
 }
 
+export function verifyWebhookHmacSignature(params: {
+  secret: string;
+  signatureHeader: string;
+  rawBody: Buffer | string;
+}): boolean {
+  const normalizedSig = String(params.signatureHeader || '')
+    .trim()
+    .replace(/^sha256=/i, '')
+    .toLowerCase();
+  if (!normalizedSig || !params.secret) return false;
+
+  const expectedHex = crypto
+    .createHmac('sha256', params.secret)
+    .update(params.rawBody)
+    .digest('hex');
+
+  const sigBuf = Buffer.from(normalizedSig, 'utf8');
+  const expBuf = Buffer.from(expectedHex, 'utf8');
+  if (sigBuf.length !== expBuf.length) return false;
+  return crypto.timingSafeEqual(sigBuf, expBuf);
+}
+
+export type WebhookResolvedAction =
+  | { kind: 'downgrade_free'; eventName: string }
+  | { kind: 'topup'; packId: string; eventName: string }
+  | { kind: 'activate_plan'; plan: 'free' | 'plus' | 'ultimate'; billingCycle: 'monthly' | 'yearly'; eventName: string }
+  | { kind: 'invalid' };
+
+export function resolveWebhookEventAction(body: any): WebhookResolvedAction {
+  const customData = body?.meta?.custom_data || body?.data?.metadata || {};
+  const eventName = String(body?.meta?.event_name || body?.type || body?.event || '').trim().toLowerCase();
+  const downgradeEvents = new Set([
+    'subscription_cancelled',
+    'subscription_canceled',
+    'subscription_expired',
+    'order_refunded',
+    'subscription.canceled',
+    'subscription.cancelled',
+    'subscription.revoked',
+    'subscription.expired',
+    'order.refunded',
+  ]);
+  if (eventName && downgradeEvents.has(eventName)) {
+    return { kind: 'downgrade_free', eventName };
+  }
+
+  const packId = String(body?.packId || customData.packId || '').trim();
+  if (packId) {
+    return { kind: 'topup', packId, eventName: eventName || 'topup_purchase' };
+  }
+
+  const plan = String(body?.plan || customData.plan || '').trim().toLowerCase();
+  if (plan === 'free' || plan === 'plus' || plan === 'ultimate') {
+    const billingCycle = body?.billingCycle === 'yearly' || customData.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+    return { kind: 'activate_plan', plan, billingCycle, eventName: eventName || 'plan_activated' };
+  }
+
+  return { kind: 'invalid' };
+}
+
 function isPrivateOrReservedIp(ip: string): boolean {
   const normalized = ip.replace(/^::ffff:/i, '');
   if (net.isIPv4(normalized)) {

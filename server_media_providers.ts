@@ -167,6 +167,17 @@ export async function renderFallbackVisualCardPng(
   }
 }
 
+export function resolveImageProviderOrder(
+  plan?: PlanId,
+  byok?: ByokKeyMap
+): Array<'gemini' | 'fal' | 'cloudflare' | 'huggingface' | 'pollinations' | 'procedural'> {
+  const userHasPaidImageByok = Boolean(byok?.geminiApiKey || byok?.falApiKey);
+  if (plan === 'free' && !userHasPaidImageByok) {
+    return ['cloudflare', 'huggingface', 'pollinations', 'procedural'];
+  }
+  return ['gemini', 'fal', 'cloudflare', 'huggingface', 'pollinations', 'procedural'];
+}
+
 export async function generateMultiProviderImage(params: {
   prompt: string;
   negativePrompt?: string;
@@ -187,9 +198,10 @@ export async function generateMultiProviderImage(params: {
   const envKeys = getServerMediaEnvKeys();
   const { width, height, falSize } = aspectRatioToWidthHeight(params.aspectRatio, params.resolution);
   const errors: string[] = [];
+  const providerOrder = resolveImageProviderOrder(params.plan, params.byok);
 
-  // 1. Gemini (only when caller provided a handler — gracefully falls through on 402/quota)
-  if (params.geminiAttempt) {
+  // 1. Gemini (only for Plus/Ultimate or user Gemini BYOK — never waste server credits on Free tier)
+  if (providerOrder.includes('gemini') && params.geminiAttempt) {
     try {
       const gem = await params.geminiAttempt();
       return {
@@ -206,9 +218,9 @@ export async function generateMultiProviderImage(params: {
     }
   }
 
-  // 2. fal.ai (Ultra-cheap ~$0.003 FLUX.1-schnell for 1K, FLUX Pro for 2K/4K)
+  // 2. fal.ai (only for Plus/Ultimate or user fal.ai BYOK — Free users use Cloudflare/HF/Pollinations at $0)
   const fal = resolveEffectiveMediaKey(params.byok?.falApiKey, envKeys.falApiKey);
-  if (fal.key) {
+  if (providerOrder.includes('fal') && fal.key) {
     try {
       const falModel =
         params.resolution === '1K' || params.plan === 'free'
@@ -450,11 +462,23 @@ export async function synthesizeProceduralMusicFfmpeg(opts: {
   }
 }
 
+export function resolveMusicProviderOrder(
+  plan?: PlanId,
+  byok?: ByokKeyMap
+): Array<'gemini' | 'fal' | 'huggingface' | 'ffmpeg_synth'> {
+  const userHasPaidMusicByok = Boolean(byok?.geminiApiKey || byok?.falApiKey);
+  if (plan === 'free' && !userHasPaidMusicByok) {
+    return ['huggingface', 'ffmpeg_synth'];
+  }
+  return ['gemini', 'fal', 'huggingface', 'ffmpeg_synth'];
+}
+
 export async function generateMultiProviderMusic(params: {
   compiledPrompt: string;
   bpm: number;
   keySignature: string;
   durationSec?: number;
+  plan?: PlanId;
   byok?: ByokKeyMap;
   geminiAttempt?: () => Promise<{ buffer: Buffer; mimeType: string; lyrics?: string; modelUsed: string }>;
 }): Promise<{
@@ -467,9 +491,10 @@ export async function generateMultiProviderMusic(params: {
   isProceduralFallback: boolean;
 }> {
   const envKeys = getServerMediaEnvKeys();
+  const providerOrder = resolveMusicProviderOrder(params.plan, params.byok);
 
-  // 1. Gemini Lyria (skipped gracefully on 402/quota)
-  if (params.geminiAttempt) {
+  // 1. Gemini Lyria (Plus/Ultimate or user Gemini BYOK)
+  if (providerOrder.includes('gemini') && params.geminiAttempt) {
     try {
       const lyria = await params.geminiAttempt();
       return {
@@ -483,9 +508,9 @@ export async function generateMultiProviderMusic(params: {
     }
   }
 
-  // 2. fal.ai Music (fal-ai/ace-step)
+  // 2. fal.ai Music (fal-ai/ace-step — Plus/Ultimate or user fal.ai BYOK)
   const fal = resolveEffectiveMediaKey(params.byok?.falApiKey, envKeys.falApiKey);
-  if (fal.key) {
+  if (providerOrder.includes('fal') && fal.key) {
     try {
       const falRes = await fetch('https://fal.run/fal-ai/ace-step', {
         method: 'POST',
@@ -762,6 +787,7 @@ export async function generateMultiProviderVideo(params: {
 export async function generateMultiProviderSpeech(params: {
   text: string;
   voiceName?: string;
+  plan?: PlanId;
   geminiClient?: GoogleGenAI | null;
   byok?: ByokKeyMap;
   fallbackGroqKey?: string;
@@ -769,9 +795,45 @@ export async function generateMultiProviderSpeech(params: {
 }): Promise<{ buffer: Buffer; mimeType: string; providerUsed: string }> {
   const cleanText = String(params.text || '').trim().slice(0, 3000);
   const envKeys = getServerMediaEnvKeys();
+  const preferFreeSpeech = params.plan === 'free' && !params.byok?.geminiApiKey && !params.byok?.openAiApiKey;
 
-  // 1. Gemini TTS
-  if (params.geminiClient) {
+  const tryGroqTts = async () => {
+    const groqKey = String(params.byok?.groqApiKey || params.fallbackGroqKey || envKeys.groqApiKey || '').trim();
+    if (!groqKey) return null;
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: 'playai-tts',
+          input: cleanText,
+          voice: 'Fritz-PlayAI',
+          response_format: 'wav',
+        }),
+        signal: AbortSignal.timeout(45000),
+      });
+      if (res.ok) {
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length > 500) {
+          return { buffer: buf, mimeType: 'audio/wav', providerUsed: 'groq-playai-tts' };
+        }
+      }
+    } catch (err: any) {
+      console.warn('Groq TTS fallback triggered:', err?.message || err);
+    }
+    return null;
+  };
+
+  if (preferFreeSpeech) {
+    const freeGroq = await tryGroqTts();
+    if (freeGroq) return freeGroq;
+  }
+
+  // Gemini TTS (skipped on Free tier unless Gemini BYOK, or attempted first on Plus/Ultimate)
+  if (!preferFreeSpeech && params.geminiClient) {
     try {
       const ttsRes = await params.geminiClient.models.generateContent({
         model: 'gemini-3.8-flash-lite-tts',
@@ -803,38 +865,15 @@ export async function generateMultiProviderSpeech(params: {
     }
   }
 
-  // 2. Groq PlayAI TTS
-  const groqKey = String(params.byok?.groqApiKey || params.fallbackGroqKey || envKeys.groqApiKey || '').trim();
-  if (groqKey) {
-    try {
-      const res = await fetch('https://api.groq.com/openai/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${groqKey}`,
-        },
-        body: JSON.stringify({
-          model: 'playai-tts',
-          input: cleanText,
-          voice: 'Fritz-PlayAI',
-          response_format: 'wav',
-        }),
-        signal: AbortSignal.timeout(45000),
-      });
-      if (res.ok) {
-        const buf = Buffer.from(await res.arrayBuffer());
-        if (buf.length > 500) {
-          return { buffer: buf, mimeType: 'audio/wav', providerUsed: 'groq-playai-tts' };
-        }
-      }
-    } catch (err: any) {
-      console.warn('Groq TTS fallback triggered:', err?.message || err);
-    }
+  // Groq PlayAI TTS (for Plus/Ultimate fallback when Gemini TTS fails)
+  if (!preferFreeSpeech) {
+    const paidFallbackGroq = await tryGroqTts();
+    if (paidFallbackGroq) return paidFallbackGroq;
   }
 
-  // 3. OpenAI TTS
+  // OpenAI TTS (Plus/Ultimate or OpenAI BYOK only)
   const oaKey = String(params.byok?.openAiApiKey || params.fallbackOpenAiKey || envKeys.openAiApiKey || '').trim();
-  if (oaKey) {
+  if (!preferFreeSpeech && oaKey) {
     try {
       const res = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',

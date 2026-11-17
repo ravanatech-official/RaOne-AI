@@ -15,6 +15,7 @@ import {
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import { validateSafeHttpsEgress } from './server_security.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import type { PlanId } from './src/lib/pricingCatalog.ts';
 import {
   DEFAULT_PROJECT_CONFIG,
   type PromptEnhanceDepth,
@@ -818,6 +819,7 @@ TASK:
 export interface ExecuteStudioAiOptions {
   providerChoice: StudioProviderChoice;
   requestedModel?: string;
+  plan?: PlanId;
   userPromptText: string;
   systemInstruction: string;
   attachments?: StudioAppAttachment[];
@@ -921,20 +923,30 @@ async function streamOpenAiCompatibleStudio(opts: {
   return { text: acc, model: resolvedModel };
 }
 
+export type StudioOrderedProvider = 'gemini' | 'groq' | 'openrouter' | 'local' | 'openai' | 'deepseek' | 'anthropic' | 'comet';
+
+export function resolveStudioProviderOrder(opts: {
+  providerChoice?: StudioProviderChoice;
+  plan?: PlanId;
+  byok?: ByokKeyMap;
+  hasImages?: boolean;
+}): StudioOrderedProvider[] {
+  const pref = opts.providerChoice || 'auto';
+  const defaultOrder: StudioOrderedProvider[] =
+    opts.plan === 'free' && !opts.byok?.geminiApiKey && !opts.hasImages
+      ? ['groq', 'openrouter', 'deepseek', 'local', 'gemini', 'openai', 'anthropic', 'comet']
+      : ['gemini', 'groq', 'openrouter', 'deepseek', 'local', 'openai', 'anthropic', 'comet'];
+
+  if (pref === 'auto') return defaultOrder;
+  return [
+    pref as StudioOrderedProvider,
+    ...defaultOrder.filter((p) => p !== pref),
+  ];
+}
+
 export async function executeStudioAiPrompt(
   opts: ExecuteStudioAiOptions
 ): Promise<ExecuteStudioAiResult | null> {
-  const pref = opts.providerChoice || 'auto';
-  const order: Array<'gemini' | 'groq' | 'openrouter' | 'local' | 'openai' | 'deepseek' | 'anthropic' | 'comet'> =
-    pref === 'auto'
-      ? ['gemini', 'groq', 'openrouter', 'deepseek', 'local', 'openai', 'anthropic', 'comet']
-      : [
-          pref as any,
-          ...(
-            ['gemini', 'groq', 'openrouter', 'deepseek', 'local', 'openai', 'anthropic', 'comet'] as const
-          ).filter((p) => p !== pref),
-        ];
-
   const imageParts = (opts.attachments || [])
     .filter((a) => a.kind === 'image' && a.data)
     .map((a) => ({
@@ -943,6 +955,13 @@ export async function executeStudioAiPrompt(
         data: a.data.replace(/^data:[^;]+;base64,/, ''),
       },
     }));
+
+  const order = resolveStudioProviderOrder({
+    providerChoice: opts.providerChoice,
+    plan: opts.plan,
+    byok: opts.byok,
+    hasImages: imageParts.length > 0,
+  });
 
   for (const provider of order) {
     if (provider === 'gemini' && opts.geminiClient) {
@@ -1176,6 +1195,7 @@ export async function enhanceStudioPromptServer(opts: {
   depth?: PromptEnhanceDepth;
   projectConfig?: StudioProjectConfig;
   providerChoice?: StudioProviderChoice;
+  plan?: PlanId;
   byok: ByokKeyMap;
   geminiClient: GoogleGenAI | null;
   serverKeys: ExecuteStudioAiOptions['serverKeys'];
@@ -1213,6 +1233,7 @@ RULES:
   try {
     const out = await executeStudioAiPrompt({
       providerChoice: opts.providerChoice || 'auto',
+      plan: opts.plan,
       userPromptText: instruction,
       systemInstruction:
         'You rewrite brief app ideas into crisp, senior-engineer technical specification prompts. Output plain text only.',

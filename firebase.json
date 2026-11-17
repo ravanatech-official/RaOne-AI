@@ -35,6 +35,34 @@
         }
       },
       {
+        "source": "/published/**",
+        "run": {
+          "serviceId": "raone-ai-backend",
+          "region": "asia-southeast1"
+        }
+      },
+      {
+        "source": "/vision/shared/**",
+        "run": {
+          "serviceId": "raone-ai-backend",
+          "region": "asia-southeast1"
+        }
+      },
+      {
+        "source": "/privacy-policy",
+        "run": {
+          "serviceId": "raone-ai-backend",
+          "region": "asia-southeast1"
+        }
+      },
+      {
+        "source": "/terms-of-service",
+        "run": {
+          "serviceId": "raone-ai-backend",
+          "region": "asia-southeast1"
+        }
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

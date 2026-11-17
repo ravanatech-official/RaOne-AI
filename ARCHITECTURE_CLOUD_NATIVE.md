@@ -128,7 +128,7 @@ gs://<GCS_BUCKET_NAME>/
 - **Streaming & Byte-Range (`HTTP 206`)**: `GcsMediaStorageProvider.streamHttpResponse` supports seekable byte-range streaming for Cinema `<video>` and Music `<audio>` playback without buffering large media payloads into Cloud Run RAM.
 - **Large File Materialization**: FFmpeg pipelines (`server.ts`, `server_cinema_engine.ts`, `server_music_engine.ts`) use `withTempWorkingDir` in `/tmp` to stream inputs from GCS, process with FFmpeg, stream outputs back into GCS via `saveFromFile`, and always delete `/tmp` scratch directories in `finally`.
 - **Upload Guardrails**: Enforces category MIME prefix validation and `MAX_MEDIA_UPLOAD_BYTES` (default 250 MB) + SHA-256 checksum computation.
-- **Short-Lived Signed URLs**: `getSignedDownloadUrl` supports optional bounded V4 signed URLs (60s–900s), while browser UI uses authenticated first-party proxy endpoints protected by Bearer JWT or HMAC-signed `HttpOnly` `raone_media_session` cookies.
+- **Short-Lived Signed URLs**: `getSignedDownloadUrl` supports optional bounded V4 signed URLs (60s–900s), while browser UI uses authenticated first-party proxy endpoints protected by Bearer JWT or HMAC-signed `HttpOnly` `__session` cookies.
 
 ---
 
@@ -236,7 +236,7 @@ Store sensitive secrets in Google Cloud Secret Manager and mount them as environ
    - `raoneai.firebaseapp.com`
    - `localhost` (dev)
    - Any production custom domains.
-3. Because Firebase Hosting proxies `/api/**` on the same origin (`https://raoneai.web.app/api/...`), `POST`/`GET` requests with Firebase `Authorization: Bearer <ID_TOKEN>` transparently mint/refresh the first-party signed `HttpOnly` `raone_media_session` cookie (`SameSite=Lax; Secure`), allowing `<img src="/api/vision/assets/...">`, `<video src="/api/motion/assets/...">`, and `<audio src="/api/audio/assets/...">` to remain authenticated cleanly across tenant boundaries.
+3. Because Firebase Hosting proxies `/api/**` on the same origin (`https://raoneai.web.app/api/...`), `POST`/`GET` requests with Firebase `Authorization: Bearer <ID_TOKEN>` transparently mint/refresh the first-party signed `HttpOnly` `__session` cookie (`SameSite=Lax; Secure`), allowing `<img src="/api/vision/assets/...">`, `<video src="/api/motion/assets/...">`, and `<audio src="/api/audio/assets/...">` to remain authenticated cleanly across tenant boundaries.
 
 ---
 

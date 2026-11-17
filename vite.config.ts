@@ -8,7 +8,22 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
+      },
+    },
+    build: {
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: 'react-vendor', test: /node_modules[\\/](react|react-dom|scheduler)/ },
+              { name: 'firebase-vendor', test: /node_modules[\\/](firebase|@firebase)/ },
+              { name: 'markdown-math', test: /node_modules[\\/](marked|dompurify|katex)/ },
+              { name: 'lucide-icons', test: /node_modules[\\/]lucide-react/ },
+              { name: 'motion-vendor', test: /node_modules[\\/](motion|framer-motion)/ },
+            ],
+          },
+        },
       },
     },
     server: {

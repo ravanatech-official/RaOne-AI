@@ -36,6 +36,9 @@ import {
   createSlidingWindowLimiter,
   isFirebaseAuthRequired,
   validateEncryptionConfig,
+  isDisposableEmailDomain,
+  verifyWebhookHmacSignature,
+  resolveWebhookEventAction,
 } from './server_security.ts';
 import {
   getCloudPersistenceHealth,
@@ -425,7 +428,12 @@ app.use(
 app.use('/api/library/upload', express.json({ limit: '60mb' }));
 app.use((req, res, next) => {
   if (LARGE_BODY_ROUTES.has(req.path)) return next();
-  return express.json({ limit: '2mb' })(req, res, next);
+  return express.json({
+    limit: '2mb',
+    verify: (rawReq: any, _res, buf) => {
+      rawReq.rawBody = buf;
+    },
+  })(req, res, next);
 });
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
@@ -1290,6 +1298,15 @@ app.get('/api/billing/catalog', (_req, res) => {
 
 app.post('/api/billing/checkout', requireVerifiedAuth, async (req, res) => {
   try {
+    if (isDisposableEmailDomain(req.actor?.email)) {
+      return sendApiError(
+        req,
+        res,
+        403,
+        'DISPOSABLE_EMAIL_BLOCKED',
+        'Disposable email domains cannot be used for subscription checkouts. Please sign in with a permanent email.'
+      );
+    }
     const tenantId = getReqTenant(req);
     const { plan, packId, billingCycle = 'monthly' } = req.body || {};
 
@@ -1333,7 +1350,7 @@ app.post('/api/billing/checkout', requireVerifiedAuth, async (req, res) => {
   }
 });
 
-// Payment Webhook Receiver (HMAC-SHA256 verified against BILLING_WEBHOOK_SECRET / LemonSqueezy / Polar)
+// Payment Webhook Receiver (Raw-Body HMAC-SHA256 verified against BILLING_WEBHOOK_SECRET / LemonSqueezy / Polar)
 app.post('/api/billing/webhook', async (req, res) => {
   try {
     const secret = process.env.BILLING_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
@@ -1350,33 +1367,43 @@ app.post('/api/billing/webhook', async (req, res) => {
       req.headers['x-billing-signature'] ||
         req.headers['x-signature'] ||
         req.headers['x-webhook-signature'] ||
+        req.headers['webhook-signature'] ||
         ''
     ).trim();
-    const payloadString = JSON.stringify(req.body || {});
-    const expected = crypto.createHmac('sha256', secret).update(payloadString).digest('hex');
-    if (
-      !sig ||
-      sig.length !== expected.length ||
-      !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
-    ) {
+    const rawBodyPayload: Buffer | string = (req as any).rawBody || JSON.stringify(req.body || {});
+    if (!verifyWebhookHmacSignature({ secret, signatureHeader: sig, rawBody: rawBodyPayload })) {
       return sendApiError(req, res, 401, 'INVALID_WEBHOOK_SIGNATURE', 'Invalid webhook signature.');
     }
 
     const body: any = req.body || {};
     const customData = body?.meta?.custom_data || body?.data?.metadata || {};
     const tenantId = String(body.tenantId || customData.tenant_id || customData.tenantId || '').trim();
-    const plan = String(body.plan || customData.plan || '').trim() as PlanId;
-    const packId = String(body.packId || customData.packId || '').trim();
-    const billingCycle = body.billingCycle === 'yearly' ? 'yearly' : 'monthly';
-    const eventId = String(body.eventId || body?.meta?.event_name || `evt_${Date.now()}`);
+    const action = resolveWebhookEventAction(body);
+    const eventId = String(body.eventId || body?.data?.id || body?.meta?.webhook_id || body?.meta?.event_name || `evt_${Date.now()}`);
 
     const isNew = await recordWebhookEventIdempotent(eventId);
     if (!isNew) {
       return res.json({ received: true, deduplicated: true });
     }
 
-    if (tenantId && packId) {
-      const pack = TOPUP_PACKS.find((p) => p.id === packId);
+    if (!tenantId || action.kind === 'invalid') {
+      return sendApiError(req, res, 400, 'INVALID_WEBHOOK_PAYLOAD', 'Valid tenantId and plan/pack/lifecycle event required.');
+    }
+
+    if (action.kind === 'downgrade_free') {
+      const downgradedPlan: PlanState = {
+        plan: 'free',
+        billingCycle: 'monthly',
+        status: 'canceled',
+        monthlyAllowance: PLAN_ALLOWANCES.free,
+        updatedAt: new Date().toISOString(),
+      };
+      await mutateTenantCollection<PlanState>(tenantId, 'plan', downgradedPlan, () => downgradedPlan);
+      return res.json({ received: true, downgraded: true, plan: downgradedPlan });
+    }
+
+    if (action.kind === 'topup') {
+      const pack = TOPUP_PACKS.find((p) => p.id === action.packId);
       if (!pack) {
         return sendApiError(req, res, 400, 'INVALID_PACK_ID', 'Unknown top-up pack.');
       }
@@ -1384,20 +1411,16 @@ app.post('/api/billing/webhook', async (req, res) => {
       return res.json({ received: true, creditsBalance: newBalance, packId: pack.id });
     }
 
-    if (!tenantId || !['free', 'plus', 'ultimate'].includes(plan)) {
-      return sendApiError(req, res, 400, 'INVALID_WEBHOOK_PAYLOAD', 'Valid tenantId and plan (or packId) required.');
-    }
-
     const updatedPlan: PlanState = {
-      plan,
-      billingCycle,
+      plan: action.plan,
+      billingCycle: action.billingCycle,
       status: 'active',
-      monthlyAllowance: PLAN_ALLOWANCES[plan],
+      monthlyAllowance: PLAN_ALLOWANCES[action.plan],
       updatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + (billingCycle === 'yearly' ? 365 : 30) * 24 * 60 * 60 * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + (action.billingCycle === 'yearly' ? 365 : 30) * 24 * 60 * 60 * 1000).toISOString(),
     };
     await mutateTenantCollection<PlanState>(tenantId, 'plan', updatedPlan, () => updatedPlan);
-    await refundCredits(tenantId, updatedPlan.monthlyAllowance, `plan_grant_${plan}`, `wh_${eventId}`);
+    await refundCredits(tenantId, updatedPlan.monthlyAllowance, `plan_grant_${action.plan}`, `wh_${eventId}`);
     return res.json({ received: true, plan: updatedPlan });
   } catch (err: any) {
     return sendApiError(req, res, 500, 'WEBHOOK_ERROR', err.message);
@@ -2586,9 +2609,13 @@ app.post('/api/studio/apps/persist-direct', async (req, res) => {
   }
 });
 
-// Shared Helper to Resolve Tenant AI Credentials for Studio Operations
+// Shared Helper to Resolve Tenant AI Credentials & Plan Tier for Studio Operations
 async function resolveStudioAiContext(req: express.Request, bodyApiKey?: string) {
-  const { client: tenantGeminiClient, byok } = await getTenantGeminiClient(req);
+  const tenantId = getReqTenant(req);
+  const [{ client: tenantGeminiClient, byok }, tenantPlan] = await Promise.all([
+    getTenantGeminiClient(req),
+    getTenantPlan(tenantId),
+  ]);
   const providedKey = typeof bodyApiKey === 'string' ? bodyApiKey.trim() : '';
   const scopedGeminiClient =
     providedKey.length > 10
@@ -2598,6 +2625,7 @@ async function resolveStudioAiContext(req: express.Request, bodyApiKey?: string)
   return {
     geminiClient: scopedGeminiClient,
     byok,
+    plan: tenantPlan.plan,
     serverKeys: {
       groqApiKey: GROQ_API_KEY,
       openAiApiKey: OPENAI_API_KEY,
@@ -2665,6 +2693,7 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
     const aiOut = await executeStudioAiPrompt({
       providerChoice,
       requestedModel: typeof model === 'string' ? model : undefined,
+      plan: ctx.plan,
       userPromptText: buildPrompt,
       systemInstruction: SYSTEM_PROMPT,
       attachments: Array.isArray(attachments) ? attachments : [],
@@ -2726,6 +2755,7 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
         const repairOut = await executeStudioAiPrompt({
           providerChoice,
           requestedModel: typeof model === 'string' ? model : undefined,
+          plan: ctx.plan,
           userPromptText: repairPrompt,
           systemInstruction: SYSTEM_PROMPT,
           byok: ctx.byok,
@@ -2833,6 +2863,7 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
     const aiOut = await executeStudioAiPrompt({
       providerChoice,
       requestedModel: typeof model === 'string' ? model : undefined,
+      plan: ctx.plan,
       userPromptText: refinePrompt,
       systemInstruction: SYSTEM_PROMPT,
       attachments: Array.isArray(attachments) ? attachments : [],
@@ -2892,6 +2923,7 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
         const repairOut = await executeStudioAiPrompt({
           providerChoice,
           requestedModel: typeof model === 'string' ? model : undefined,
+          plan: ctx.plan,
           userPromptText: repairPrompt,
           systemInstruction: SYSTEM_PROMPT,
           byok: ctx.byok,
@@ -2980,6 +3012,7 @@ app.post('/api/studio/fix-error', apiHeavyAiLimiter, async (req, res) => {
     const aiOut = await executeStudioAiPrompt({
       providerChoice,
       requestedModel: typeof model === 'string' ? model : undefined,
+      plan: ctx.plan,
       userPromptText: fixPrompt,
       systemInstruction: SYSTEM_PROMPT,
       byok: ctx.byok,
@@ -3059,6 +3092,7 @@ app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
     const aiOut = await executeStudioAiPrompt({
       providerChoice,
       requestedModel: typeof model === 'string' ? model : undefined,
+      plan: ctx.plan,
       userPromptText: buildInstruction,
       systemInstruction: SYSTEM_PROMPT,
       attachments: Array.isArray(attachments) ? attachments : [],
@@ -3088,6 +3122,7 @@ app.post('/api/studio/build-app', apiHeavyAiLimiter, async (req, res) => {
         const repairOut = await executeStudioAiPrompt({
           providerChoice,
           requestedModel: typeof model === 'string' ? model : undefined,
+          plan: ctx.plan,
           userPromptText: repairPrompt,
           systemInstruction: SYSTEM_PROMPT,
           byok: ctx.byok,
@@ -3176,6 +3211,7 @@ app.post('/api/studio/refine-app', apiHeavyAiLimiter, async (req, res) => {
     const aiOut = await executeStudioAiPrompt({
       providerChoice,
       requestedModel: typeof model === 'string' ? model : undefined,
+      plan: ctx.plan,
       userPromptText: refineInstruction,
       systemInstruction: SYSTEM_PROMPT,
       attachments: Array.isArray(attachments) ? attachments : [],
@@ -3249,6 +3285,7 @@ app.post('/api/studio/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
       depth: (String(depth) as PromptEnhanceDepth) || 'fullstack',
       projectConfig: projectConfig as StudioProjectConfig | undefined,
       providerChoice: (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice,
+      plan: ctx.plan,
       byok: ctx.byok,
       geminiClient: ctx.geminiClient,
       serverKeys: ctx.serverKeys,
@@ -3352,6 +3389,7 @@ app.post('/api/studio/audit/fix', apiHeavyAiLimiter, async (req, res) => {
 
     const aiOut = await executeStudioAiPrompt({
       providerChoice: (String(provider || 'auto').toLowerCase() || 'auto') as StudioProviderChoice,
+      plan: ctx.plan,
       userPromptText: fixPrompt,
       systemInstruction: SYSTEM_PROMPT,
       byok: ctx.byok,
@@ -4647,9 +4685,10 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
   let activeGroqKey = GROQ_API_KEY;
   let activeOpenRouterKey = OPENROUTER_API_KEY;
   try {
-    const [storedSettings, tenantCtx] = await Promise.all([
+    const [storedSettings, tenantCtx, tenantPlan] = await Promise.all([
       getStoredUserSettings(tenantId),
       getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
     ]);
     const tenantClient = tenantCtx.client;
     const byok = tenantCtx.byok;
@@ -4916,8 +4955,16 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
       }
     }
 
-    // Automatic Groq fallback
-    if (!tenantClient && effectiveProvider === 'auto' && activeGroqKey) {
+    const preferFreeChatFirst =
+      effectiveProvider === 'auto' &&
+      tenantPlan.plan === 'free' &&
+      !byok.geminiApiKey &&
+      !forceGeminiForGrounding &&
+      !isGroqModelId(model) &&
+      !['comet-all-in-one', 'raone-gpt4o', 'raone-claude', 'raone-deepseek-r1'].includes(model);
+
+    // Automatic Groq routing (Free tier without Gemini BYOK goes straight to Groq at $0 instead of burning 402 latency, or fallback when Gemini is unavailable)
+    if ((!tenantClient || preferFreeChatFirst) && effectiveProvider === 'auto' && activeGroqKey) {
       const chatStart = Date.now();
       const groqOut = await callGroqChat(
         activeGroqKey,
@@ -4942,7 +4989,7 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
     }
 
     // Automatic OpenRouter free-tier fallback
-    if (!tenantClient && effectiveProvider === 'auto' && activeOpenRouterKey) {
+    if ((!tenantClient || preferFreeChatFirst) && effectiveProvider === 'auto' && activeOpenRouterKey) {
       const chatStart = Date.now();
       const orOut = await callOpenRouterChat({
         apiKey: activeOpenRouterKey,
@@ -5189,9 +5236,10 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
   let activeOpenRouterKey = OPENROUTER_API_KEY;
 
   try {
-    const [storedSettings, tenantCtx] = await Promise.all([
+    const [storedSettings, tenantCtx, tenantPlan] = await Promise.all([
       getStoredUserSettings(tenantId),
       getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
     ]);
     const tenantClient = tenantCtx.client;
     const byok = tenantCtx.byok;
@@ -5308,14 +5356,22 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
       return endStream();
     }
 
-    if (!tenantClient && effectiveProvider === 'auto' && activeGroqKey) {
+    const preferFreeStreamFirst =
+      effectiveProvider === 'auto' &&
+      tenantPlan.plan === 'free' &&
+      !byok.geminiApiKey &&
+      !forceGeminiForGrounding &&
+      !isGroqModelId(model) &&
+      !['comet-all-in-one', 'raone-gpt4o', 'raone-claude', 'raone-deepseek-r1'].includes(model);
+
+    if ((!tenantClient || preferFreeStreamFirst) && effectiveProvider === 'auto' && activeGroqKey) {
       hasStartedStream = true;
       const formattedMessages = formatGroqMessages(messages, prompt, fullSystemInstruction);
       await streamGroqChatToSSE(activeGroqKey, 'raone-llama3-70b', formattedMessages, sendEvent, startTime, true, abortController.signal);
       return endStream();
     }
 
-    if (!tenantClient && effectiveProvider === 'auto' && activeOpenRouterKey) {
+    if ((!tenantClient || preferFreeStreamFirst) && effectiveProvider === 'auto' && activeOpenRouterKey) {
       const orOut = await callOpenRouterChat({
         apiKey: activeOpenRouterKey,
         messages: [...messages, ...(prompt ? [{ role: 'user', content: prompt }] : [])],
@@ -5638,54 +5694,38 @@ app.post('/api/ai/image', apiHeavyAiLimiter, async (req, res) => {
   }
 });
 
-// 3. Music Generation (Requires live Lyria audio stream - no hardcoded lyrics fallback)
+// 3. Music Generation (Cost-aware multi-provider fallback: Lyria -> fal.ai -> HuggingFace -> FFmpeg Synth)
 app.post('/api/ai/music', apiHeavyAiLimiter, async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
     const { prompt, model = 'lyria-3-clip-preview' } = req.body || {};
     if (!prompt) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for music generation.');
     }
 
-    const { client: tenantClient } = await getTenantGeminiClient(req);
-    if (!tenantClient) {
-      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini Lyria API key is not configured on the backend.');
-    }
-
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const targetModel = model === 'lyria-3-pro-preview' ? 'lyria-3-pro-preview' : 'lyria-3-clip-preview';
-    const stream = await tenantClient.models.generateContentStream({
-      model: targetModel,
-      contents: prompt,
+    const musicOut = await generateMultiProviderMusic({
+      compiledPrompt: String(prompt),
+      bpm: 112,
+      keySignature: 'D Minor',
+      durationSec: tenantPlan.plan === 'free' ? 16 : 24,
+      plan: tenantPlan.plan,
+      byok,
+      geminiAttempt: tenantClient
+        ? () => generateLyriaTrackBuffer(tenantClient, String(prompt), targetModel)
+        : undefined,
     });
 
-    const audioChunks: Buffer[] = [];
-    let lyrics = '';
-    let mimeType = 'audio/mpeg';
-
-    for await (const chunk of stream) {
-      const parts = chunk.candidates?.[0]?.content?.parts;
-      if (!parts) continue;
-      for (const part of parts) {
-        if (part.inlineData?.data) {
-          if (audioChunks.length === 0 && part.inlineData.mimeType) {
-            mimeType = part.inlineData.mimeType;
-          }
-          audioChunks.push(Buffer.from(part.inlineData.data, 'base64'));
-        }
-        if (part.text) {
-          lyrics += part.text;
-        }
-      }
-    }
-
-    if (audioChunks.length === 0) {
-      return sendApiError(req, res, 503, 'MUSIC_PROVIDER_UNAVAILABLE', 'Lyria music generation returned no audio stream.');
-    }
-
-    const audioBase64 = Buffer.concat(audioChunks).toString('base64');
+    const audioBase64 = musicOut.buffer.toString('base64');
     return res.json({
-      audioDataUrl: `data:${mimeType};base64,${audioBase64}`,
-      lyrics,
-      model: targetModel,
+      audioDataUrl: `data:${musicOut.mimeType};base64,${audioBase64}`,
+      lyrics: musicOut.lyrics || '',
+      model: musicOut.modelUsed,
+      providerUsed: musicOut.providerUsed,
       prompt,
     });
   } catch (error: any) {
@@ -5694,58 +5734,53 @@ app.post('/api/ai/music', apiHeavyAiLimiter, async (req, res) => {
   }
 });
 
-// 4. Video Generation (Requires live Gemini Omni Interactions API - no simulated storyboard)
+// 4. Video Generation (Cost-aware multi-provider fallback: Gemini Omni -> fal.ai -> Keyframe Ken Burns MP4)
 app.post('/api/ai/video', apiHeavyAiLimiter, async (req, res) => {
   try {
+    const tenantId = getReqTenant(req);
     const { prompt, aspectRatio = '16:9', duration = '10s', base64Image = null } = req.body || {};
     if (!prompt) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for video generation.');
     }
 
-    const { client: tenantClient } = await getTenantGeminiClient(req);
-    if (!tenantClient) {
-      return sendApiError(req, res, 503, 'PROVIDER_NOT_CONFIGURED', 'Gemini Video API key is not configured on the backend.');
-    }
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
 
-    let input: any = prompt;
-    if (base64Image) {
-      input = [
-        {
-          type: 'image',
-          mime_type: 'image/png',
-          data: String(base64Image).replace(/^data:image\/\w+;base64,/, ''),
-        },
-        { type: 'text', text: prompt },
-      ];
-    }
+    const parsedDuration = Math.min(15, Math.max(4, parseInt(String(duration), 10) || 6));
+    const refParts = base64Image
+      ? [{ data: String(base64Image).replace(/^data:image\/\w+;base64,/, ''), mimeType: 'image/png' }]
+      : [];
 
-    const interaction = await tenantClient.interactions.create(
-      {
-        model: 'gemini-omni-1.2-flash',
-        input,
-        background: false,
-        store: false,
-        stream: false,
-        response_format: {
-          type: 'video',
-          aspect_ratio: aspectRatio,
-          duration,
-          resolution: '720p',
-        },
-      },
-      { timeout: 300000 }
-    );
-
-    const videoPart = interaction.output_video;
-    if (!videoPart || !videoPart.data) {
-      return sendApiError(req, res, 503, 'VIDEO_PROVIDER_UNAVAILABLE', 'Video provider returned no video output.');
-    }
+    const videoOut = await generateMultiProviderVideo({
+      compiledPrompt: String(prompt),
+      rawPrompt: String(prompt),
+      aspectRatio: String(aspectRatio),
+      durationSec: parsedDuration,
+      resolution: '720p',
+      plan: tenantPlan.plan,
+      byok,
+      geminiAttempt: tenantClient
+        ? () =>
+            runGeminiOmniVideoGeneration({
+              client: tenantClient,
+              compiledPrompt: String(prompt),
+              aspectRatio: String(aspectRatio),
+              durationSec: parsedDuration,
+              resolution: '720p',
+              referenceInlineImages: refParts,
+            })
+        : undefined,
+    });
 
     return res.json({
-      videoDataUrl: `data:${videoPart.mime_type || 'video/mp4'};base64,${videoPart.data}`,
+      videoDataUrl: `data:${videoOut.mimeType};base64,${videoOut.buffer.toString('base64')}`,
       prompt,
       aspectRatio,
       duration,
+      providerUsed: videoOut.providerUsed,
+      engineModelUsed: videoOut.engineModelUsed,
     });
   } catch (error: any) {
     console.error('Video API error:', error);
@@ -5832,12 +5867,17 @@ app.post('/api/vision/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required.');
     }
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const tenantId = getReqTenant(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const result = await enhanceVisionPromptServer({
       prompt: String(prompt),
       mode: mode as VisionEnhancerMode,
       style: String(style),
       cameraSpec,
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -5889,6 +5929,16 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
   const userHasImageByok = Boolean(
     byok.geminiApiKey || byok.falApiKey || byok.hfApiToken || byok.cloudflareApiToken
   );
+
+  if (tenantPlan.plan === 'free' && !userHasImageByok && isDisposableEmailDomain(req.actor?.email)) {
+    return sendApiError(
+      req,
+      res,
+      403,
+      'DISPOSABLE_EMAIL_BLOCKED',
+      'Disposable email addresses are not eligible for free media generation quotas.'
+    );
+  }
 
   // Free-tier cost guard: clamp 2K/4K to 1K unless Plus/Ultimate/BYOK, and enforce daily free cap
   const requestedTier: VisionResolutionTier =
@@ -6557,11 +6607,16 @@ app.post('/api/motion/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
       },
     });
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const tenantId = getReqTenant(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const result = await enhanceCinemaPromptServer({
       prompt: String(prompt),
       enhancerMode,
       config: cfg,
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -6698,6 +6753,15 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
   });
 
   if (tenantPlan.plan === 'free' && !userHasVideoByok) {
+    if (isDisposableEmailDomain(req.actor?.email)) {
+      return sendApiError(
+        req,
+        res,
+        403,
+        'DISPOSABLE_EMAIL_BLOCKED',
+        'Disposable email addresses are not eligible for free media generation quotas.'
+      );
+    }
     cfg.resolution = '720p';
     const quota = await checkAndConsumeDailyFreeQuota(tenantId, 'cinema', FREE_TIER_DAILY_LIMITS.cinema);
     if (!quota.allowed) {
@@ -6815,6 +6879,7 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
           bpm: 96,
           keySignature: 'D minor',
           durationSec: cfg.duration,
+          plan: tenantPlan.plan,
           byok,
           geminiAttempt: tenantClient
             ? async () => {
@@ -7368,14 +7433,27 @@ app.post('/api/motion/audio-sync', apiHeavyAiLimiter, async (req, res) => {
       const m = /^data:audio\/([^;]+);base64,([\s\S]+)$/.exec(String(audioDataUrl));
       audioBuffer = Buffer.from(m![2], 'base64');
     } else {
-      const { client: tenantClient } = await getTenantGeminiClient(req);
-      if (!tenantClient) {
-        return sendApiError(req, res, 503, 'AUDIO_PROVIDER_UNAVAILABLE', 'Gemini API key is required to generate Lyria soundtracks.');
-      }
+      const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+        getTenantGeminiClient(req),
+        getTenantPlan(tenantId),
+      ]);
       const promptText = String(audioPrompt || `Cinematic soundtrack and foley soundscape matching: ${sourceItem.prompt}`).trim();
-      const lyria = await generateLyriaAudioBuffer(tenantClient, promptText);
-      audioBuffer = lyria.buffer;
-      engineLabel = 'Lyria 3 Clip + FFmpeg Mux';
+      const scoreOut = await generateMultiProviderMusic({
+        compiledPrompt: promptText,
+        bpm: 100,
+        keySignature: 'D Minor',
+        durationSec: Math.min(25, Math.max(6, Number(sourceItem.durationSec) || 8)),
+        plan: tenantPlan.plan,
+        byok,
+        geminiAttempt: tenantClient
+          ? async () => {
+              const l = await generateLyriaAudioBuffer(tenantClient, promptText);
+              return { buffer: l.buffer, mimeType: 'audio/wav', modelUsed: 'lyria-3-clip-preview' };
+            }
+          : undefined,
+      });
+      audioBuffer = scoreOut.buffer;
+      engineLabel = `${scoreOut.modelUsed} + FFmpeg Mux`;
     }
 
     const audioTmp = path.join(tmpDir, 'track.wav');
@@ -7617,11 +7695,16 @@ app.post('/api/audio/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
     if (!String(prompt).trim()) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Enter at least a short song idea to enhance.');
     }
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const tenantId = getReqTenant(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const enhanced = await enhanceMusicPromptServer({
       prompt: String(prompt),
       enhancerMode,
       config: normalizeMusicConfig(musicConfig),
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -7639,8 +7722,13 @@ app.post('/api/audio/enhance-lyrics', apiHeavyAiLimiter, async (req, res) => {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for lyrics generation.');
     }
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const tenantId = getReqTenant(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
+    const preferFreeLyricsFirst = tenantPlan.plan === 'free' && !byok.geminiApiKey;
 
     const enhanceLyricsInstruction = `You are a chart-topping songwriter. Write structured song lyrics formatted with bracket tags:
 [Verse 1]
@@ -7657,6 +7745,29 @@ Language: ${language}
 Theme/Story: ${prompt}
 
 Output ONLY the formatted lyrics text with section brackets.`;
+
+    const tryGroqLyrics = async () => {
+      if (!activeGroqKey) return null;
+      try {
+        const groqLyrics = await callGroqChat(
+          activeGroqKey,
+          'raone-llama3-70b',
+          [{ role: 'user', content: enhanceLyricsInstruction }],
+          `${SYSTEM_PROMPT}\n\n[LYRICS STUDIO]\nOutput ONLY formatted song lyrics with bracket tags.`,
+          2048
+        );
+        const lyrics = (groqLyrics.text || '').trim();
+        if (lyrics) return { lyrics, modelUsed: groqLyrics.modelUsed };
+      } catch (groqErr: any) {
+        console.warn('Groq lyrics warning:', groqErr?.message || groqErr);
+      }
+      return null;
+    };
+
+    if (preferFreeLyricsFirst) {
+      const freeOut = await tryGroqLyrics();
+      if (freeOut) return res.json({ success: true, ...freeOut });
+    }
 
     if (tenantClient) {
       try {
@@ -7678,20 +7789,9 @@ Output ONLY the formatted lyrics text with section brackets.`;
       }
     }
 
-    if (activeGroqKey) {
-      try {
-        const groqLyrics = await callGroqChat(
-          activeGroqKey,
-          'raone-llama3-70b',
-          [{ role: 'user', content: enhanceLyricsInstruction }],
-          `${SYSTEM_PROMPT}\n\n[LYRICS STUDIO]\nOutput ONLY formatted song lyrics with bracket tags.`,
-          2048
-        );
-        const lyrics = (groqLyrics.text || '').trim();
-        if (lyrics) return res.json({ success: true, lyrics, modelUsed: groqLyrics.modelUsed });
-      } catch (groqErr: any) {
-        console.warn('Groq lyrics warning:', groqErr?.message || groqErr);
-      }
+    if (!preferFreeLyricsFirst) {
+      const fallbackOut = await tryGroqLyrics();
+      if (fallbackOut) return res.json({ success: true, ...fallbackOut });
     }
 
     return sendApiError(req, res, 503, 'LYRICS_PROVIDER_UNAVAILABLE', 'No AI provider is configured to generate song lyrics.');
@@ -7786,6 +7886,15 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
 
   const userHasAudioByok = Boolean(byok.geminiApiKey || byok.falApiKey || byok.hfApiToken);
   if (tenantPlan.plan === 'free' && !userHasAudioByok) {
+    if (isDisposableEmailDomain(req.actor?.email)) {
+      return sendApiError(
+        req,
+        res,
+        403,
+        'DISPOSABLE_EMAIL_BLOCKED',
+        'Disposable email addresses are not eligible for free media generation quotas.'
+      );
+    }
     const quota = await checkAndConsumeDailyFreeQuota(tenantId, 'music', FREE_TIER_DAILY_LIMITS.music);
     if (!quota.allowed) {
       return sendApiError(
@@ -7852,6 +7961,7 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
       bpm: cfg.bpm,
       keySignature: cfg.keySignature,
       durationSec: tenantPlan.plan === 'free' ? 16 : 30,
+      plan: tenantPlan.plan,
       byok,
       geminiAttempt:
         tenantClient && (tenantPlan.plan !== 'free' || userHasAudioByok)
@@ -7872,6 +7982,7 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
         const tagSpeech = await generateMultiProviderSpeech({
           text: cfg.vocal.producerTagText.trim(),
           voiceName: cfg.vocal.producerTagVoice || 'Kore',
+          plan: tenantPlan.plan,
           geminiClient: tenantClient,
           byok,
           fallbackGroqKey: GROQ_API_KEY,
@@ -8587,11 +8698,16 @@ app.post('/api/documents/enhance-prompt', apiHeavyAiLimiter, async (req, res) =>
     if (!String(prompt).trim()) {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Enter at least a short document topic to enhance.');
     }
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const tenantId = getReqTenant(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const enhanced = await enhanceDocumentPromptServer({
       prompt: String(prompt),
       enhancerMode,
       config: normalizeDocumentConfig(documentConfig),
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -8672,7 +8788,10 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
       return sendApiError(req, res, 400, 'INVALID_PROMPT', 'Prompt is required for document generation.');
     }
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
     if (!tenantClient && !activeGroqKey && !localCfg) {
@@ -8691,6 +8810,7 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
     const llmOut = await runTextLlmJsonOrText({
       prompt: compiledPrompt,
       systemPrompt: 'Output strictly valid JSON matching the document synthesis schema requested.',
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -8791,7 +8911,10 @@ app.post('/api/documents/edit', apiHeavyAiLimiter, async (req, res) => {
       return sendApiError(req, res, 404, 'DOCUMENT_NOT_FOUND', 'Source document not found for editing.');
     }
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
     if (!tenantClient && !activeGroqKey && !localCfg) {
@@ -8817,6 +8940,7 @@ app.post('/api/documents/edit', apiHeavyAiLimiter, async (req, res) => {
     const llmOut = await runTextLlmJsonOrText({
       prompt: compiledEdit,
       systemPrompt: 'Output strictly valid JSON matching the document edit schema.',
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,
@@ -9013,7 +9137,11 @@ app.post('/api/documents/analyze', apiHeavyAiLimiter, async (req, res) => {
       return sendApiError(req, res, 400, 'INVALID_INPUT', 'Query or content is required.');
     }
 
-    const { client: tenantClient, byok } = await getTenantGeminiClient(req);
+    const tenantId = getReqTenant(req);
+    const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
+      getTenantGeminiClient(req),
+      getTenantPlan(tenantId),
+    ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
     if (!tenantClient && !activeGroqKey && !localCfg) {
@@ -9029,6 +9157,7 @@ User Query: "${query || 'Summarize key takeaways, risks, and next steps'}"`;
     const out = await runTextLlmJsonOrText({
       prompt: ragPrompt,
       systemPrompt: 'RaOne Document Studio Grounded Q&A — cite factual clauses from the text accurately.',
+      plan: tenantPlan.plan,
       geminiClient: tenantClient,
       byok,
       fallbackGroqKey: GROQ_API_KEY,

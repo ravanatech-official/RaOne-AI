@@ -10,6 +10,7 @@ import { callGroqChat } from './server_groq_service.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import type { PlanId } from './src/lib/pricingCatalog.ts';
 import {
   getMediaStorageProvider,
   inferMimeFromFilename,
@@ -667,6 +668,7 @@ export async function enhanceMusicPromptServer(params: {
   prompt: string;
   enhancerMode?: MusicEnhancerMode;
   config?: MusicConfig;
+  plan?: PlanId;
   geminiClient: GoogleGenAI | null;
   byok: ByokKeyMap;
   fallbackGroqKey?: string;
@@ -747,6 +749,31 @@ Return STRICT VALID JSON with keys:
     return null;
   };
 
+  const preferFreeFirst = params.plan === 'free' && !params.byok?.geminiApiKey;
+  const groqKey = params.byok?.groqApiKey || params.fallbackGroqKey;
+
+  const tryGroqMusicEnhance = async () => {
+    if (!groqKey) return null;
+    try {
+      const res = await callGroqChat(
+        groqKey,
+        'raone-llama3-70b',
+        [{ role: 'user', content: `User music seed idea: "${cleanPrompt}"\nOutput ONLY valid JSON.` }],
+        `${SYSTEM_PROMPT}\n\n${systemGuide}`,
+        1800
+      );
+      return tryParseEnhancement(res.text || '', res.modelUsed || 'Groq');
+    } catch (err: any) {
+      console.warn('Music Groq prompt enhance warning:', err?.message || err);
+      return null;
+    }
+  };
+
+  if (preferFreeFirst) {
+    const groqOut = await tryGroqMusicEnhance();
+    if (groqOut) return groqOut;
+  }
+
   if (params.geminiClient) {
     try {
       const response = await params.geminiClient.models.generateContent({
@@ -772,21 +799,9 @@ Return STRICT VALID JSON with keys:
     }
   }
 
-  const groqKey = params.byok?.groqApiKey || params.fallbackGroqKey;
-  if (groqKey) {
-    try {
-      const res = await callGroqChat(
-        groqKey,
-        'raone-llama3-70b',
-        [{ role: 'user', content: `User music seed idea: "${cleanPrompt}"\nOutput ONLY valid JSON.` }],
-        `${SYSTEM_PROMPT}\n\n${systemGuide}`,
-        1800
-      );
-      const parsed = tryParseEnhancement(res.text || '', res.modelUsed || 'Groq');
-      if (parsed) return parsed;
-    } catch (err: any) {
-      console.warn('Music Groq prompt enhance warning:', err?.message || err);
-    }
+  if (!preferFreeFirst) {
+    const groqOut = await tryGroqMusicEnhance();
+    if (groqOut) return groqOut;
   }
 
   const localCfg = getActiveLocalEndpointConfig(params.byok || {});

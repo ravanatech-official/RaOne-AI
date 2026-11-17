@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="raoneCore" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="55%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="#090a0d" />
+  <rect x="3" y="3" width="58" height="58" rx="13" fill="none" stroke="url(#raoneCore)" stroke-opacity="0.4" stroke-width="2" />
+  <path d="M20 46V18h14c6.8 0 11.5 3.9 11.5 9.8 0 4.6-2.9 7.8-7.4 9.1L46 46h-7.6l-7-8.4H27V46h-7zm7-14h6.4c3.2 0 5.1-1.5 5.1-4.1 0-2.6-1.9-4-5.1-4H27v8.1z" fill="url(#raoneCore)" />
+</svg>

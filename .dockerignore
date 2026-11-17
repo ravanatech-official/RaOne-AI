@@ -9,5 +9,8 @@ api_keys_storage.json
 .aistudio
 .firebase
 /data
+tests
+*.md
+*_data.json
 public/assets/aistudio/Paste_*
 public/assets/aistudio/image_*

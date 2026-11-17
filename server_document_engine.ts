@@ -12,6 +12,7 @@ import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_l
 import { extractTextFromUploadedBase64 } from './server_uploads.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import type { PlanId } from './src/lib/pricingCatalog.ts';
 import {
   getMediaStorageProvider,
   inferMimeFromFilename,
@@ -176,11 +177,38 @@ export function mapCategoryToLegacyDocType(
 export async function runTextLlmJsonOrText(params: {
   prompt: string;
   systemPrompt: string;
+  plan?: PlanId;
   geminiClient: GoogleGenAI | null;
   byok: ByokKeyMap;
   fallbackGroqKey?: string;
   expectJson?: boolean;
 }): Promise<{ text: string; providerUsed: string }> {
+  const preferFreeFirst = params.plan === 'free' && !params.byok?.geminiApiKey;
+  const groqKey = params.byok?.groqApiKey || params.fallbackGroqKey;
+
+  const tryGroqText = async () => {
+    if (!groqKey) return null;
+    try {
+      const res = await callGroqChat(
+        groqKey,
+        'raone-llama3-70b',
+        [{ role: 'user', content: params.prompt }],
+        `${SYSTEM_PROMPT}\n\n${params.systemPrompt}`,
+        4096
+      );
+      const text = (res.text || '').trim();
+      if (text) return { text, providerUsed: res.modelUsed || 'Groq' };
+    } catch (err: any) {
+      console.warn('Doc Studio Groq call warning:', err?.message || err);
+    }
+    return null;
+  };
+
+  if (preferFreeFirst) {
+    const groqOut = await tryGroqText();
+    if (groqOut) return groqOut;
+  }
+
   if (params.geminiClient) {
     try {
       const response = await params.geminiClient.models.generateContent({
@@ -202,21 +230,9 @@ export async function runTextLlmJsonOrText(params: {
     }
   }
 
-  const groqKey = params.byok?.groqApiKey || params.fallbackGroqKey;
-  if (groqKey) {
-    try {
-      const res = await callGroqChat(
-        groqKey,
-        'raone-llama3-70b',
-        [{ role: 'user', content: params.prompt }],
-        `${SYSTEM_PROMPT}\n\n${params.systemPrompt}`,
-        4096
-      );
-      const text = (res.text || '').trim();
-      if (text) return { text, providerUsed: res.modelUsed || 'Groq' };
-    } catch (err: any) {
-      console.warn('Doc Studio Groq call warning:', err?.message || err);
-    }
+  if (!preferFreeFirst) {
+    const groqOut = await tryGroqText();
+    if (groqOut) return groqOut;
   }
 
   const localCfg = getActiveLocalEndpointConfig(params.byok || {});
@@ -255,6 +271,7 @@ export async function enhanceDocumentPromptServer(params: {
   prompt: string;
   enhancerMode?: DocumentEnhancerMode;
   config?: DocumentConfig;
+  plan?: PlanId;
   geminiClient: GoogleGenAI | null;
   byok: ByokKeyMap;
   fallbackGroqKey?: string;
@@ -308,6 +325,7 @@ Return STRICT VALID JSON with keys:
     const res = await runTextLlmJsonOrText({
       prompt: `User short document seed: "${cleanPrompt}"\nOutput strictly valid JSON.`,
       systemPrompt: sys,
+      plan: params.plan,
       geminiClient: params.geminiClient,
       byok: params.byok,
       fallbackGroqKey: params.fallbackGroqKey,

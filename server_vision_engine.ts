@@ -5,6 +5,7 @@ import { callGroqChat } from './server_groq_service.ts';
 import { getActiveLocalEndpointConfig, callLocalLlmChat } from './server_local_llm.ts';
 import { SYSTEM_PROMPT, appendRuntimeMetadata } from './src/lib/systemPrompts.ts';
 import type { ByokKeyMap } from './server_tenant_store.ts';
+import type { PlanId } from './src/lib/pricingCatalog.ts';
 import {
   getMediaStorageProvider,
   inferMimeFromFilename,
@@ -548,6 +549,7 @@ export async function enhanceVisionPromptServer(opts: {
   mode?: VisionEnhancerMode;
   style?: string;
   cameraSpec?: VisionCameraSpec;
+  plan?: PlanId;
   geminiClient: GoogleGenAI | null;
   byok?: ByokKeyMap;
   fallbackGroqKey?: string;
@@ -607,6 +609,31 @@ User input: "${cleanPrompt}"`;
     return null;
   };
 
+  const preferFreeFirst = opts.plan === 'free' && !opts.byok?.geminiApiKey;
+  const groqKey = opts.byok?.groqApiKey || opts.fallbackGroqKey;
+
+  const tryGroqEnhance = async (): Promise<EnhancedPromptResult | null> => {
+    if (!groqKey) return null;
+    try {
+      const res = await callGroqChat(
+        groqKey,
+        'raone-llama3-70b',
+        [{ role: 'user', content: instruction }],
+        `${SYSTEM_PROMPT}\nOutput valid JSON only.`,
+        1024
+      );
+      return tryParseJson(res.text || '', res.modelUsed || 'groq');
+    } catch (err: any) {
+      console.warn('Groq vision prompt enhance warning:', err?.message || err);
+      return null;
+    }
+  };
+
+  if (preferFreeFirst) {
+    const groqOut = await tryGroqEnhance();
+    if (groqOut) return groqOut;
+  }
+
   if (opts.geminiClient) {
     try {
       const response = await opts.geminiClient.models.generateContent({
@@ -628,21 +655,9 @@ User input: "${cleanPrompt}"`;
     }
   }
 
-  const groqKey = opts.byok?.groqApiKey || opts.fallbackGroqKey;
-  if (groqKey) {
-    try {
-      const res = await callGroqChat(
-        groqKey,
-        'raone-llama3-70b',
-        [{ role: 'user', content: instruction }],
-        `${SYSTEM_PROMPT}\nOutput valid JSON only.`,
-        1024
-      );
-      const parsed = tryParseJson(res.text || '', res.modelUsed || 'groq');
-      if (parsed) return parsed;
-    } catch (err: any) {
-      console.warn('Groq vision prompt enhance warning:', err?.message || err);
-    }
+  if (!preferFreeFirst) {
+    const groqOut = await tryGroqEnhance();
+    if (groqOut) return groqOut;
   }
 
   const localCfg = getActiveLocalEndpointConfig(opts.byok || {});

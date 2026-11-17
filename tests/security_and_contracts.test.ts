@@ -1211,6 +1211,72 @@ test('Firebase Hosting __session media cookie and Code Studio escaped JSON recov
   assert.equal(hollowProject?.code.includes('/src/main.tsx'), false, 'Dead /src/main.tsx tag must be stripped from compiled preview bundle');
 });
 
+test('Zero-cost free-tier routing, raw-body webhook downgrades, public Firebase rewrites, and lightweight SVG favicon hold strictly', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const crypto = await import('node:crypto');
+
+  const { resolveImageProviderOrder, resolveMusicProviderOrder } = await import('../server_media_providers.ts');
+  const { resolveStudioProviderOrder } = await import('../server_studio_engine.ts');
+  const { verifyWebhookHmacSignature, resolveWebhookEventAction } = await import('../server_security.ts');
+
+  // 1. Free-tier Image & Music routing skips server-paid Gemini/fal.ai unless BYOK is present
+  assert.deepEqual(resolveImageProviderOrder('free', {}), ['cloudflare', 'huggingface', 'pollinations', 'procedural']);
+  assert.deepEqual(resolveImageProviderOrder('free', { geminiApiKey: 'AIza-user' }), ['gemini', 'fal', 'cloudflare', 'huggingface', 'pollinations', 'procedural']);
+  assert.deepEqual(resolveImageProviderOrder('plus', {}), ['gemini', 'fal', 'cloudflare', 'huggingface', 'pollinations', 'procedural']);
+
+  assert.deepEqual(resolveMusicProviderOrder('free', {}), ['huggingface', 'ffmpeg_synth']);
+  assert.deepEqual(resolveMusicProviderOrder('free', { falApiKey: 'fal-user-key' }), ['gemini', 'fal', 'huggingface', 'ffmpeg_synth']);
+  assert.deepEqual(resolveMusicProviderOrder('ultimate', {}), ['gemini', 'fal', 'huggingface', 'ffmpeg_synth']);
+
+  // 2. Code Studio free-tier auto order prioritizes Groq/OpenRouter BEFORE Gemini (unless BYOK or image attachment)
+  const freeStudioOrder = resolveStudioProviderOrder({ providerChoice: 'auto', plan: 'free', byok: {}, hasImages: false });
+  assert.equal(freeStudioOrder[0], 'groq');
+  assert.equal(freeStudioOrder[1], 'openrouter');
+  const plusStudioOrder = resolveStudioProviderOrder({ providerChoice: 'auto', plan: 'plus', byok: {}, hasImages: false });
+  assert.equal(plusStudioOrder[0], 'gemini');
+  const multimodalFreeOrder = resolveStudioProviderOrder({ providerChoice: 'auto', plan: 'free', byok: {}, hasImages: true });
+  assert.equal(multimodalFreeOrder[0], 'gemini');
+
+  // 3. Raw-body webhook HMAC verification + cancellation/refund downgrade detection
+  const rawPayload = Buffer.from('{"tenantId":"user_1","meta":{"event_name":"subscription_cancelled"}}', 'utf-8');
+  const secret = 'whsec_test_secret_123';
+  const validHex = crypto.createHmac('sha256', secret).update(rawPayload).digest('hex');
+  assert.equal(verifyWebhookHmacSignature({ secret, signatureHeader: validHex, rawBody: rawPayload }), true);
+  assert.equal(verifyWebhookHmacSignature({ secret, signatureHeader: `sha256=${validHex}`, rawBody: rawPayload }), true);
+  assert.equal(verifyWebhookHmacSignature({ secret, signatureHeader: validHex, rawBody: Buffer.from('tampered', 'utf-8') }), false);
+
+  assert.equal(resolveWebhookEventAction({ meta: { event_name: 'subscription_cancelled' } }).kind, 'downgrade_free');
+  assert.equal(resolveWebhookEventAction({ type: 'subscription.canceled' }).kind, 'downgrade_free');
+  assert.equal(resolveWebhookEventAction({ event: 'order_refunded' }).kind, 'downgrade_free');
+  assert.deepEqual(resolveWebhookEventAction({ plan: 'plus', billingCycle: 'yearly' }), {
+    kind: 'activate_plan',
+    plan: 'plus',
+    billingCycle: 'yearly',
+    eventName: 'plan_activated',
+  });
+
+  // 4. Public backend pages rewritten cleanly through Firebase Hosting before SPA fallback
+  const firebaseJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase.json'), 'utf-8'));
+  const rewrites: Array<{ source: string; run?: { serviceId: string; region: string }; destination?: string }> =
+    firebaseJson?.hosting?.rewrites || [];
+  const sources = rewrites.map((r) => r.source);
+  for (const requiredSource of ['/api/**', '/published/**', '/vision/shared/**', '/privacy-policy', '/terms-of-service']) {
+    const idx = sources.indexOf(requiredSource);
+    assert.ok(idx >= 0 && idx < sources.length - 1, `${requiredSource} must precede ** SPA fallback`);
+    assert.equal(rewrites[idx].run?.serviceId, 'raone-ai-backend');
+  }
+
+  // 5. Lightweight SVG favicon + SEO / Git line-ending hygiene
+  const indexHtml = fs.readFileSync(path.join(process.cwd(), 'index.html'), 'utf-8');
+  assert.ok(indexHtml.includes('href="/favicon.svg"'));
+  assert.equal(indexHtml.includes('raone_core_symbol_1794208556087.jpg'), false);
+  assert.ok(fs.existsSync(path.join(process.cwd(), 'public', 'favicon.svg')));
+  assert.ok(fs.existsSync(path.join(process.cwd(), 'public', 'robots.txt')));
+  assert.ok(fs.existsSync(path.join(process.cwd(), '.gitattributes')));
+});
+
+
 
 
 
