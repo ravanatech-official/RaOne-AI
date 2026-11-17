@@ -189,6 +189,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
   // Attachments & Saved Apps
   const [attachments, setAttachments] = useState<StudioAttachmentPayload[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hasRestoredAppRef = useRef(false);
   const [agentLogs, setAgentLogs] = useState<string[]>([]);
   const [savedApps, setSavedApps] = useState<StudioApp[]>([]);
   const [galleryApps, setGalleryApps] = useState<StudioApp[]>([]);
@@ -230,7 +231,7 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
     setLocalCfg(readLocalLlmConfig());
 
     fetch('/api/keys')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && typeof data === 'object') {
           setProviderStatus({
@@ -246,14 +247,34 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       .catch(() => {});
 
     fetch('/api/studio/apps')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (Array.isArray(data)) setSavedApps(data);
+        if (Array.isArray(data)) {
+          setSavedApps(data);
+          if (!hasRestoredAppRef.current) {
+            hasRestoredAppRef.current = true;
+            const pending = (window as any).__RAONE_PENDING_ASSET__;
+            if (!pending || pending.studio !== 'code') {
+              const latestUserApp = data.find(
+                (a: StudioApp) => Array.isArray(a.turns) && a.turns.length > 0
+              );
+              if (latestUserApp) {
+                setBuiltApp((prev) => prev || latestUserApp);
+                setTurns((prev) =>
+                  prev.length > 0 ? prev : Array.isArray(latestUserApp.turns) ? latestUserApp.turns : []
+                );
+                if (latestUserApp.projectConfig) {
+                  setProjectConfig(latestUserApp.projectConfig);
+                }
+              }
+            }
+          }
+        }
       })
       .catch(() => {});
 
     fetch('/api/studio/gallery')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.gallery && Array.isArray(data.gallery)) {
           setGalleryApps(data.gallery);
@@ -626,16 +647,16 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       const completedTurns = [...nextTurns, assistantTurn];
       appResult.turns = completedTurns;
 
-      // Sync final turns to server in background so reopening app restores full conversation
-      fetch(`/api/studio/apps/${appResult.id}`, {
+      setBuiltApp(appResult);
+      setTurns(completedTurns);
+      setSavedApps((prev) => [appResult, ...prev.filter((a) => a.id !== appResult.id)]);
+
+      // Persist final turns to server so reopening or refreshing restores full conversation
+      await fetch(`/api/studio/apps/${appResult.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ turns: completedTurns }),
       }).catch(() => {});
-
-      setBuiltApp(appResult);
-      setTurns(completedTurns);
-      setSavedApps((prev) => [appResult, ...prev.filter((a) => a.id !== appResult.id)]);
       setIframeKey((k) => k + 1);
       setRightTab('preview');
       setSelectedElementContext(null);
@@ -689,15 +710,14 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
       };
       const updatedTurns = [...turns, fixTurn];
       fixedApp.turns = updatedTurns;
-      fetch(`/api/studio/apps/${fixedApp.id}`, {
+      setBuiltApp(fixedApp);
+      setTurns(updatedTurns);
+      setSavedApps((prev) => [fixedApp, ...prev.filter((a) => a.id !== fixedApp.id)]);
+      await fetch(`/api/studio/apps/${fixedApp.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ turns: updatedTurns }),
       }).catch(() => {});
-
-      setBuiltApp(fixedApp);
-      setTurns(updatedTurns);
-      setSavedApps((prev) => [fixedApp, ...prev.filter((a) => a.id !== fixedApp.id)]);
       setRuntimeErrors([]);
       setIframeKey((k) => k + 1);
       showToast('Runtime error fixed and preview reloaded.');

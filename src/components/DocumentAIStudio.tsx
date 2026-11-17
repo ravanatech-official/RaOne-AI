@@ -104,6 +104,7 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hasRestoredHistoryRef = useRef(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -113,9 +114,41 @@ export const DocumentAIStudio: React.FC<DocumentAIStudioProps> = ({
   const fetchDocumentHistory = async () => {
     try {
       const res = await fetch('/api/documents/history');
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success && Array.isArray(data.items)) {
         setDocuments(data.items);
+        if (!hasRestoredHistoryRef.current && data.items.length > 0) {
+          hasRestoredHistoryRef.current = true;
+          const pending = (window as any).__RAONE_PENDING_ASSET__;
+          if (!pending || pending.studio !== 'document') {
+            setActiveDoc((prev) => prev || data.items[0]);
+          }
+          setTurns((prev) => {
+            if (prev.length > 0) return prev;
+            const restored: WorkspaceTurn[] = [];
+            [...data.items]
+              .slice(0, 10)
+              .reverse()
+              .forEach((doc: DocumentItem) => {
+                restored.push({
+                  id: `u_hist_${doc.id}`,
+                  role: 'user',
+                  content: doc.enhancedFrom || doc.prompt || doc.title,
+                });
+                restored.push({
+                  id: `a_hist_${doc.id}`,
+                  role: 'assistant',
+                  modelLabel: doc.model || 'Document AI',
+                  content: `Synthesized "${doc.title}" (${doc.wordCount || 0} words · ${doc.pageCount || 1} pages).`,
+                  details: [
+                    `Category: ${(doc.docCategory || doc.docType || 'report').replace(/_/g, ' ')} · v${doc.version || 1}`,
+                  ],
+                });
+              });
+            return restored;
+          });
+        }
       }
     } catch {
       // ignore offline

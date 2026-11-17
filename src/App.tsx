@@ -299,7 +299,15 @@ export default function App() {
               setActiveId(sanitized[0].id);
               return sanitized;
             }
-            return prev;
+            const byId = new Map<string, Conversation>();
+            sanitized.forEach((c) => byId.set(c.id, c));
+            prev.forEach((local) => {
+              const remote = byId.get(local.id);
+              if (!remote || local.messages.length >= remote.messages.length) {
+                byId.set(local.id, local);
+              }
+            });
+            return Array.from(byId.values());
           });
         }
       })

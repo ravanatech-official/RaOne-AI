@@ -137,6 +137,7 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
 
   const uploadSourceRef = useRef<HTMLInputElement>(null);
   const uploadRefImgRef = useRef<HTMLInputElement>(null);
+  const hasRestoredHistoryRef = useRef(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -146,9 +147,42 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
   const fetchHistory = async () => {
     try {
       const res = await fetch('/api/vision/history');
+      if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data.items)) {
         setGalleryItems(data.items);
+        if (!hasRestoredHistoryRef.current && data.items.length > 0) {
+          hasRestoredHistoryRef.current = true;
+          const pending = (window as any).__RAONE_PENDING_ASSET__;
+          if (!pending || pending.studio !== 'vision') {
+            setSelectedImage((prev) => prev || data.items[0]);
+            setBatchItems((prev) => (prev.length > 0 ? prev : [data.items[0]]));
+          }
+          setTurns((prev) => {
+            if (prev.length > 0) return prev;
+            const restored: WorkspaceTurn[] = [];
+            [...data.items]
+              .slice(0, 10)
+              .reverse()
+              .forEach((item: GeneratedImageItem) => {
+                restored.push({
+                  id: `u_hist_${item.id}`,
+                  role: 'user',
+                  content: item.enhancedFrom || item.prompt,
+                });
+                restored.push({
+                  id: `a_hist_${item.id}`,
+                  role: 'assistant',
+                  modelLabel: item.engineModelUsed || item.model,
+                  content: `Generated render in ${item.dimensions} (${item.style}).`,
+                  details: [
+                    `Seed: ${item.seed} · Res: ${item.resolution || '1K'} · Aspect: ${item.aspectRatio}`,
+                  ],
+                });
+              });
+            return restored;
+          });
+        }
       }
     } catch {
       // ignore initial load error
@@ -592,6 +626,7 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
   };
 
   const handleDownloadGraded = async (item: GeneratedImageItem, fmt = exportFormat) => {
+    const filename = `raone-vision-${item.id}.${fmt}`;
     try {
       const hasDarkroomEdits =
         darkroom.brightness !== 100 ||
@@ -608,16 +643,34 @@ export const LeonardoVisionStudio: React.FC<LeonardoVisionStudioProps> = ({
         ? await exportGradedImageDataUrl(item.imageUrl, darkroom, fmt)
         : item.imageUrl;
 
-      const a = document.createElement('a');
-      a.href = href;
-      a.download = `raone-vision-${item.id}.${fmt}`;
-      a.click();
+      if (href.startsWith('data:') || href.startsWith('blob:')) {
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        const res = await fetch(href);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
+      }
       showToast(`Exported ${fmt.toUpperCase()} render.`);
     } catch {
       const a = document.createElement('a');
       a.href = item.imageUrl;
       a.download = `raone-vision-${item.id}.png`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
     }
   };
 

@@ -126,6 +126,42 @@ export interface PublishedSnapshotRecord {
 // =========================================================================
 // HTML / Multi-File Decomposition, Compilation & Syntax Validation Gate
 // =========================================================================
+export function unescapeAccidentalJsonEscapes(text: string): string {
+  const s = String(text || '');
+  if (!s) return s;
+
+  const trimmed = s.trim();
+  // Detect JSON-encoded string wrapping (e.g. "<!DOCTYPE html>\n...")
+  const hasLiteralNewlineTokens = (s.match(/\\n/g) || []).length;
+  const realNewlineCount = (s.match(/\n/g) || []).length;
+  const looksDoubleEscapedHtmlOrJs =
+    /^["']?\s*(?:<!DOCTYPE html>|<html|<head|<body|<style|<script|\/\*|\/\/|import |const |let |function |document\.)/i.test(trimmed) &&
+    hasLiteralNewlineTokens >= 4 &&
+    (hasLiteralNewlineTokens > realNewlineCount * 2 || /<!DOCTYPE html>\\n|<html[^>]*\\"|\\n\s*\\n\s*\\n/i.test(s));
+
+  if (!looksDoubleEscapedHtmlOrJs && !/\\n\s*\\n\s*\\n/.test(s)) {
+    return s;
+  }
+
+  let candidate = trimmed;
+  if (candidate.startsWith('"') && candidate.endsWith('"') && candidate.length >= 2) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      candidate = candidate.slice(1, -1);
+    }
+  }
+
+  return candidate
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/')
+    .replace(/\\\\/g, '\\');
+}
+
 export function normalizeStudioMode(rawMode?: string): StudioBuildMode {
   const m = String(rawMode || '').toLowerCase();
   if (m.includes('prototype')) return 'Prototype mode';
@@ -147,31 +183,31 @@ export function decomposeHtmlIntoFiles(
   'architecture.md': string;
   'schema.json': string;
 } {
-  const rawHtml = String(htmlCode || '').trim();
+  const rawHtml = unescapeAccidentalJsonEscapes(String(htmlCode || '')).trim();
   const styleBlocks: string[] = [];
   const scriptBlocks: string[] = [];
 
   const cleanHtmlWithoutStylesAndScripts = rawHtml
     .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_m, cssBody) => {
-      if (cssBody && cssBody.trim()) styleBlocks.push(cssBody.trim());
+      if (cssBody && cssBody.trim()) styleBlocks.push(unescapeAccidentalJsonEscapes(cssBody).trim());
       return '';
     })
     .replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs, jsBody) => {
       if (/\bsrc\s*=/i.test(attrs || '')) {
         return full;
       }
-      if (jsBody && jsBody.trim()) scriptBlocks.push(jsBody.trim());
+      if (jsBody && jsBody.trim()) scriptBlocks.push(unescapeAccidentalJsonEscapes(jsBody).trim());
       return '';
     });
 
   const extractedCss =
     styleBlocks.join('\n\n') ||
-    existingFiles?.['styles.css'] ||
+    (existingFiles?.['styles.css'] ? unescapeAccidentalJsonEscapes(existingFiles['styles.css']) : '') ||
     '/* Tailwind CSS CDN utilities + Studio tokens */\n:root { color-scheme: dark; }\nbody { margin: 0; }';
 
   const extractedJs =
     scriptBlocks.join('\n\n') ||
-    existingFiles?.['app.js'] ||
+    (existingFiles?.['app.js'] ? unescapeAccidentalJsonEscapes(existingFiles['app.js']) : '') ||
     '// Application interactive runtime\nconsole.log("RaOne app ready");';
 
   // Ensure index.html remains clean and readable while referencing styles.css and app.js logically
@@ -229,6 +265,17 @@ export function decomposeHtmlIntoFiles(
 ${mode === 'Fullstack mode' ? '- `api_routes.js`: Simulated client-side REST API router (`/api/app/*`)\n' : ''}- \`schema.json\`: Data model & storage schema
 `;
 
+  const sanitizedExisting: Record<string, string> = {};
+  if (existingFiles) {
+    for (const [k, v] of Object.entries(existingFiles)) {
+      if (typeof v === 'string') {
+        sanitizedExisting[k] = /\.(html|css|js|ts|tsx|jsx)$/i.test(k)
+          ? unescapeAccidentalJsonEscapes(v)
+          : v;
+      }
+    }
+  }
+
   const files: Record<string, string> & {
     'index.html': string;
     'app.js': string;
@@ -236,10 +283,10 @@ ${mode === 'Fullstack mode' ? '- `api_routes.js`: Simulated client-side REST API
     'architecture.md': string;
     'schema.json': string;
   } = {
-    ...(existingFiles || {}),
-    'index.html': existingFiles?.['index.html'] || cleanIndexHtml || rawHtml,
-    'styles.css': existingFiles?.['styles.css'] || extractedCss,
-    'app.js': existingFiles?.['app.js'] || extractedJs,
+    ...sanitizedExisting,
+    'index.html': sanitizedExisting['index.html'] || cleanIndexHtml || rawHtml,
+    'styles.css': sanitizedExisting['styles.css'] || extractedCss,
+    'app.js': sanitizedExisting['app.js'] || extractedJs,
     'schema.json': schemaJson,
     'architecture.md': architectureMd,
   };
@@ -256,10 +303,10 @@ window.__RAONE_API_ROUTES__ = {
 }
 
 export function compileFilesIntoHtmlBundle(files: Record<string, string>): string {
-  let html = String(files['index.html'] || '').trim();
-  const css = String(files['styles.css'] || '').trim();
-  const js = String(files['app.js'] || '').trim();
-  const apiRoutesJs = String(files['api_routes.js'] || '').trim();
+  let html = unescapeAccidentalJsonEscapes(String(files['index.html'] || '')).trim();
+  const css = unescapeAccidentalJsonEscapes(String(files['styles.css'] || '')).trim();
+  const js = unescapeAccidentalJsonEscapes(String(files['app.js'] || '')).trim();
+  const apiRoutesJs = unescapeAccidentalJsonEscapes(String(files['api_routes.js'] || '')).trim();
 
   if (!html) {
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script><style>${css}</style></head><body class="bg-[#0b0c10] text-white"><div id="app"></div><script>${apiRoutesJs}\n${js}</script></body></html>`;
@@ -347,6 +394,91 @@ export function validateStudioProject(
 // =========================================================================
 // Structured Output Parser (JSON Multi-File OR Single HTML Fallback)
 // =========================================================================
+function repairJsonControlChars(raw: string): string {
+  // Replace unescaped control characters inside JSON double-quoted strings and trailing commas
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\n') {
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\r') {
+        out += '\\r';
+        continue;
+      }
+      if (ch === '\t') {
+        out += '\\t';
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out.replace(/,\s*([}\]])/g, '$1');
+}
+
+function extractIndividualFilesFromPartialJson(raw: string): Record<string, string> | null {
+  const files: Record<string, string> = {};
+  const keyRegex = /"([a-zA-Z0-9_./-]+\.(?:html|css|js|ts|json|md))"\s*:\s*"/g;
+  let match: RegExpExecArray | null;
+  while ((match = keyRegex.exec(raw)) !== null) {
+    const fileKey = match[1];
+    let i = match.index + match[0].length;
+    let buf = '';
+    let escaped = false;
+    let closed = false;
+    while (i < raw.length) {
+      const ch = raw[i];
+      if (escaped) {
+        buf += '\\' + ch;
+        escaped = false;
+        i++;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        closed = true;
+        break;
+      }
+      buf += ch;
+      i++;
+    }
+    if (buf.trim().length > 10) {
+      try {
+        files[fileKey] = JSON.parse(`"${repairJsonControlChars(buf)}"`);
+      } catch {
+        files[fileKey] = unescapeAccidentalJsonEscapes(buf);
+      }
+    }
+    if (closed) {
+      keyRegex.lastIndex = i + 1;
+    }
+  }
+  return Object.keys(files).length > 0 ? files : null;
+}
+
 function tryExtractJsonProject(rawText: string): {
   title?: string;
   description?: string;
@@ -368,15 +500,30 @@ function tryExtractJsonProject(rawText: string): {
   }
 
   for (const cand of candidates) {
-    try {
-      const parsed = JSON.parse(cand);
-      if (parsed && typeof parsed === 'object' && parsed.files && typeof parsed.files === 'object') {
-        return parsed;
+    for (const attempt of [cand, repairJsonControlChars(cand)]) {
+      try {
+        const parsed = JSON.parse(attempt);
+        if (parsed && typeof parsed === 'object' && parsed.files && typeof parsed.files === 'object') {
+          return parsed;
+        }
+      } catch {
+        continue;
       }
-    } catch {
-      continue;
     }
   }
+
+  // Tolerant file-level recovery when LLM emitted slightly malformed/truncated JSON
+  const recoveredFiles = extractIndividualFilesFromPartialJson(cleaned);
+  if (recoveredFiles && (recoveredFiles['index.html'] || recoveredFiles['app.js'])) {
+    const titleMatch = cleaned.match(/"title"\s*:\s*"([^"]+)"/);
+    const descMatch = cleaned.match(/"description"\s*:\s*"([^"]+)"/);
+    return {
+      title: titleMatch?.[1],
+      description: descMatch?.[1],
+      files: recoveredFiles,
+    };
+  }
+
   return null;
 }
 
@@ -392,7 +539,7 @@ function extractHtmlDocument(raw: string): string {
   if (endHtmlIdx > 0) {
     cleaned = cleaned.slice(0, endHtmlIdx + 7).trim();
   }
-  return cleaned;
+  return unescapeAccidentalJsonEscapes(cleaned);
 }
 
 // =========================================================================
@@ -603,8 +750,9 @@ ${existingCode.slice(0, 32000)}
 \`\`\`
 
 TASK:
-Fix the exact root causes of every error above while preserving all existing UI and features.
-Output ONLY the complete fixed \`<!DOCTYPE html>\` document (or JSON \`{ "files": { "index.html", "styles.css", "app.js" } }\`) with zero explanatory prose.`;
+1. Fix the exact root causes of every error above while preserving all existing UI and features.
+2. Output ONLY a single valid, self-contained HTML document starting with <!DOCTYPE html> and ending with </html> (with inline <style> and <script>).
+3. Do NOT wrap the HTML in JSON, do NOT output literal \\n escape sequences, and make sure every <script> block parses with zero SyntaxErrors.`;
 }
 
 // =========================================================================
@@ -1126,6 +1274,21 @@ export function materializeProjectFromRawOutput(opts: {
     timestamp: now,
   };
 
+  const compactVersions: StudioVersionSnapshot[] = [...existingVersions, newSnapshot]
+    .slice(-6)
+    .map((v, i, arr) =>
+      i < arr.length - 1
+        ? {
+            ...v,
+            files: {
+              'index.html': v.files?.['index.html'] || '',
+              'app.js': v.files?.['app.js'] || '',
+              'styles.css': v.files?.['styles.css'] || '',
+            },
+          }
+        : v
+    );
+
   return {
     id: opts.existingApp?.id || `app-${Date.now()}`,
     title,
@@ -1147,7 +1310,7 @@ export function materializeProjectFromRawOutput(opts: {
     dependencies: depAnalysis.dependencies,
     envVariables: depAnalysis.envVariables,
     diagnostics,
-    versions: [...existingVersions, newSnapshot].slice(-20),
+    versions: compactVersions,
     currentVersion: nextVersionNum,
     publishMeta: opts.existingApp?.publishMeta || { isPublished: false },
     turns: opts.existingApp?.turns || [],
@@ -1392,7 +1555,7 @@ test('${baseProj.title} smoke validation', () => {
         code: compiledCode,
         files,
       },
-    ].slice(-20),
+    ].slice(-6),
     currentVersion: nextVersionNum,
     publishMeta: opts.existingApp?.publishMeta || { isPublished: false },
     turns: opts.existingApp?.turns || [],

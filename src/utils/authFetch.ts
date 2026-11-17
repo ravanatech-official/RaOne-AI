@@ -64,11 +64,20 @@ export function installAuthenticatedApiFetch(): void {
       init?.headers ?? (targetInput instanceof Request ? targetInput.headers : undefined)
     );
 
-    if (!headers.has('Authorization') && auth?.currentUser) {
+    if (!headers.has('Authorization') && auth) {
       try {
-        const token = await auth.currentUser.getIdToken();
-        if (token) {
-          headers.set('Authorization', `Bearer ${token}`);
+        const authAny = auth as any;
+        if (typeof authAny.authStateReady === 'function') {
+          await Promise.race([
+            authAny.authStateReady(),
+            new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+          ]);
+        }
+        if (auth.currentUser) {
+          const token = await auth.currentUser.getIdToken();
+          if (token) {
+            headers.set('Authorization', `Bearer ${token}`);
+          }
         }
       } catch {
         // Proceed without token if SDK refresh transiently fails

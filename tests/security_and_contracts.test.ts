@@ -1125,6 +1125,72 @@ test('SaaS pricing catalog, daily free-tier quotas, webhook idempotency, disposa
   }
 });
 
+test('Firebase Hosting __session media cookie and Code Studio escaped JSON recovery work cleanly', async () => {
+  const { resolveActorMiddleware, setTokenVerifierForTesting } = await import('../server_security.ts');
+  const { unescapeAccidentalJsonEscapes, materializeProjectFromRawOutput } = await import(
+    '../server_studio_engine.ts'
+  );
+
+  // 1. Verify __session cookie is issued with Path=/
+  const prevStrict = process.env.REQUIRE_FIREBASE_AUTH;
+  try {
+    process.env.REQUIRE_FIREBASE_AUTH = 'true';
+    setTokenVerifierForTesting(async () => ({
+      uid: 'cookie_user_1',
+      email: 'c@raone.ai',
+      emailVerified: true,
+    }));
+
+    const resCookies: string[] = [];
+    await new Promise<void>((resolve) => {
+      const req: any = {
+        method: 'GET',
+        baseUrl: '',
+        path: '/api/vision/history',
+        headers: { authorization: 'Bearer valid.jwt.token', 'x-forwarded-proto': 'https' },
+      };
+      const res: any = {
+        setHeader: () => {},
+        append: (k: string, v: string) => {
+          if (k.toLowerCase() === 'set-cookie') resCookies.push(v);
+        },
+        status: () => res,
+        json: () => resolve(),
+      };
+      resolveActorMiddleware(req, res, () => resolve());
+    });
+
+    assert.equal(resCookies.length, 1);
+    assert.ok(resCookies[0].startsWith('__session='), 'Cookie must use Firebase Hosting __session name');
+    assert.ok(resCookies[0].includes('Path=/'), 'Cookie must cover root Path=/');
+  } finally {
+    setTokenVerifierForTesting(null);
+    if (prevStrict === undefined) delete process.env.REQUIRE_FIREBASE_AUTH;
+    else process.env.REQUIRE_FIREBASE_AUTH = prevStrict;
+  }
+
+  // 2. Verify literal \n / \" escaped HTML inside JSON or malformed Llama output recovers cleanly
+  const escapedHtml =
+    '"<!DOCTYPE html>\\n<html>\\n<head><title>Recovered</title></head>\\n<body><div id=\\"root\\">Hi</div>\\n<script>const ok = true;\\nconsole.log(ok);</script></body>\\n</html>"';
+  const unescaped = unescapeAccidentalJsonEscapes(escapedHtml);
+  assert.ok(unescaped.includes('\n'), 'Literal \\n sequences should decode to real newlines');
+  assert.equal(unescaped.includes('\\"root\\"'), false, 'Escaped quotes should decode cleanly');
+
+  const malformedLlamaOutput = `Here is your app:\n{\n  "title": "Product Workflow",\n  "description": "Task app",\n  "files": {\n    "index.html": "<!DOCTYPE html>\\n<html>\\n<head><title>Workflow</title></head>\\n<body><main id=\\"app\\">Ready</main></body>\\n</html>",\n    "app.js": "const ready = true;\\nconsole.log(ready);"\n  `;
+  const recovered = materializeProjectFromRawOutput({
+    rawText: malformedLlamaOutput,
+    prompt: 'Build Product Workflow',
+    category: 'general',
+    mode: 'Default mode',
+    providerUsed: 'groq',
+    modelUsed: 'raone-llama3-70b',
+  });
+  assert.ok(recovered, 'Should recover partial/truncated JSON project');
+  assert.equal(recovered?.diagnostics?.syntaxOk, true, 'Recovered app JS syntax should validate cleanly');
+  assert.equal(recovered?.code.includes('\\n \\n \\n'), false, 'Rendered bundle must not contain literal \\n spam');
+});
+
+
 
 
 

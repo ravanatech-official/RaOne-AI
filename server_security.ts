@@ -145,7 +145,8 @@ function isMediaDownloadGetRoute(method: string, fullPath: string): boolean {
 // =========================================================================
 // Signed HttpOnly Media Session Cookie (for native <img>/<video>/<audio> tags)
 // =========================================================================
-const MEDIA_COOKIE_NAME = 'raone_media_session';
+const MEDIA_COOKIE_NAME = '__session';
+const LEGACY_MEDIA_COOKIE_NAME = 'raone_media_session';
 
 function getMediaCookieSigningKey(): Buffer {
   const secret =
@@ -217,7 +218,7 @@ function attachMediaSessionCookie(req: Request, res: Response, uid: string, tena
   const token = createSignedMediaSessionToken(uid, tenantId, 3600);
   const parts = [
     `${MEDIA_COOKIE_NAME}=${encodeURIComponent(token)}`,
-    'Path=/api',
+    'Path=/',
     'HttpOnly',
     'SameSite=Lax',
     'Max-Age=3600',
@@ -263,10 +264,18 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
         isAuthenticated: true,
         authSource: 'firebase_jwt',
       };
-      // Keep signed HttpOnly media cookie refreshed for native <img>/<video>/<audio> requests
-      const existingCookie = parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME);
+      // Keep signed HttpOnly __session cookie refreshed for native <img>/<video>/<audio> requests
+      const existingCookie =
+        parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME) ||
+        parseCookieValue(req.headers.cookie, LEGACY_MEDIA_COOKIE_NAME);
       const decodedCookie = existingCookie ? verifySignedMediaSessionToken(existingCookie) : null;
-      if (!decodedCookie || decodedCookie.uid !== verified.uid || decodedCookie.exp - Math.floor(Date.now() / 1000) < 900) {
+      const hasPrimarySessionCookie = Boolean(parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME));
+      if (
+        !hasPrimarySessionCookie ||
+        !decodedCookie ||
+        decodedCookie.uid !== verified.uid ||
+        decodedCookie.exp - Math.floor(Date.now() / 1000) < 900
+      ) {
         attachMediaSessionCookie(req, res, verified.uid, tenantId);
       }
       return next();
@@ -288,7 +297,9 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
 
   // Allow signed HttpOnly media cookie strictly for GET binary asset streaming & download routes
   if (isMediaDownloadGetRoute(req.method, fullPath)) {
-    const rawCookie = parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME);
+    const rawCookie =
+      parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME) ||
+      parseCookieValue(req.headers.cookie, LEGACY_MEDIA_COOKIE_NAME);
     const verifiedCookie = rawCookie ? verifySignedMediaSessionToken(rawCookie) : null;
     if (verifiedCookie) {
       req.actor = {

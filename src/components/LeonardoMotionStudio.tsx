@@ -99,6 +99,7 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
 
   const quickImageInputRef = useRef<HTMLInputElement>(null);
   const quickVideoUploadRef = useRef<HTMLInputElement>(null);
+  const hasRestoredHistoryRef = useRef(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -108,9 +109,41 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
   const fetchVideoHistory = async () => {
     try {
       const res = await fetch('/api/motion/history');
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success && Array.isArray(data.items)) {
         setVideoFeed(data.items);
+        if (!hasRestoredHistoryRef.current && data.items.length > 0) {
+          hasRestoredHistoryRef.current = true;
+          const pending = (window as any).__RAONE_PENDING_ASSET__;
+          if (!pending || pending.studio !== 'cinema') {
+            setSelectedVideo((prev) => prev || data.items[0]);
+          }
+          setTurns((prev) => {
+            if (prev.length > 0) return prev;
+            const restored: WorkspaceTurn[] = [];
+            [...data.items]
+              .slice(0, 10)
+              .reverse()
+              .forEach((v: GeneratedVideoItem) => {
+                restored.push({
+                  id: `u_hist_${v.id}`,
+                  role: 'user',
+                  content: v.enhancedFrom || v.prompt,
+                });
+                restored.push({
+                  id: `a_hist_${v.id}`,
+                  role: 'assistant',
+                  modelLabel: v.engineModelUsed || v.model,
+                  content: `Rendered ${Number(v.duration || 5).toFixed(1)}s clip (${v.dimensions} · ${v.fps}fps).`,
+                  details: [
+                    `Mode: ${v.operationType || v.mode || 'text-to-video'} · v${v.version || 1}`,
+                  ],
+                });
+              });
+            return restored;
+          });
+        }
       }
     } catch {
       // ignore transient load failure
@@ -625,11 +658,28 @@ export const LeonardoMotionStudio: React.FC<LeonardoMotionStudioProps> = ({
     }
   };
 
-  const downloadVideo = (video: GeneratedVideoItem) => {
-    const a = document.createElement('a');
-    a.href = video.videoUrl;
-    a.download = `raone_cinema_${video.id}.mp4`;
-    a.click();
+  const downloadVideo = async (video: GeneratedVideoItem) => {
+    const filename = `raone_cinema_${video.id}.mp4`;
+    try {
+      const res = await fetch(video.videoUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
+    } catch {
+      const a = document.createElement('a');
+      a.href = video.videoUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
   };
 
   const displayedVideos = videoFeed.filter((v) => {

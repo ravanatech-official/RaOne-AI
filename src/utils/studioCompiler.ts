@@ -9,11 +9,30 @@ export interface StudioAttachmentPayload {
  * Compiles separate project files (index.html, styles.css, app.js, api_routes.js)
  * into a self-contained runnable HTML document directly in the browser.
  */
+function cleanStudioSource(text: string): string {
+  const s = String(text || '');
+  const litN = (s.match(/\\n/g) || []).length;
+  const realN = (s.match(/\n/g) || []).length;
+  if (
+    (/<!DOCTYPE html>\\n|<html[^>]*\\"|\\n\s*\\n\s*\\n/i.test(s) || (litN >= 4 && litN > realN * 2)) &&
+    s.trim().length > 0
+  ) {
+    return s
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\\//g, '/')
+      .replace(/\\\\/g, '\\');
+  }
+  return s;
+}
+
 export function bundleFilesToHtml(files: Record<string, string | undefined>): string {
-  let html = String(files['index.html'] || '').trim();
-  const css = String(files['styles.css'] || '').trim();
-  const js = String(files['app.js'] || '').trim();
-  const apiRoutesJs = String(files['api_routes.js'] || '').trim();
+  let html = cleanStudioSource(String(files['index.html'] || '')).trim();
+  const css = cleanStudioSource(String(files['styles.css'] || '')).trim();
+  const js = cleanStudioSource(String(files['app.js'] || '')).trim();
+  const apiRoutesJs = cleanStudioSource(String(files['api_routes.js'] || '')).trim();
 
   if (!html) {
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script><style>${css}</style></head><body class="bg-[#0b0c10] text-white"><div id="app"></div><script>${apiRoutesJs}\n${js}</script></body></html>`;

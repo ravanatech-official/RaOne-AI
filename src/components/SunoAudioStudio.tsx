@@ -125,6 +125,7 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
 
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
   const quickAudioUploadRef = useRef<HTMLInputElement>(null);
+  const hasRestoredHistoryRef = useRef(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -134,9 +135,41 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
   const fetchAudioHistory = async () => {
     try {
       const res = await fetch('/api/audio/history');
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success && Array.isArray(data.items)) {
         setTracks(data.items);
+        if (!hasRestoredHistoryRef.current && data.items.length > 0) {
+          hasRestoredHistoryRef.current = true;
+          const pending = (window as any).__RAONE_PENDING_ASSET__;
+          if (!pending || pending.studio !== 'music') {
+            setActiveTrack((prev) => prev || data.items[0]);
+          }
+          setTurns((prev) => {
+            if (prev.length > 0) return prev;
+            const restored: WorkspaceTurn[] = [];
+            [...data.items]
+              .slice(0, 10)
+              .reverse()
+              .forEach((t: GeneratedAudioItem) => {
+                restored.push({
+                  id: `u_hist_${t.id}`,
+                  role: 'user',
+                  content: t.enhancedFrom || t.prompt || t.title,
+                });
+                restored.push({
+                  id: `a_hist_${t.id}`,
+                  role: 'assistant',
+                  modelLabel: t.engineModelUsed || t.model,
+                  content: `Produced "${t.title}" (${t.bpm || 120} BPM · ${t.keySignature || 'C Major'}).`,
+                  details: [
+                    t.styleTags?.length ? `Tags: ${t.styleTags.join(', ')}` : `Format: ${t.format || 'MP3'}`,
+                  ],
+                });
+              });
+            return restored;
+          });
+        }
       }
     } catch {
       // ignore transient errors
@@ -1085,14 +1118,32 @@ export const SunoAudioStudio: React.FC<SunoAudioStudioProps> = ({
           showToast('Select or generate a track to share.');
         }
       }}
-      onPublish={() => {
-        if (activeTrack) {
+      onPublish={async () => {
+        if (!activeTrack) {
+          showToast('Select or generate a track first.');
+          return;
+        }
+        const ext = activeTrack.format?.toLowerCase() === 'wav' ? 'wav' : 'mp3';
+        const filename = `${activeTrack.title.replace(/[^a-zA-Z0-9._-]+/g, '_')}_mix.${ext}`;
+        try {
+          const res = await fetch(activeTrack.audioUrl);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
+        } catch {
           const a = document.createElement('a');
           a.href = activeTrack.audioUrl;
-          a.download = `${activeTrack.title}.${activeTrack.format?.toLowerCase() === 'wav' ? 'wav' : 'mp3'}`;
+          a.download = filename;
+          document.body.appendChild(a);
           a.click();
-        } else {
-          showToast('Select or generate a track first.');
+          document.body.removeChild(a);
         }
       }}
       publishLabel={activeTrack ? `Download ${activeTrack.format || 'MP3'}` : 'Download'}

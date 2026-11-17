@@ -2301,6 +2301,26 @@ app.put('/api/studio/apps/:id', async (req, res) => {
       );
       const diagnostics = validateStudioProject(normalizedFiles, compiledCode);
 
+      const rawVersions = Array.isArray(patch.versions)
+        ? patch.versions
+        : Array.isArray(base.versions)
+        ? base.versions
+        : undefined;
+      const compactedVersions = rawVersions
+        ? rawVersions.slice(-6).map((v: any, i: number, arr: any[]) =>
+            i < arr.length - 1 && v?.files
+              ? {
+                  ...v,
+                  files: {
+                    'index.html': v.files['index.html'] || '',
+                    'app.js': v.files['app.js'] || '',
+                    'styles.css': v.files['styles.css'] || '',
+                  },
+                }
+              : v
+          )
+        : undefined;
+
       updatedRecord = {
         ...base,
         ...patch,
@@ -2309,6 +2329,7 @@ app.put('/api/studio/apps/:id', async (req, res) => {
         files: normalizedFiles,
         code: compiledCode,
         diagnostics,
+        ...(compactedVersions ? { versions: compactedVersions } : {}),
         updatedAt: new Date().toISOString(),
       };
       if (idx >= 0) next[idx] = updatedRecord;
@@ -2687,6 +2708,47 @@ app.post('/api/studio/build-app/stream', apiHeavyAiLimiter, async (req, res) => 
       });
     }
 
+    if (project && project.diagnostics && !project.diagnostics.syntaxOk && project.providerUsed !== 'synthesizer') {
+      try {
+        writeSseFrame(res, {
+          type: 'phase',
+          phase: 'Auto-Repairing Syntax',
+          detail: `Detected syntax issue (${project.diagnostics.errors[0] || 'JS parse check'}); running automatic self-heal pass...`,
+        });
+        const repairPrompt = buildStudioAutoFixPrompt({
+          app: project,
+          runtimeErrors: project.diagnostics.errors,
+        });
+        const repairOut = await executeStudioAiPrompt({
+          providerChoice,
+          requestedModel: typeof model === 'string' ? model : undefined,
+          userPromptText: repairPrompt,
+          systemInstruction: SYSTEM_PROMPT,
+          byok: ctx.byok,
+          geminiClient: ctx.geminiClient,
+          serverKeys: ctx.serverKeys,
+        });
+        if (repairOut?.rawText) {
+          const repaired = materializeProjectFromRawOutput({
+            rawText: repairOut.rawText,
+            prompt,
+            category: typedConfig?.category || category,
+            mode: normalizedMode,
+            providerUsed: repairOut.providerUsed,
+            modelUsed: repairOut.modelUsed,
+            existingApp: project,
+            isRefinement: true,
+            projectConfig: typedConfig,
+          });
+          if (repaired && (repaired.diagnostics?.syntaxOk || (repaired.diagnostics?.errors?.length || 0) < (project.diagnostics?.errors?.length || 0))) {
+            project = repaired;
+          }
+        }
+      } catch (repairErr) {
+        console.warn('Studio stream build auto-repair skipped:', repairErr);
+      }
+    }
+
     if (!project) {
       project = fallbackSynthesizeStudioProject({
         prompt,
@@ -2810,6 +2872,47 @@ app.post('/api/studio/refine-app/stream', apiHeavyAiLimiter, async (req, res) =>
         isRefinement: true,
         projectConfig: typedConfig,
       });
+    }
+
+    if (updatedProject && updatedProject.diagnostics && !updatedProject.diagnostics.syntaxOk && updatedProject.providerUsed !== 'synthesizer') {
+      try {
+        writeSseFrame(res, {
+          type: 'phase',
+          phase: 'Auto-Repairing Syntax',
+          detail: `Detected syntax issue (${updatedProject.diagnostics.errors[0] || 'JS parse check'}); running automatic self-heal pass...`,
+        });
+        const repairPrompt = buildStudioAutoFixPrompt({
+          app: updatedProject,
+          runtimeErrors: updatedProject.diagnostics.errors,
+        });
+        const repairOut = await executeStudioAiPrompt({
+          providerChoice,
+          requestedModel: typeof model === 'string' ? model : undefined,
+          userPromptText: repairPrompt,
+          systemInstruction: SYSTEM_PROMPT,
+          byok: ctx.byok,
+          geminiClient: ctx.geminiClient,
+          serverKeys: ctx.serverKeys,
+        });
+        if (repairOut?.rawText) {
+          const repaired = materializeProjectFromRawOutput({
+            rawText: repairOut.rawText,
+            prompt: refinementPrompt,
+            category: currentApp.category || typedConfig?.category || 'general',
+            mode: normalizedMode,
+            providerUsed: repairOut.providerUsed,
+            modelUsed: repairOut.modelUsed,
+            existingApp: updatedProject,
+            isRefinement: true,
+            projectConfig: typedConfig,
+          });
+          if (repaired && (repaired.diagnostics?.syntaxOk || (repaired.diagnostics?.errors?.length || 0) < (updatedProject.diagnostics?.errors?.length || 0))) {
+            updatedProject = repaired;
+          }
+        }
+      } catch (repairErr) {
+        console.warn('Studio stream refine auto-repair skipped:', repairErr);
+      }
     }
 
     if (!updatedProject) {
