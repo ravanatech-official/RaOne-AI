@@ -72,7 +72,8 @@ gcloud iam service-accounts create "${DEPLOYER_SA_NAME}" \
 for ROLE in \
   roles/run.admin \
   roles/cloudbuild.builds.editor \
-  roles/artifactregistry.writer \
+  roles/artifactregistry.admin \
+  roles/logging.viewer \
   roles/storage.admin \
   roles/firebasehosting.admin \
   roles/firebaserules.admin \
@@ -82,6 +83,20 @@ for ROLE in \
     --member="serviceAccount:${DEPLOYER_SA}" \
     --role="${ROLE}"
 done
+
+echo "==> Ensuring Artifact Registry repository (cloud-run-source-deploy) exists in ${REGION}..."
+if gcloud artifacts repositories describe cloud-run-source-deploy \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  echo "   - Artifact Registry repository cloud-run-source-deploy already exists."
+else
+  gcloud artifacts repositories create cloud-run-source-deploy \
+    --repository-format=docker \
+    --location="${REGION}" \
+    --description="Cloud Run source deploy repository" \
+    --project="${PROJECT_ID}"
+  echo "   - Created Artifact Registry repository cloud-run-source-deploy."
+fi
 
 echo ""
 echo "✅ Setup complete!"

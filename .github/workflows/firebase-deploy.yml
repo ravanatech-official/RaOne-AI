@@ -151,6 +151,7 @@ jobs:
             --region "${REGION}" \
             --platform managed \
             --allow-unauthenticated \
+            --quiet \
             --port 8080 \
             --cpu 2 \
             --memory 2Gi \
