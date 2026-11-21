@@ -12,6 +12,7 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   Firestore,
   doc,
   getDocFromServer,
@@ -45,13 +46,25 @@ export const app: FirebaseApp | null = isFirebaseConfigured
     : getApp()
   : null;
 
+function createFirestoreInstance(firebaseApp: FirebaseApp): Firestore {
+  const targetDbId =
+    firestoreDatabaseId && firestoreDatabaseId !== '(default)' ? firestoreDatabaseId : undefined;
+  try {
+    return initializeFirestore(
+      firebaseApp,
+      {
+        experimentalAutoDetectLongPolling: true,
+      },
+      targetDbId
+    );
+  } catch {
+    return targetDbId ? getFirestore(firebaseApp, targetDbId) : getFirestore(firebaseApp);
+  }
+}
+
 // Firebase Auth & Firestore (bound to provisioned firestoreDatabaseId)
 export const auth: Auth | null = app ? getAuth(app) : null;
-export const db: Firestore | null = app
-  ? firestoreDatabaseId && firestoreDatabaseId !== '(default)'
-    ? getFirestore(app, firestoreDatabaseId)
-    : getFirestore(app)
-  : null;
+export const db: Firestore | null = app ? createFirestoreInstance(app) : null;
 export const googleProvider = new GoogleAuthProvider();
 
 // Safe Firebase Analytics initialization (only when measurementId is explicitly configured and supported)
@@ -129,11 +142,20 @@ export function handleFirestoreError(
 // Startup Firestore Connection Validation
 export async function testConnection(): Promise<void> {
   if (!db) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+      // Allow experimentalAutoDetectLongPolling to switch transport and re-probe once
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (retryError) {
+        if (retryError instanceof Error && retryError.message.includes('the client is offline')) {
+          console.error('Please check your Firebase configuration.');
+        }
+      }
     }
   }
 }
