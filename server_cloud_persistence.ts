@@ -112,13 +112,46 @@ export function normalizeSafeAssetFilename(filename: string): string | null {
   return clean;
 }
 
+interface FirebaseAppletConfig {
+  projectId?: string;
+  firestoreDatabaseId?: string;
+}
+
+let cachedAppletConfig: FirebaseAppletConfig | null | undefined;
+
+function readFirebaseAppletConfig(): FirebaseAppletConfig | null {
+  if (cachedAppletConfig !== undefined) return cachedAppletConfig;
+  try {
+    const cfgPath = path.join(__dirname, 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      cachedAppletConfig = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as FirebaseAppletConfig;
+      return cachedAppletConfig;
+    }
+  } catch {
+    // ignore invalid or missing applet config
+  }
+  cachedAppletConfig = null;
+  return null;
+}
+
 export function getFirebaseProjectIdFromEnv(): string {
+  const appletCfg = readFirebaseAppletConfig();
   return (
     process.env.FIREBASE_PROJECT_ID ||
     process.env.VITE_FIREBASE_PROJECT_ID ||
     process.env.GOOGLE_CLOUD_PROJECT ||
     process.env.GCLOUD_PROJECT ||
-    'raoneai'
+    appletCfg?.projectId ||
+    'ravanatek'
+  ).trim();
+}
+
+export function getFirestoreDatabaseIdFromConfig(): string {
+  const appletCfg = readFirebaseAppletConfig();
+  return (
+    process.env.FIRESTORE_DATABASE_ID ||
+    appletCfg?.firestoreDatabaseId ||
+    ''
   ).trim();
 }
 
@@ -289,7 +322,11 @@ export function getFirebaseAdminApp(): App {
 export function getFirestoreDb(): Firestore {
   if (cachedFirestore) return cachedFirestore;
   const app = getFirebaseAdminApp();
-  const db = getFirestore(app);
+  const databaseId = getFirestoreDatabaseIdFromConfig();
+  const db =
+    databaseId && databaseId !== '(default)'
+      ? getFirestore(app, databaseId)
+      : getFirestore(app);
   try {
     db.settings({ ignoreUndefinedProperties: true });
   } catch {

@@ -278,10 +278,10 @@ app.use((req, res, next) => {
     [
       "default-src 'self'",
       isDevPreview
-        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://apis.google.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
+        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://apis.google.com https://www.googletagmanager.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
         : allowPreviewFraming
-        ? "script-src 'self' 'unsafe-inline' blob: https://apis.google.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
-        : "script-src 'self' 'unsafe-inline' blob: https://apis.google.com",
+        ? "script-src 'self' 'unsafe-inline' blob: https://apis.google.com https://www.googletagmanager.com https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
+        : "script-src 'self' 'unsafe-inline' blob: https://apis.google.com https://www.googletagmanager.com",
       allowPreviewFraming
         ? "style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com https://unpkg.com"
         : "style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com",
@@ -292,7 +292,7 @@ app.use((req, res, next) => {
       "worker-src 'self' blob:",
       isDevPreview
         ? "connect-src 'self' ws: wss: http: https:"
-        : "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.web.app https://*.firebaseapp.com",
+        : "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.web.app https://*.firebaseapp.com https://*.google-analytics.com https://*.analytics.google.com",
       allowPreviewFraming
         ? isDevPreview || isAiStudioHost
           ? 'frame-ancestors *'
@@ -305,6 +305,8 @@ app.use((req, res, next) => {
 
 // Strict Origin Allowlist CORS (Never reflects untrusted origins with credentials)
 const BUILTIN_ALLOWED_ORIGINS = [
+  'https://ravanatek.web.app',
+  'https://ravanatek.firebaseapp.com',
   'https://raoneai.web.app',
   'https://raoneai.firebaseapp.com',
   'http://localhost:3000',
@@ -319,7 +321,7 @@ function isOriginAllowed(origin: string): boolean {
   if (configured.includes(origin) || BUILTIN_ALLOWED_ORIGINS.includes(origin)) {
     return true;
   }
-  if (/^https:\/\/raoneai--[a-z0-9-]+\.web\.app$/.test(origin)) {
+  if (/^https:\/\/(?:ravanatek|raoneai)--[a-z0-9-]+\.web\.app$/.test(origin)) {
     return true;
   }
   if (

@@ -550,7 +550,7 @@ export function synthesizeDeployArtifacts(opts: {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '') || 'raone-studio-app';
   const firebaseProjectId =
-    opts.firebaseProjectId?.trim() || opts.config?.deployConfig?.firebaseProjectId || 'raoneai';
+    opts.firebaseProjectId?.trim() || opts.config?.deployConfig?.firebaseProjectId || 'ravanatek';
   const gcpRegion = opts.gcpRegion?.trim() || opts.config?.deployConfig?.gcpRegion || 'us-central1';
   const serviceName =
     opts.cloudRunService?.trim() || opts.config?.deployConfig?.cloudRunService || safeSlug;

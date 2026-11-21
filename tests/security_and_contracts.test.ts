@@ -32,12 +32,12 @@ test('verifyFirebaseBearerToken rejects dummy, malformed, and forged JWT tokens'
   await assert.rejects(() => verifyFirebaseBearerToken(''));
   await assert.rejects(() => verifyFirebaseBearerToken('dummy-token'));
 
-  // Unsigned/forged 3-part JWT targeting project raoneai
+  // Unsigned/forged 3-part JWT targeting project ravanatek
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: 'forged' })).toString('base64url');
   const payload = Buffer.from(
     JSON.stringify({
-      aud: 'raoneai',
-      iss: 'https://securetoken.google.com/raoneai',
+      aud: 'ravanatek',
+      iss: 'https://securetoken.google.com/ravanatek',
       sub: 'attacker-uid',
       exp: Math.floor(Date.now() / 1000) + 3600,
     })
@@ -1023,9 +1023,9 @@ test('Firebase Hosting rewrite, relative /api routing, and .env.example follow C
   for (const requiredKey of [
     'STORAGE_BACKEND=',
     'GCS_BUCKET_NAME=',
-    'FIREBASE_PROJECT_ID=raoneai',
+    'FIREBASE_PROJECT_ID=ravanatek',
     'REQUIRE_FIREBASE_AUTH=',
-    'ALLOWED_ORIGINS=https://raoneai.web.app',
+    'ALLOWED_ORIGINS=https://ravanatek.web.app',
     'TENANT_ENCRYPTION_SECRET=',
     'COMET_API_BASE_URL=',
     'VITE_API_BASE_URL=',

@@ -44,15 +44,15 @@ jobs:
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
-          projectId: raoneai
+          projectId: ravanatek
         env:
-          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
 
       - name: Deploy to Firebase Hosting (CLI Token Fallback)
         if: "${{ env.FIREBASE_TOKEN != '' && env.FIREBASE_SERVICE_ACCOUNT == '' }}"
-        run: npx firebase-tools deploy --only hosting --token "${{ secrets.FIREBASE_TOKEN }}" --project raoneai
+        run: npx firebase-tools deploy --only hosting --token "${{ secrets.FIREBASE_TOKEN }}" --project ravanatek
         env:
           FIREBASE_TOKEN: '${{ secrets.FIREBASE_TOKEN }}'
-          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
