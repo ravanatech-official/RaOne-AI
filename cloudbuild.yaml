@@ -1,0 +1,39 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/raone-ai-backend:$COMMIT_SHA'
+      - '.'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/raone-ai-backend:$COMMIT_SHA'
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'raone-ai-backend'
+      - '--image'
+      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/raone-ai-backend:$COMMIT_SHA'
+      - '--region'
+      - 'asia-southeast1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--cpu'
+      - '2'
+      - '--memory'
+      - '2Gi'
+      - '--timeout'
+      - '300'
+      - '--update-env-vars'
+      - '^@^NODE_ENV=production@STORAGE_BACKEND=cloud@FIREBASE_PROJECT_ID=$PROJECT_ID@FIRESTORE_DATABASE_ID=ai-studio-raoneai-22e2a48a-8109-41a8-9a96-5d135cd87fef@REQUIRE_FIREBASE_AUTH=true@GCS_BUCKET_NAME=ravanatek.firebasestorage.app@ALLOWED_ORIGINS=https://raone-ai.web.app,https://raone-ai.firebaseapp.com,https://ravanatek.web.app,https://ravanatek.firebaseapp.com'
+
+images:
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/raone-ai-backend:$COMMIT_SHA'

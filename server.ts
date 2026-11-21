@@ -305,6 +305,8 @@ app.use((req, res, next) => {
 
 // Strict Origin Allowlist CORS (Never reflects untrusted origins with credentials)
 const BUILTIN_ALLOWED_ORIGINS = [
+  'https://raone-ai.web.app',
+  'https://raone-ai.firebaseapp.com',
   'https://ravanatek.web.app',
   'https://ravanatek.firebaseapp.com',
   'https://raoneai.web.app',
@@ -321,7 +323,7 @@ function isOriginAllowed(origin: string): boolean {
   if (configured.includes(origin) || BUILTIN_ALLOWED_ORIGINS.includes(origin)) {
     return true;
   }
-  if (/^https:\/\/(?:ravanatek|raoneai)--[a-z0-9-]+\.web\.app$/.test(origin)) {
+  if (/^https:\/\/(?:raone-ai|ravanatek|raoneai)--[a-z0-9-]+\.web\.app$/.test(origin)) {
     return true;
   }
   if (

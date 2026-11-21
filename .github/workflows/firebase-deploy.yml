@@ -1,58 +1,188 @@
-name: Deploy RaOne AI to Firebase Hosting on Push
+name: Deploy RaOne AI (Cloud Run + Firebase Hosting)
+
 on:
   push:
     branches:
       - main
       - master
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: ravanatek
+  REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: raone-ai-backend
+  FIRESTORE_DATABASE_ID: ai-studio-raoneai-22e2a48a-8109-41a8-9a96-5d135cd87fef
+  HOSTING_SITE: raone-ai
 
 jobs:
-  build_and_deploy:
+  ci_build_and_test:
+    name: Lint, Test & Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: 'npm'
 
       - name: Install Dependencies
         run: npm ci
 
-      - name: Typecheck & Lint
+      - name: TypeScript Typecheck
         run: npm run lint
+
+      - name: Lint Firestore Security Rules
+        run: npx eslint firestore.rules
 
       - name: Run Security & Contract Tests
         run: npm test
 
-      - name: Build Application
+      - name: Build Production Frontend (dist/)
         run: npm run build
         env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || secrets.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || '' }}
           VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY || secrets.VITE_FIREBASE_API_KEY }}
-          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN || secrets.VITE_FIREBASE_AUTH_DOMAIN }}
-          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID || secrets.VITE_FIREBASE_PROJECT_ID }}
-          VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET || secrets.VITE_FIREBASE_STORAGE_BUCKET }}
-          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID || secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN || 'ravanatek.firebaseapp.com' }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID || 'ravanatek' }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET || 'ravanatek.firebasestorage.app' }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID || '939944415589' }}
           VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID || secrets.VITE_FIREBASE_APP_ID }}
-          VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID || secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID || '' }}
 
-      - name: Deploy to Firebase Hosting (Service Account)
-        if: "${{ env.FIREBASE_SERVICE_ACCOUNT != '' }}"
-        uses: FirebaseExtended/action-hosting-deploy@v0
+      - name: Upload Frontend Build Artifact
+        uses: actions/upload-artifact@v4
         with:
-          repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
-          channelId: live
-          projectId: ravanatek
-        env:
-          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          name: dist-bundle
+          path: dist
+          retention-days: 1
 
-      - name: Deploy to Firebase Hosting (CLI Token Fallback)
-        if: "${{ env.FIREBASE_TOKEN != '' && env.FIREBASE_SERVICE_ACCOUNT == '' }}"
-        run: npx firebase-tools deploy --only hosting --token "${{ secrets.FIREBASE_TOKEN }}" --project ravanatek
+  deploy_cloud_run:
+    name: Deploy Backend to Google Cloud Run
+    needs: ci_build_and_test
+    runs-on: ubuntu-latest
+    env:
+      SA_JSON: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
+    if: ${{ (secrets.GCP_SA_KEY != '' || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK != '' || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI != '' || secrets.FIREBASE_SERVICE_ACCOUNT != '' || vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '') && vars.SKIP_CLOUD_RUN != 'true' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Service Account Key)
+        if: ${{ env.SA_JSON != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.SA_JSON }}
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: ${{ env.SA_JSON == '' && vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Deploy raone-ai-backend to Cloud Run
         env:
-          FIREBASE_TOKEN: '${{ secrets.FIREBASE_TOKEN }}'
-          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          GCS_BUCKET_VALUE: ${{ vars.GCS_BUCKET_NAME || 'ravanatek.firebasestorage.app' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TENANT_ENCRYPTION_SECRET: ${{ secrets.TENANT_ENCRYPTION_SECRET }}
+          RUNTIME_SA: ${{ vars.CLOUD_RUN_SERVICE_ACCOUNT || '' }}
+        run: |
+          ENV_VARS="^@^NODE_ENV=production@STORAGE_BACKEND=cloud@FIREBASE_PROJECT_ID=${PROJECT_ID}@FIRESTORE_DATABASE_ID=${FIRESTORE_DATABASE_ID}@REQUIRE_FIREBASE_AUTH=true@GCS_BUCKET_NAME=${GCS_BUCKET_VALUE}@ALLOWED_ORIGINS=https://raone-ai.web.app,https://raone-ai.firebaseapp.com,https://ravanatek.web.app,https://ravanatek.firebaseapp.com"
+
+          if [ -n "$GEMINI_API_KEY" ]; then
+            ENV_VARS="${ENV_VARS}@GEMINI_API_KEY=${GEMINI_API_KEY}"
+          fi
+          if [ -n "$GROQ_API_KEY" ]; then
+            ENV_VARS="${ENV_VARS}@GROQ_API_KEY=${GROQ_API_KEY}"
+          fi
+          if [ -n "$OPENROUTER_API_KEY" ]; then
+            ENV_VARS="${ENV_VARS}@OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
+          fi
+          if [ -n "$OPENAI_API_KEY" ]; then
+            ENV_VARS="${ENV_VARS}@OPENAI_API_KEY=${OPENAI_API_KEY}"
+          fi
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            ENV_VARS="${ENV_VARS}@ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+          fi
+          if [ -n "$TENANT_ENCRYPTION_SECRET" ]; then
+            ENV_VARS="${ENV_VARS}@TENANT_ENCRYPTION_SECRET=${TENANT_ENCRYPTION_SECRET}"
+          fi
+
+          SA_FLAG=""
+          if [ -n "$RUNTIME_SA" ]; then
+            SA_FLAG="--service-account=${RUNTIME_SA}"
+          fi
+
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
+            --source . \
+            --project "${PROJECT_ID}" \
+            --region "${REGION}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --cpu 2 \
+            --memory 2Gi \
+            --timeout 300 \
+            --min-instances 0 \
+            --max-instances 5 \
+            ${SA_FLAG} \
+            --update-env-vars "${ENV_VARS}"
+
+  deploy_firebase:
+    name: Deploy Firebase Hosting & Firestore Rules
+    needs: [ci_build_and_test, deploy_cloud_run]
+    if: ${{ always() && needs.ci_build_and_test.result == 'success' && (needs.deploy_cloud_run.result == 'success' || needs.deploy_cloud_run.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    env:
+      SA_JSON: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
+      FB_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Built Frontend (dist/)
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-bundle
+          path: dist
+
+      - name: Deploy Hosting (raone-ai.web.app) & Firestore Rules via Service Account
+        if: ${{ env.SA_JSON != '' }}
+        run: |
+          printf '%s' "$SA_JSON" > "${RUNNER_TEMP}/firebase-sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="${RUNNER_TEMP}/firebase-sa.json"
+          npx --yes firebase-tools deploy \
+            --only hosting,firestore:rules \
+            --project "${PROJECT_ID}" \
+            --non-interactive
+          rm -f "${RUNNER_TEMP}/firebase-sa.json"
+
+      - name: Deploy Hosting (raone-ai.web.app) & Firestore Rules via CLI Token
+        if: ${{ env.SA_JSON == '' && env.FB_TOKEN != '' }}
+        run: |
+          npx --yes firebase-tools deploy \
+            --only hosting,firestore:rules \
+            --token "${FB_TOKEN}" \
+            --project "${PROJECT_ID}" \
+            --non-interactive
+
+      - name: Missing Deploy Credentials Notice
+        if: ${{ env.SA_JSON == '' && env.FB_TOKEN == '' }}
+        run: |
+          echo "::warning::No GCP_SA_KEY / FIREBASE_SERVICE_ACCOUNT or FIREBASE_TOKEN secret found. Build succeeded, but deploy was skipped. Add GCP_SA_KEY in GitHub Repo Settings -> Secrets and variables -> Actions."

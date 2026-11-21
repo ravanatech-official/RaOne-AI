@@ -30,7 +30,7 @@ export const firebaseConfig = {
   measurementId:
     import.meta.env.VITE_FIREBASE_MEASUREMENT_ID ||
     firebaseAppletConfig.measurementId ||
-    'G-6Z29TNTB63',
+    '',
 };
 
 export const firestoreDatabaseId =
@@ -54,13 +54,17 @@ export const db: Firestore | null = app
   : null;
 export const googleProvider = new GoogleAuthProvider();
 
-// Safe Firebase Analytics initialization (only when supported in browser and measurementId is set)
+// Safe Firebase Analytics initialization (only when measurementId is explicitly configured and supported)
 export let analytics: Analytics | null = null;
 if (app && firebaseConfig.measurementId && typeof window !== 'undefined') {
   isSupported()
     .then((supported) => {
       if (supported && app) {
-        analytics = getAnalytics(app);
+        try {
+          analytics = getAnalytics(app);
+        } catch {
+          analytics = null;
+        }
       }
     })
     .catch(() => {

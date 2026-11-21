@@ -1,8 +1,10 @@
 {
   "firestore": {
+    "database": "ai-studio-raoneai-22e2a48a-8109-41a8-9a96-5d135cd87fef",
     "rules": "firestore.rules"
   },
   "hosting": {
+    "site": "raone-ai",
     "public": "dist",
     "ignore": [
       "firebase.json",

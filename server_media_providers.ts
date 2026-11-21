@@ -88,7 +88,7 @@ export async function callOpenRouterChat(params: {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${cleanKey}`,
-      'HTTP-Referer': process.env.PUBLIC_APP_URL || 'https://ravanatek.web.app',
+      'HTTP-Referer': process.env.PUBLIC_APP_URL || 'https://raone-ai.web.app',
       'X-Title': 'RaOne AI Studio',
     },
     body: JSON.stringify({
