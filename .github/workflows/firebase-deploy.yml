@@ -66,33 +66,49 @@ jobs:
   deploy_cloud_run:
     name: Deploy Backend to Google Cloud Run
     needs: ci_build_and_test
+    if: ${{ vars.SKIP_CLOUD_RUN != 'true' }}
     runs-on: ubuntu-latest
-    env:
-      SA_JSON: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
-    if: ${{ (secrets.GCP_SA_KEY != '' || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK != '' || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI != '' || secrets.FIREBASE_SERVICE_ACCOUNT != '' || vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '') && vars.SKIP_CLOUD_RUN != 'true' }}
     steps:
+      - name: Check Cloud Run Credentials
+        id: creds
+        env:
+          SA_JSON: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        run: |
+          if [ -n "$SA_JSON" ]; then
+            echo "auth_mode=sa" >> "$GITHUB_OUTPUT"
+          elif [ -n "$WIF_PROVIDER" ]; then
+            echo "auth_mode=wif" >> "$GITHUB_OUTPUT"
+          else
+            echo "auth_mode=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::No GCP_SA_KEY / FIREBASE_SERVICE_ACCOUNT or GCP_WORKLOAD_IDENTITY_PROVIDER secret found. Skipping Cloud Run deploy."
+          fi
+
       - name: Checkout Code
+        if: ${{ steps.creds.outputs.auth_mode != 'none' }}
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud (Service Account Key)
-        if: ${{ env.SA_JSON != '' }}
+        if: ${{ steps.creds.outputs.auth_mode == 'sa' }}
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ env.SA_JSON }}
+          credentials_json: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Authenticate to Google Cloud (Workload Identity Federation)
-        if: ${{ env.SA_JSON == '' && vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' }}
+        if: ${{ steps.creds.outputs.auth_mode == 'wif' }}
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud SDK
+        if: ${{ steps.creds.outputs.auth_mode != 'none' }}
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
       - name: Deploy raone-ai-backend to Cloud Run
+        if: ${{ steps.creds.outputs.auth_mode != 'none' }}
         env:
           GCS_BUCKET_VALUE: ${{ vars.GCS_BUCKET_NAME || 'ravanatek.firebasestorage.app' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -149,9 +165,6 @@ jobs:
     needs: [ci_build_and_test, deploy_cloud_run]
     if: ${{ always() && needs.ci_build_and_test.result == 'success' && (needs.deploy_cloud_run.result == 'success' || needs.deploy_cloud_run.result == 'skipped') }}
     runs-on: ubuntu-latest
-    env:
-      SA_JSON: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
-      FB_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -162,27 +175,25 @@ jobs:
           name: dist-bundle
           path: dist
 
-      - name: Deploy Hosting (raone-ai.web.app) & Firestore Rules via Service Account
-        if: ${{ env.SA_JSON != '' }}
+      - name: Deploy Hosting (raone-ai.web.app) & Firestore Rules
+        env:
+          SA_JSON: ${{ secrets.GCP_SA_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_RAVANATEK || secrets.FIREBASE_SERVICE_ACCOUNT_RAONEAI || secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FB_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          printf '%s' "$SA_JSON" > "${RUNNER_TEMP}/firebase-sa.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="${RUNNER_TEMP}/firebase-sa.json"
-          npx --yes firebase-tools deploy \
-            --only hosting,firestore:rules \
-            --project "${PROJECT_ID}" \
-            --non-interactive
-          rm -f "${RUNNER_TEMP}/firebase-sa.json"
-
-      - name: Deploy Hosting (raone-ai.web.app) & Firestore Rules via CLI Token
-        if: ${{ env.SA_JSON == '' && env.FB_TOKEN != '' }}
-        run: |
-          npx --yes firebase-tools deploy \
-            --only hosting,firestore:rules \
-            --token "${FB_TOKEN}" \
-            --project "${PROJECT_ID}" \
-            --non-interactive
-
-      - name: Missing Deploy Credentials Notice
-        if: ${{ env.SA_JSON == '' && env.FB_TOKEN == '' }}
-        run: |
-          echo "::warning::No GCP_SA_KEY / FIREBASE_SERVICE_ACCOUNT or FIREBASE_TOKEN secret found. Build succeeded, but deploy was skipped. Add GCP_SA_KEY in GitHub Repo Settings -> Secrets and variables -> Actions."
+          if [ -n "$SA_JSON" ]; then
+            printf '%s' "$SA_JSON" > "${RUNNER_TEMP}/firebase-sa.json"
+            export GOOGLE_APPLICATION_CREDENTIALS="${RUNNER_TEMP}/firebase-sa.json"
+            npx --yes firebase-tools deploy \
+              --only hosting,firestore:rules \
+              --project "${PROJECT_ID}" \
+              --non-interactive
+            rm -f "${RUNNER_TEMP}/firebase-sa.json"
+          elif [ -n "$FB_TOKEN" ]; then
+            npx --yes firebase-tools deploy \
+              --only hosting,firestore:rules \
+              --token "${FB_TOKEN}" \
+              --project "${PROJECT_ID}" \
+              --non-interactive
+          else
+            echo "::warning::No GCP_SA_KEY / FIREBASE_SERVICE_ACCOUNT or FIREBASE_TOKEN secret found. Build succeeded, but deploy was skipped. Add GCP_SA_KEY in GitHub Repo Settings -> Secrets and variables -> Actions."
+          fi
