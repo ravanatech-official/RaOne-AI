@@ -165,9 +165,6 @@ export function getStorageBackendMode(): StorageBackendMode {
     if (process.env.NODE_ENV === 'production') {
       return 'cloud';
     }
-    if (isCloudRunEnvironment() && Boolean(getGcsBucketName())) {
-      return 'cloud';
-    }
     return 'local';
   }
   if (raw === 'cloud' || raw === 'local') {
