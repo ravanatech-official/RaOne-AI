@@ -53,7 +53,7 @@ function createFirestoreInstance(firebaseApp: FirebaseApp): Firestore {
     return initializeFirestore(
       firebaseApp,
       {
-        experimentalAutoDetectLongPolling: true,
+        experimentalForceLongPolling: true,
       },
       targetDbId
     );
@@ -147,7 +147,7 @@ export async function testConnection(): Promise<void> {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      // Allow experimentalAutoDetectLongPolling to switch transport and re-probe once
+      // Allow long-polling transport to settle and re-probe once
       await new Promise((resolve) => setTimeout(resolve, 1200));
       try {
         await getDocFromServer(doc(db, 'test', 'connection'));
