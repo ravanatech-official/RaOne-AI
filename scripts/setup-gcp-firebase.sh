@@ -64,6 +64,12 @@ for BUCKET_NAME in "${RAONE_AI_BUCKET}" "${SUVA_SEVA_BUCKET}"; do
   fi
 done
 
+echo "==> Granting runtime SA bucket-read access on gs://${RAONE_AI_BUCKET}..."
+gcloud storage buckets add-iam-policy-binding "gs://${RAONE_AI_BUCKET}" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/storage.legacyBucketReader" \
+  --project="${PROJECT_ID}" >/dev/null
+
 echo "==> Creating GitHub Actions deployer service account (${DEPLOYER_SA})..."
 gcloud iam service-accounts create "${DEPLOYER_SA_NAME}" \
   --display-name="RaOne AI GitHub CI/CD Deployer" \

@@ -1813,10 +1813,21 @@ export async function getCloudPersistenceHealth(
 
       if (gcsBucketConfigured) {
         try {
-          const [exists] = await getGcsBucket().exists();
-          gcs = exists ? 'available' : 'unavailable';
-          if (!exists && !errorSummary) {
-            errorSummary = `GCS bucket "${bucketName}" does not exist or is inaccessible.`;
+          const bucket = getGcsBucket();
+          try {
+            const [exists] = await bucket.exists();
+            gcs = exists ? 'available' : 'unavailable';
+            if (!exists && !errorSummary) {
+              errorSummary = `GCS bucket "${bucketName}" does not exist or is inaccessible.`;
+            }
+          } catch (existsErr: any) {
+            const msg = String(existsErr?.message || '');
+            if (existsErr?.code === 403 || msg.includes('storage.buckets.get')) {
+              await bucket.getFiles({ prefix: '_healthcheck/', maxResults: 1, autoPaginate: false });
+              gcs = 'available';
+            } else {
+              throw existsErr;
+            }
           }
         } catch (err: any) {
           gcs = 'unavailable';

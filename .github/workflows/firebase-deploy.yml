@@ -123,6 +123,8 @@ jobs:
 
           if [ -n "$GEMINI_API_KEY" ]; then
             ENV_VARS="${ENV_VARS}@GEMINI_API_KEY=${GEMINI_API_KEY}"
+          else
+            ENV_VARS="${ENV_VARS}@GEMINI_API_KEY="
           fi
           if [ -n "$GROQ_API_KEY" ]; then
             ENV_VARS="${ENV_VARS}@GROQ_API_KEY=${GROQ_API_KEY}"
