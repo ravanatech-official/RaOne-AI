@@ -1,0 +1,26 @@
+{
+  "name": "RaOne AI — One AI for Your World",
+  "short_name": "RaOne AI",
+  "description": "Think. Create. Act. Multi-studio AI platform by RavanaTec with Chat, Code Studio, Vision Studio, Cinema Studio, Music Studio, and Document Studio.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#000000",
+  "background_color": "#000000",
+  "categories": ["productivity", "developer", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/aistudio/RaOne_Logo_c8b49006.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

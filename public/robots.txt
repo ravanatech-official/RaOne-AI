@@ -1,5 +1,9 @@
 User-agent: *
 Allow: /
+Allow: /privacy-policy
+Allow: /terms-of-service
 Disallow: /api/
+Disallow: /published/
+Disallow: /vision/shared/
 
-Sitemap: https://raoneai.web.app/
+Sitemap: https://raone-ai.web.app/sitemap.xml

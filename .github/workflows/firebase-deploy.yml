@@ -15,7 +15,7 @@ env:
   PROJECT_ID: ravanatek
   REGION: asia-southeast1
   CLOUD_RUN_SERVICE: raone-ai-backend
-  FIRESTORE_DATABASE_ID: ai-studio-raoneai-22e2a48a-8109-41a8-9a96-5d135cd87fef
+  FIRESTORE_DATABASE_ID: raone-db
   HOSTING_SITE: raone-ai
 
 jobs:
@@ -54,6 +54,7 @@ jobs:
           VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET || 'ravanatek.firebasestorage.app' }}
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID || '939944415589' }}
           VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID || secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_DATABASE_ID: ${{ vars.VITE_FIREBASE_DATABASE_ID || 'raone-db' }}
           VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID || '' }}
 
       - name: Upload Frontend Build Artifact
@@ -110,16 +111,16 @@ jobs:
       - name: Deploy raone-ai-backend to Cloud Run
         if: ${{ steps.creds.outputs.auth_mode != 'none' }}
         env:
-          GCS_BUCKET_VALUE: ${{ vars.GCS_BUCKET_NAME || 'ravanatek.firebasestorage.app' }}
+          GCS_BUCKET_VALUE: ${{ vars.GCS_BUCKET_NAME || 'ravanatek-raone-ai-storage' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TENANT_ENCRYPTION_SECRET: ${{ secrets.TENANT_ENCRYPTION_SECRET }}
-          RUNTIME_SA: ${{ vars.CLOUD_RUN_SERVICE_ACCOUNT || '' }}
+          RUNTIME_SA: ${{ vars.CLOUD_RUN_SERVICE_ACCOUNT || 'raone-backend-sa@ravanatek.iam.gserviceaccount.com' }}
         run: |
-          ENV_VARS="^@^NODE_ENV=production@STORAGE_BACKEND=cloud@FIREBASE_PROJECT_ID=${PROJECT_ID}@FIRESTORE_DATABASE_ID=${FIRESTORE_DATABASE_ID}@REQUIRE_FIREBASE_AUTH=true@GCS_BUCKET_NAME=${GCS_BUCKET_VALUE}@ALLOWED_ORIGINS=https://raone-ai.web.app,https://raone-ai.firebaseapp.com,https://ravanatek.web.app,https://ravanatek.firebaseapp.com"
+          ENV_VARS="^@^NODE_ENV=production@STORAGE_BACKEND=cloud@FIREBASE_PROJECT_ID=${PROJECT_ID}@FIRESTORE_DATABASE_ID=${FIRESTORE_DATABASE_ID}@REQUIRE_FIREBASE_AUTH=true@STRICT_FRAME_DENY=true@GCS_BUCKET_NAME=${GCS_BUCKET_VALUE}@PUBLIC_APP_URL=https://${HOSTING_SITE}.web.app@ALLOWED_ORIGINS=https://${HOSTING_SITE}.web.app,https://${HOSTING_SITE}.firebaseapp.com"
 
           if [ -n "$GEMINI_API_KEY" ]; then
             ENV_VARS="${ENV_VARS}@GEMINI_API_KEY=${GEMINI_API_KEY}"
@@ -155,11 +156,13 @@ jobs:
             --allow-unauthenticated \
             --quiet \
             --port 8080 \
-            --cpu 2 \
-            --memory 2Gi \
+            --cpu 1 \
+            --memory 1Gi \
+            --cpu-boost \
+            --concurrency 80 \
             --timeout 300 \
             --min-instances 0 \
-            --max-instances 5 \
+            --max-instances 3 \
             ${SA_FLAG} \
             --update-env-vars "${ENV_VARS}"
 
@@ -187,13 +190,13 @@ jobs:
             printf '%s' "$SA_JSON" > "${RUNNER_TEMP}/firebase-sa.json"
             export GOOGLE_APPLICATION_CREDENTIALS="${RUNNER_TEMP}/firebase-sa.json"
             npx --yes firebase-tools deploy \
-              --only hosting,firestore:rules \
+              --only "hosting:${HOSTING_SITE},firestore:rules" \
               --project "${PROJECT_ID}" \
               --non-interactive
             rm -f "${RUNNER_TEMP}/firebase-sa.json"
           elif [ -n "$FB_TOKEN" ]; then
             npx --yes firebase-tools deploy \
-              --only hosting,firestore:rules \
+              --only "hosting:${HOSTING_SITE},firestore:rules" \
               --token "${FB_TOKEN}" \
               --project "${PROJECT_ID}" \
               --non-interactive

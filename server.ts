@@ -42,6 +42,7 @@ import {
 } from './server_security.ts';
 import {
   getCloudPersistenceHealth,
+  getFirestoreDatabaseIdFromConfig,
   validateCloudConfig,
   logCloudEvent,
 } from './server_cloud_persistence.ts';
@@ -304,13 +305,12 @@ app.use((req, res, next) => {
 });
 
 // Strict Origin Allowlist CORS (Never reflects untrusted origins with credentials)
-const BUILTIN_ALLOWED_ORIGINS = [
+const PROD_ALLOWED_ORIGINS = [
   'https://raone-ai.web.app',
   'https://raone-ai.firebaseapp.com',
-  'https://ravanatek.web.app',
-  'https://ravanatek.firebaseapp.com',
-  'https://raoneai.web.app',
-  'https://raoneai.firebaseapp.com',
+];
+
+const DEV_ONLY_ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
 ];
@@ -320,10 +320,14 @@ function isOriginAllowed(origin: string): boolean {
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
-  if (configured.includes(origin) || BUILTIN_ALLOWED_ORIGINS.includes(origin)) {
+  const builtin =
+    process.env.NODE_ENV === 'production'
+      ? PROD_ALLOWED_ORIGINS
+      : [...PROD_ALLOWED_ORIGINS, ...DEV_ONLY_ALLOWED_ORIGINS];
+  if (configured.includes(origin) || builtin.includes(origin)) {
     return true;
   }
-  if (/^https:\/\/(?:raone-ai|ravanatek|raoneai)--[a-z0-9-]+\.web\.app$/.test(origin)) {
+  if (/^https:\/\/raone-ai--[a-z0-9-]+\.web\.app$/.test(origin)) {
     return true;
   }
   if (
@@ -880,6 +884,7 @@ app.get('/api/health', async (req, res) => {
     },
     persistence: {
       storageBackend: persistenceHealth.storageBackend,
+      firestoreDatabaseId: getFirestoreDatabaseIdFromConfig() || '(default)',
       firestore: persistenceHealth.firestore,
       gcs: persistenceHealth.gcs,
       gcsBucketConfigured: persistenceHealth.gcsBucketConfigured,

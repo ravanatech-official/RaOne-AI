@@ -35,7 +35,9 @@ export const firebaseConfig = {
 };
 
 export const firestoreDatabaseId =
-  (firebaseAppletConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || '(default)';
+  import.meta.env.VITE_FIREBASE_DATABASE_ID ||
+  (firebaseAppletConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
+  '(default)';
 
 export const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
 
