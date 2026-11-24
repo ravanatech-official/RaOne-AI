@@ -147,12 +147,17 @@ export function getFirebaseProjectIdFromEnv(): string {
 }
 
 export function getFirestoreDatabaseIdFromConfig(): string {
+  const envDbId = (process.env.FIRESTORE_DATABASE_ID || '').trim();
+  if (envDbId) return envDbId;
   const appletCfg = readFirebaseAppletConfig();
-  return (
-    process.env.FIRESTORE_DATABASE_ID ||
-    appletCfg?.firestoreDatabaseId ||
-    ''
-  ).trim();
+  const cfgDbId = (appletCfg?.firestoreDatabaseId || '').trim();
+  if (
+    getFirebaseProjectIdFromEnv() === 'ravanatek' &&
+    (!cfgDbId || cfgDbId.startsWith('ai-studio-raoneai-'))
+  ) {
+    return 'raone-db';
+  }
+  return cfgDbId;
 }
 
 export function isCloudRunEnvironment(): boolean {

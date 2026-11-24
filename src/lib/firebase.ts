@@ -34,10 +34,16 @@ export const firebaseConfig = {
     '',
 };
 
+const rawAppletDatabaseId = (
+  (firebaseAppletConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || ''
+).trim();
+
 export const firestoreDatabaseId =
-  import.meta.env.VITE_FIREBASE_DATABASE_ID ||
-  (firebaseAppletConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-  '(default)';
+  (import.meta.env.VITE_FIREBASE_DATABASE_ID || '').trim() ||
+  (firebaseConfig.projectId === 'ravanatek' &&
+  (!rawAppletDatabaseId || rawAppletDatabaseId.startsWith('ai-studio-raoneai-'))
+    ? 'raone-db'
+    : rawAppletDatabaseId || '(default)');
 
 export const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
 
