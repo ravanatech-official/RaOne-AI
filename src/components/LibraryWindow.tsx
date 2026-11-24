@@ -561,13 +561,13 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
       )}
 
       {/* Top Header Bar */}
-      <header className="h-14 px-4 sm:px-6 border-b border-[#222327] bg-[#131314] flex items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <header className="h-14 px-3 sm:px-6 pt-safe border-b border-[#222327] bg-[#131314] flex items-center justify-between gap-2 sm:gap-3 shrink-0 min-w-0">
+        <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
           {!isSidebarOpen && (
             <button
               type="button"
               onClick={onOpenSidebar}
-              className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#1E1F22]"
+              className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#1E1F22] shrink-0"
               title="Open sidebar"
             >
               <PanelLeft className="w-5 h-5" />
@@ -577,15 +577,15 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
             <h1 className="text-sm sm:text-base font-semibold text-white truncate">
               RaOne Files Library
             </h1>
-            <div className="text-[11px] text-[#8E918F] tabular-nums hidden sm:block">
+            <div className="text-[11px] text-[#8E918F] tabular-nums hidden sm:block truncate">
               {stats?.activeAssets || 0} active assets across 5 studios · {formatBytes(stats?.totalBytes || 0)} stored
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Search Input */}
-          <div className="h-8 px-3 rounded-lg bg-[#1A1B1E] border border-[#2C2D30] focus-within:border-[#8AB4F8] flex items-center gap-2 w-40 sm:w-64">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Desktop/Tablet Search Input */}
+          <div className="hidden sm:flex h-8 px-3 rounded-lg bg-[#1A1B1E] border border-[#2C2D30] focus-within:border-[#8AB4F8] items-center gap-2 w-44 md:w-56 lg:w-64">
             <Search className="w-3.5 h-3.5 text-[#8E918F] shrink-0" />
             <input
               type="text"
@@ -618,7 +618,7 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
           </select>
 
           {/* Grid / List Switcher */}
-          <div className="flex items-center bg-[#1A1B1E] border border-[#2C2D30] rounded-lg p-0.5">
+          <div className="hidden xs:flex items-center bg-[#1A1B1E] border border-[#2C2D30] rounded-lg p-0.5">
             <button
               type="button"
               onClick={() => setViewMode('grid')}
@@ -873,8 +873,31 @@ export const LibraryWindow: React.FC<LibraryWindowProps> = ({
 
         {/* Main Viewport Stage */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* Mobile Search Bar */}
+          <div className="flex sm:hidden items-center gap-2 px-3 py-2 border-b border-[#222327] bg-[#131314] shrink-0">
+            <div className="flex-1 h-8 px-2.5 rounded-lg bg-[#1A1B1E] border border-[#2C2D30] focus-within:border-[#8AB4F8] flex items-center gap-2">
+              <Search className="w-3.5 h-3.5 text-[#8E918F] shrink-0" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search files, format, tag..."
+                className="bg-transparent text-xs text-white placeholder-[#6E7075] focus:outline-none w-full select-text"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="text-[#8E918F] hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Mobile Category Strip */}
-          <div className="flex md:hidden items-center gap-1.5 px-4 py-2 border-b border-[#222327] overflow-x-auto no-scrollbar shrink-0 bg-[#131314]">
+          <div className="flex md:hidden items-center gap-1.5 px-3 sm:px-4 py-2 border-b border-[#222327] overflow-x-auto no-scrollbar shrink-0 bg-[#131314]">
             {[
               ['all', 'All'],
               ['code', 'Code'],

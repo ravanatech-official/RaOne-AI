@@ -1155,15 +1155,15 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
         </div>
       )}
 
-      <div className="flex-1 flex items-center justify-center p-3 overflow-hidden">
+      <div className="flex-1 flex items-center justify-center p-2 sm:p-3 overflow-auto">
         <div
-          className={`h-full transition-all duration-200 rounded-xl overflow-hidden border border-[#282A2E] bg-black ${
+          className={`h-full max-w-full transition-all duration-200 rounded-xl overflow-hidden border border-[#282A2E] bg-black ${
             viewport === 'mobile'
-              ? 'w-[375px]'
+              ? 'w-[min(375px,100%)]'
               : viewport === 'tablet'
-              ? 'w-[768px]'
+              ? 'w-[min(768px,100%)]'
               : viewport === 'laptop'
-              ? 'w-[1024px]'
+              ? 'w-[min(1024px,100%)]'
               : 'w-full'
           }`}
         >

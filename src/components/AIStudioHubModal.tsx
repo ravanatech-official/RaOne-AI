@@ -231,10 +231,10 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-xl animate-in fade-in duration-200">
-      <div className="relative w-full max-w-5xl h-[88vh] bg-[#141822] border border-amber-500/30 rounded-2xl shadow-[0_0_60px_rgba(245,158,11,0.15)] flex flex-col overflow-hidden text-[#ECECEC]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-6 bg-black/85 backdrop-blur-xl animate-in fade-in duration-200">
+      <div className="relative w-full max-w-5xl h-[92dvh] sm:h-[88dvh] bg-[#141822] border border-amber-500/30 rounded-2xl shadow-[0_0_60px_rgba(245,158,11,0.15)] flex flex-col overflow-hidden text-[#ECECEC]">
         {/* Top Header Bar */}
-        <div className="h-16 px-6 border-b border-slate-800 bg-[#0E121C] flex items-center justify-between shrink-0">
+        <div className="h-14 sm:h-16 px-4 sm:px-6 border-b border-slate-800 bg-[#0E121C] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl overflow-hidden border border-amber-500/40 p-0.5 bg-black shadow-md">
               <img
@@ -267,7 +267,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
         </div>
 
         {/* Tab Navigation Strip */}
-        <div className="flex items-center gap-2 px-6 py-2.5 bg-[#0A0D14] border-b border-slate-800/80 overflow-x-auto shrink-0 scrollbar-none">
+        <div className="flex items-center gap-2 px-3.5 sm:px-6 py-2.5 bg-[#0A0D14] border-b border-slate-800/80 overflow-x-auto no-scrollbar shrink-0">
           {[
             { id: 'image', label: 'Visual Studio', icon: ImageIcon, badge: '4K Synthesis' },
             { id: 'music', label: 'Music Studio', icon: Music, badge: 'Acoustic Audio' },
@@ -280,7 +280,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap ${
+                className={`flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-xl text-xs font-medium transition-all whitespace-nowrap shrink-0 ${
                   isActive
                     ? 'bg-gradient-to-r from-amber-500/20 to-amber-600/10 text-amber-300 border border-amber-500/40 shadow-sm'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -297,7 +297,7 @@ export const AIStudioHubModal: React.FC<AIStudioHubModalProps> = ({
         </div>
 
         {/* Main Body View */}
-        <div className="flex-1 min-h-0 overflow-y-auto p-6 bg-[#0B0F19]">
+        <div className="flex-1 min-h-0 overflow-y-auto p-3.5 sm:p-6 bg-[#0B0F19]">
           {/* TAB 1: VISUAL STUDIO */}
           {activeTab === 'image' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">

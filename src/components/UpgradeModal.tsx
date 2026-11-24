@@ -126,7 +126,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-150 select-none">
-      <div className="relative w-full max-w-5xl bg-[#171717] border border-[#2d2d2d] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col max-h-[95vh]">
+      <div className="relative w-full max-w-5xl bg-[#171717] border border-[#2d2d2d] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col max-h-[95dvh]">
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-[#262626] flex items-center justify-between shrink-0">
           <div>

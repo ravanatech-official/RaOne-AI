@@ -238,12 +238,12 @@ export const PluginsWindow: React.FC<PluginsWindowProps> = ({
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col h-full bg-[#0E0F10] text-[#E3E3E3] overflow-hidden relative">
       {/* Top Header Bar */}
-      <header className="h-14 px-4 sm:px-6 border-b border-[#252629] bg-[#131314] flex items-center justify-between gap-4 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="h-14 px-3 sm:px-6 pt-safe border-b border-[#252629] bg-[#131314] flex items-center justify-between gap-2 sm:gap-4 shrink-0 min-w-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           {!isSidebarOpen && (
             <button
               onClick={onOpenSidebar}
-              className="p-2 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#1E1F22] transition-colors"
+              className="p-2 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#1E1F22] transition-colors shrink-0"
               title="Open sidebar"
             >
               <PanelLeft className="w-4 h-4" />

@@ -905,10 +905,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[140] flex items-center justify-center p-2 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-150 select-none">
-      <div className="relative w-full max-w-5xl bg-[#161719] border border-[#252629] rounded-2xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col max-h-[92vh]">
+      <div className="relative w-full max-w-5xl bg-[#161719] border border-[#252629] rounded-2xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col max-h-[95dvh] sm:max-h-[92dvh]">
         {/* Header with Global Search */}
-        <div className="h-14 px-5 border-b border-[#252629] flex items-center justify-between gap-4 shrink-0 bg-[#131416]">
-          <div className="flex items-center gap-2.5 shrink-0">
+        <div className="px-3.5 sm:px-5 py-2.5 sm:py-0 sm:h-14 border-b border-[#252629] flex flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 sm:gap-4 shrink-0 bg-[#131416]">
+          <div className="flex items-center gap-2 shrink-0">
             <Settings className="w-4 h-4 text-[#8AB4F8]" />
             <div>
               <h2 className="text-sm sm:text-base font-semibold text-white tracking-tight">
@@ -917,7 +917,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          <div className="relative flex-1 max-w-sm">
+          <div className="relative order-3 w-full sm:order-none sm:w-auto sm:flex-1 sm:max-w-sm">
             <Search className="w-3.5 h-3.5 text-[#9AA0A6] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -932,6 +932,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             onClick={onClose}
             className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-white hover:bg-[#1E1F22] transition-colors shrink-0"
             title="Close Settings"
+            aria-label="Close Settings"
           >
             <X className="w-5 h-5" />
           </button>
@@ -939,16 +940,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Status notification toast */}
         {statusNotice && (
-          <div className="mx-5 mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2 animate-in fade-in shrink-0">
+          <div className="mx-3.5 sm:mx-5 mt-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2 animate-in fade-in shrink-0">
             <Check className="w-4 h-4 text-amber-400 shrink-0" />
             <span>{statusNotice}</span>
           </div>
         )}
 
+        {/* Mobile Horizontal Section Strip */}
+        <div className="flex md:hidden items-center gap-1.5 px-3 py-2 border-b border-[#252629] bg-[#111214] overflow-x-auto no-scrollbar shrink-0">
+          {NAV_GROUPS.flatMap((group) =>
+            group.items.filter((item) => {
+              if (!normalizedSearch) return true;
+              return (
+                item.label.toLowerCase().includes(normalizedSearch) ||
+                item.keywords.toLowerCase().includes(normalizedSearch) ||
+                group.title.toLowerCase().includes(normalizedSearch)
+              );
+            })
+          ).map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg whitespace-nowrap shrink-0 transition-colors ${
+                  isActive
+                    ? 'bg-[#1E1F22] text-white font-medium border border-[#2C2E33]'
+                    : 'text-[#9AA0A6] hover:text-white bg-[#151619] border border-transparent'
+                }`}
+              >
+                <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-[#8AB4F8]' : ''}`} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Content: Grouped Sidebar + Scrollable Architectural Workspace */}
-        <div className="flex-1 flex overflow-hidden min-h-[500px]">
-          {/* Left Navigation Rail */}
-          <div className="w-56 sm:w-64 bg-[#111214] border-r border-[#252629] p-2.5 space-y-4 shrink-0 overflow-y-auto chat-scroll-area">
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
+          {/* Left Navigation Rail (Tablet/Desktop md+) */}
+          <div className="hidden md:block w-60 lg:w-64 bg-[#111214] border-r border-[#252629] p-2.5 space-y-4 shrink-0 overflow-y-auto chat-scroll-area">
             {NAV_GROUPS.map((group) => {
               const filteredItems = group.items.filter((item) => {
                 if (!normalizedSearch) return true;
@@ -996,7 +1029,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
 
           {/* Right Tab Content Panel */}
-          <div className="flex-1 p-5 sm:p-6 overflow-y-auto chat-scroll-area text-xs text-[#ececec] space-y-6 bg-[#161719]">
+          <div className="flex-1 p-4 sm:p-6 overflow-y-auto chat-scroll-area text-xs text-[#ececec] space-y-6 bg-[#161719] min-w-0">
             {/* 1. GENERAL TAB */}
             {activeTab === 'general' && (
               <div className="space-y-5">

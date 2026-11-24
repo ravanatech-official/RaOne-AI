@@ -135,37 +135,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
   );
 
   return (
-    <aside className="w-[260px] bg-[#000000] text-[#ECECEC] flex flex-col h-full border-r border-[#1a1a1a] shrink-0 select-none z-40 transition-all duration-200">
-      {/* Top Header Row: Uploaded Logo + RaOne Studio + Search + Collapse icon */}
-      <div className="h-14 px-4 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <img
-            src="/assets/aistudio/RaOne_Logo_c8b49006.png"
-            alt="RaOne Logo"
-            className="w-6 h-6 object-contain rounded-md shrink-0 drop-shadow-[0_0_8px_rgba(56,189,248,0.4)]"
-          />
-          <span className="text-[16px] font-semibold text-white tracking-tight truncate">
-            RaOne AI Studio
-          </span>
-        </div>
+    <>
+      {/* Mobile/Tablet overlay backdrop */}
+      <div
+        onClick={onClose}
+        aria-hidden="true"
+        className="fixed inset-0 z-40 bg-black/65 backdrop-blur-xs md:hidden animate-in fade-in duration-150"
+      />
+      <aside className="fixed inset-y-0 left-0 z-50 w-[min(85vw,280px)] md:static md:w-[252px] lg:w-[264px] xl:w-[280px] bg-[#000000] text-[#ECECEC] flex flex-col h-full border-r border-[#1a1a1a] shrink-0 select-none transition-transform duration-200 shadow-2xl md:shadow-none pt-safe pb-safe">
+        {/* Top Header Row: Uploaded Logo + RaOne Studio + Search + Collapse icon */}
+        <div className="h-14 px-3.5 sm:px-4 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <img
+              src="/assets/aistudio/RaOne_Logo_c8b49006.png"
+              alt="RaOne Logo"
+              className="w-6 h-6 object-contain rounded-md shrink-0 drop-shadow-[0_0_8px_rgba(56,189,248,0.4)]"
+            />
+            <span className="text-[15px] sm:text-[16px] font-semibold text-white tracking-tight truncate">
+              RaOne AI Studio
+            </span>
+          </div>
 
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setSearchOpen(!searchOpen)}
-            className="p-1.5 rounded-lg hover:bg-[#1a1a1a] text-[#8e8e8e] hover:text-white transition-colors"
-            title={`Search (${modKey}+/)`}
-          >
-            <Search className="w-4 h-4" />
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-[#1a1a1a] text-[#8e8e8e] hover:text-white transition-colors"
-            title={`Close sidebar (${modKey}+B)`}
-          >
-            <PanelLeft className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => setSearchOpen(!searchOpen)}
+              className="p-2 md:p-1.5 rounded-lg hover:bg-[#1a1a1a] text-[#8e8e8e] hover:text-white transition-colors"
+              title={`Search (${modKey}+/)`}
+            >
+              <Search className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 md:p-1.5 rounded-lg hover:bg-[#1a1a1a] text-[#8e8e8e] hover:text-white transition-colors"
+              title={`Close sidebar (${modKey}+B)`}
+            >
+              <PanelLeft className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </div>
 
       {/* Search Input (conditionally visible) */}
       {searchOpen && (
@@ -413,7 +420,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           e.stopPropagation();
                           onDeleteProject(proj.id);
                         }}
-                        className="hidden group-hover:flex p-1 text-[#8e8e8e] hover:text-red-400 rounded hover:bg-[#262626]"
+                        className="flex md:hidden md:group-hover:flex p-1 text-[#8e8e8e] hover:text-red-400 rounded hover:bg-[#262626]"
                         title="Delete project"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -463,7 +470,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     ) : (
                       <>
                         <span className="truncate pr-2">{c.title}</span>
-                        <div className="hidden group-hover:flex items-center gap-1 text-[#8e8e8e]">
+                        <div className={`${isActive ? 'flex' : 'flex md:hidden md:group-hover:flex'} items-center gap-1 text-[#8e8e8e]`}>
                           <button
                             onClick={(e) => handleStartRename(c, e)}
                             className="p-1 hover:text-white rounded hover:bg-[#262626]"
@@ -580,6 +587,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {currentPlan === 'free' ? 'Upgrade' : 'Manage'}
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };

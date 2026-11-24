@@ -96,8 +96,14 @@ RaOne AI by RavanaTec — Think. Create. Act.`,
   };
 
   return (
-    <aside className="w-80 sm:w-96 bg-[#171717] border-l border-[#262626] flex flex-col h-full shrink-0 z-30 select-none animate-in slide-in-from-right duration-200">
-      {/* Header */}
+    <>
+      <div
+        onClick={onClose}
+        aria-hidden="true"
+        className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs lg:hidden animate-in fade-in duration-150"
+      />
+      <aside className="fixed inset-y-0 right-0 z-50 w-[min(92vw,384px)] lg:static lg:w-96 xl:w-[420px] bg-[#171717] border-l border-[#262626] flex flex-col h-full shrink-0 select-none animate-in slide-in-from-right duration-200 shadow-2xl lg:shadow-none pt-safe pb-safe">
+        {/* Header */}
       <div className="h-14 px-4 border-b border-[#262626] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
@@ -215,6 +221,7 @@ RaOne AI by RavanaTec — Think. Create. Act.`,
           </div>
         )}
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };

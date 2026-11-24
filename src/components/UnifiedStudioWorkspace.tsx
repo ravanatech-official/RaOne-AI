@@ -259,27 +259,28 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
       : Monitor;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#131314] text-[#E3E3E3] flex flex-col overflow-hidden select-none">
+    <div className="fixed inset-0 h-[100dvh] z-50 bg-[#131314] text-[#E3E3E3] flex flex-col overflow-hidden select-none pt-safe pb-safe">
       {/* Subtle Top Toast */}
       {activeToast && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] px-3.5 py-1.5 rounded-lg bg-[#2B2D30] border border-[#3E4046] text-xs font-medium text-[#E3E3E3] shadow-lg flex items-center gap-2 pointer-events-none">
-          <Check className="w-3.5 h-3.5 text-[#8AB4F8]" />
-          <span>{activeToast}</span>
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[120] max-w-[calc(100vw-2rem)] px-3.5 py-1.5 rounded-lg bg-[#2B2D30] border border-[#3E4046] text-xs font-medium text-[#E3E3E3] shadow-lg flex items-center gap-2 pointer-events-none">
+          <Check className="w-3.5 h-3.5 text-[#8AB4F8] shrink-0" />
+          <span className="truncate">{activeToast}</span>
         </div>
       )}
 
       {/* ================================================================= */}
       {/* TOP GLOBAL BAR (100% MATCHING REFERENCE SCREENSHOT)               */}
       {/* ================================================================= */}
-      <header className="h-12 px-3 bg-[#131314] border-b border-[#252629] flex items-center justify-between gap-4 shrink-0 z-30">
+      <header className="h-12 px-2 sm:px-3 bg-[#131314] border-b border-[#252629] flex items-center justify-between gap-2 sm:gap-4 shrink-0 z-30 min-w-0">
         {/* Left: Back to start */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             onClick={onBackToStart}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1E1F20] hover:bg-[#28292C] border border-[#303236] text-xs font-medium text-[#E3E3E3] transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full bg-[#1E1F20] hover:bg-[#28292C] border border-[#303236] text-xs font-medium text-[#E3E3E3] transition-colors whitespace-nowrap shrink-0"
           >
             <ArrowLeft className="w-3.5 h-3.5 text-[#9AA0A6]" />
-            <span>Back to start</span>
+            <span className="hidden sm:inline">Back to start</span>
+            <span className="sm:hidden">Back</span>
           </button>
 
           {/* Mobile Pane Switcher */}
@@ -306,7 +307,7 @@ export const UnifiedStudioWorkspace: React.FC<UnifiedStudioWorkspaceProps> = ({
         {/* Center: Clean Project / Workspace Title + Optional Version Switcher */}
         <div className="hidden sm:flex items-center justify-center gap-2 min-w-0 flex-1 px-4">
           <span
-            className="text-[13px] font-medium text-[#E3E3E3] truncate max-w-[360px] tracking-tight"
+            className="text-[13px] font-medium text-[#E3E3E3] truncate max-w-[360px] lg:max-w-[480px] tracking-tight"
             title={workspaceTitle}
           >
             {workspaceTitle}

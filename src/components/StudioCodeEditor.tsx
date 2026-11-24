@@ -144,9 +144,38 @@ export const StudioCodeEditor: React.FC<StudioCodeEditorProps> = ({
       </div>
 
       {/* Main Split: File Explorer Tree + Line-Numbered Editable Code */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* File Tree */}
-        <aside className="w-48 sm:w-52 shrink-0 border-r border-[#252629] bg-[#131314] flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-hidden">
+        {/* Mobile Horizontal File Strip */}
+        <div className="flex sm:hidden items-center gap-1.5 px-2.5 py-2 border-b border-[#252629] bg-[#131314] overflow-x-auto no-scrollbar shrink-0">
+          {fileList.map((fname) => {
+            const Icon = getFileIcon(fname);
+            const active = fname === activeFile;
+            return (
+              <button
+                key={fname}
+                onClick={() => onSelectFile(fname)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono whitespace-nowrap shrink-0 transition-colors ${
+                  active
+                    ? 'bg-[#252629] text-white'
+                    : 'text-[#9AA0A6] hover:text-[#E3E3E3] bg-[#1A1B1E]'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0 text-[#8AB4F8]" />
+                <span>{fname}</span>
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setIsCreatingFile((p) => !p)}
+            className="p-1.5 rounded-lg text-[#9AA0A6] hover:text-white bg-[#1A1B1E] shrink-0"
+            title="Add new file"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* File Tree (sm+ screens) */}
+        <aside className="hidden sm:flex w-48 md:w-56 shrink-0 border-r border-[#252629] bg-[#131314] flex-col min-h-0">
           <div className="px-3 py-2 border-b border-[#252629]/70 flex items-center justify-between">
             <span className="text-[11px] font-medium text-[#9AA0A6]">Project Files</span>
             <button

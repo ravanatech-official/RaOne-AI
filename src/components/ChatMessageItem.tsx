@@ -149,8 +149,8 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
 
   if (isUser) {
     return (
-      <div className="flex justify-end my-3 max-w-[760px] mx-auto px-4">
-        <div className="bg-[#2f2f2f] text-white rounded-2xl px-5 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed shadow-sm font-normal whitespace-pre-wrap break-words">
+      <div className="flex justify-end my-3 max-w-[760px] lg:max-w-[820px] xl:max-w-[880px] mx-auto px-3 sm:px-4">
+        <div className="bg-[#2f2f2f] text-white rounded-2xl px-4 sm:px-5 py-2.5 max-w-[88%] sm:max-w-[75%] text-sm leading-relaxed shadow-sm font-normal whitespace-pre-wrap break-words">
           {message.content}
         </div>
       </div>
@@ -159,7 +159,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
 
   // Model response matching ChatGPT exactly
   return (
-    <div className="my-5 max-w-[760px] mx-auto px-4 group">
+    <div className="my-5 max-w-[760px] lg:max-w-[820px] xl:max-w-[880px] mx-auto px-3 sm:px-4 group">
       {/* Collapsible Thinking Section (Matches ChatGPT screenshot: 'Worked for 58s >') */}
       {message.thoughtProcess && (
         <div className="mb-2">

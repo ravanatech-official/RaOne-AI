@@ -362,7 +362,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
   };
 
   return (
-    <div className="relative w-full max-w-[760px] mx-auto px-4 pb-2 select-none">
+    <div className="relative w-full max-w-[760px] lg:max-w-[820px] xl:max-w-[880px] mx-auto px-2.5 sm:px-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] select-none">
       {/* Hidden file input for "Add photos & files" */}
       <input
         ref={fileInputRef}
@@ -374,7 +374,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       />
 
       {/* Main Pill Dock */}
-      <div className="relative bg-[#212121] border border-[#303030] rounded-[28px] px-3 py-2 flex items-center gap-2 shadow-2xl transition-all z-20">
+      <div className="relative bg-[#212121] border border-[#303030] rounded-[24px] sm:rounded-[28px] px-2 sm:px-3 py-1.5 sm:py-2 flex items-center gap-1.5 sm:gap-2 shadow-2xl transition-all z-20 min-w-0">
         {/* + Button (Toggles Dropdown Menu) */}
         <button
           ref={plusButtonRef}
@@ -388,6 +388,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
               : 'bg-[#2b2b2b] hover:bg-[#343434] text-white'
           }`}
           title="Add attachment or features"
+          aria-label="Add attachment or features"
         >
           <Plus className="w-4 h-4 transition-transform duration-200" />
         </button>
@@ -412,46 +413,49 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
               ? 'Search the web in real time with RaOne...'
               : 'Ask RaOne AI...'
           }
-          className="w-full bg-transparent text-[#ECECEC] placeholder-[#8E8E8E] text-[15px] focus:outline-none resize-none px-1 py-1 max-h-40 leading-normal font-normal"
+          className="flex-1 min-w-0 w-full bg-transparent text-[#ECECEC] placeholder-[#8E8E8E] text-[16px] sm:text-[15px] focus:outline-none resize-none px-1 py-1 max-h-40 leading-normal font-normal"
         />
 
         {/* Right side controls */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           {/* Web Search Toggle Button */}
           <button
             type="button"
             onClick={() => setIsSearchActive(!isSearchActive)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            className={`flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-colors ${
               isSearchActive
                 ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
                 : 'text-[#8E8E8E] hover:text-white hover:bg-white/5'
             }`}
             title="Search the web for real-time information"
+            aria-label="Search the web"
           >
-            <Globe className="w-3.5 h-3.5" />
-            <span>Search</span>
+            <Globe className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+            <span className="hidden sm:inline">Search</span>
           </button>
 
           {/* Think Button */}
           <button
             type="button"
             onClick={() => setIsThinkingActive(!isThinkingActive)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            className={`flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 rounded-full text-xs font-medium transition-colors ${
               isThinkingActive
                 ? 'bg-white/10 text-white'
                 : 'text-[#8E8E8E] hover:text-white hover:bg-white/5'
             }`}
             title="Thinking mode"
+            aria-label="Thinking mode"
           >
             <Brain className="w-4 h-4" />
-            <span>Think</span>
+            <span className="hidden sm:inline">Think</span>
           </button>
 
           {/* Microphone Icon */}
           <button
             onClick={onOpenVoice}
-            className="p-1.5 rounded-full text-[#8E8E8E] hover:text-white hover:bg-white/5 transition-colors"
+            className="hidden xs:flex sm:flex p-1.5 rounded-full text-[#8E8E8E] hover:text-white hover:bg-white/5 transition-colors"
             title="Dictate with voice"
+            aria-label="Dictate with voice"
           >
             <Mic className="w-4 h-4" />
           </button>
@@ -461,6 +465,7 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
             onClick={onOpenVoice}
             className="w-8 h-8 rounded-full bg-[#1d63ed] hover:bg-[#1953ca] text-white flex items-center justify-center shadow-lg transition-transform active:scale-95"
             title="Voice mode"
+            aria-label="Voice mode"
           >
             <div className="flex items-center gap-[2px] h-3.5">
               <span className="w-[2px] h-2 bg-white rounded-full animate-pulse" />
@@ -475,10 +480,10 @@ export const ChatInputDock: React.FC<ChatInputDockProps> = ({
       {isDropdownOpen && (
         <div
           ref={dropdownRef}
-          className={`absolute left-4 right-4 z-50 bg-[#212121] border border-[#333333] rounded-2xl shadow-[0_12px_44px_rgba(0,0,0,0.9)] p-1.5 overflow-y-auto chat-scroll-area animate-in fade-in zoom-in-95 duration-150 ${
+          className={`absolute left-2.5 right-2.5 sm:left-4 sm:right-4 z-50 bg-[#212121] border border-[#333333] rounded-2xl shadow-[0_12px_44px_rgba(0,0,0,0.9)] p-1.5 overflow-y-auto chat-scroll-area animate-in fade-in zoom-in-95 duration-150 ${
             isCenterState
-              ? 'top-full mt-2 max-h-[min(380px,calc(100vh-250px))]'
-              : 'bottom-full mb-2 max-h-[min(380px,calc(100vh-140px))]'
+              ? 'top-full mt-2 max-h-[min(360px,calc(100dvh-240px))]'
+              : 'bottom-full mb-2 max-h-[min(360px,calc(100dvh-140px))]'
           }`}
         >
           {menuItems.map((item, index) => {

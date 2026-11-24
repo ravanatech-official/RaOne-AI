@@ -117,7 +117,9 @@ export default function App() {
     return conversations[0]?.id || 'new';
   });
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  );
   const [isOutputsOpen, setIsOutputsOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSectionId | undefined>('general');
@@ -151,6 +153,22 @@ export default function App() {
   const [temporaryMessages, setTemporaryMessages] = useState<ChatMessage[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+
+  const closeSidebarIfMobile = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setIsSidebarOpen(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 768px)');
+    const onViewportBreakpoint = (e: MediaQueryListEvent) => {
+      setIsSidebarOpen(e.matches);
+    };
+    mq.addEventListener('change', onViewportBreakpoint);
+    return () => mq.removeEventListener('change', onViewportBreakpoint);
+  }, []);
 
   const handleToggleTemporaryChat = useCallback(() => {
     setIsTemporaryChat((prev) => {
@@ -1022,8 +1040,8 @@ export default function App() {
   const hasOutputs = activeConversation.messages.some((m) => m.outputs && m.outputs.length > 0);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#000000] text-[#ECECEC] font-sans antialiased">
-      {/* Left Sidebar (Exact ChatGPT Layout) */}
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-[#000000] text-[#ECECEC] font-sans antialiased relative">
+      {/* Left Sidebar (Responsive Mobile Drawer + Desktop Rail) */}
       <Sidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
@@ -1037,8 +1055,12 @@ export default function App() {
             setTemporaryMessages([]);
           }
           setActiveId(id);
+          closeSidebarIfMobile();
         }}
-        onNewChat={handleNewChat}
+        onNewChat={() => {
+          handleNewChat();
+          closeSidebarIfMobile();
+        }}
         onDeleteConversation={handleDeleteConversation}
         onRenameConversation={(id, newTitle) => {
           setConversations((prev) =>
@@ -1054,6 +1076,7 @@ export default function App() {
         onOpenSettings={() => {
           setSettingsInitialSection('general');
           setIsSettingsOpen(true);
+          closeSidebarIfMobile();
         }}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
@@ -1061,30 +1084,55 @@ export default function App() {
         onOpenAuth={(mode = 'signin') => {
           setAuthModalMode(mode);
           setIsAuthModalOpen(true);
+          closeSidebarIfMobile();
         }}
         onOpenStudioHub={(tab) => {
           if (tab) setStudioHubTab(tab);
           setIsStudioHubOpen(true);
+          closeSidebarIfMobile();
         }}
         searchTrigger={searchTrigger}
-        onOpenShortcuts={() => setIsShortcutsOpen(true)}
+        onOpenShortcuts={() => {
+          setIsShortcutsOpen(true);
+          closeSidebarIfMobile();
+        }}
         currentPlan={currentPlan}
-        onOpenUpgrade={() => setIsUpgradeModalOpen(true)}
-        onOpenAIStudio={() => setIsGoogleAIStudioOpen(true)}
-        onOpenVisionStudio={() => setIsVisionStudioOpen(true)}
-        onOpenMotionStudio={() => setIsMotionStudioOpen(true)}
-        onOpenAudioStudio={() => setIsAudioStudioOpen(true)}
-        onOpenDocumentStudio={() => setIsDocumentStudioOpen(true)}
+        onOpenUpgrade={() => {
+          setIsUpgradeModalOpen(true);
+          closeSidebarIfMobile();
+        }}
+        onOpenAIStudio={() => {
+          setIsGoogleAIStudioOpen(true);
+          closeSidebarIfMobile();
+        }}
+        onOpenVisionStudio={() => {
+          setIsVisionStudioOpen(true);
+          closeSidebarIfMobile();
+        }}
+        onOpenMotionStudio={() => {
+          setIsMotionStudioOpen(true);
+          closeSidebarIfMobile();
+        }}
+        onOpenAudioStudio={() => {
+          setIsAudioStudioOpen(true);
+          closeSidebarIfMobile();
+        }}
+        onOpenDocumentStudio={() => {
+          setIsDocumentStudioOpen(true);
+          closeSidebarIfMobile();
+        }}
         isLibraryOpen={isLibraryOpen}
         onOpenLibrary={() => {
           setIsPluginsOpen(false);
           setIsLibraryOpen(true);
+          closeSidebarIfMobile();
         }}
         isPluginsOpen={isPluginsOpen}
         onOpenPlugins={() => {
           setIsLibraryOpen(false);
           setOpenPluginsCustomBuilder(false);
           setIsPluginsOpen(true);
+          closeSidebarIfMobile();
         }}
         projects={projects}
         activeProjectId={activeProjectId}
@@ -1092,6 +1140,7 @@ export default function App() {
           setIsLibraryOpen(false);
           setIsPluginsOpen(false);
           setActiveProjectId(id);
+          closeSidebarIfMobile();
         }}
         onCreateProject={handleCreateProject}
         onDeleteProject={handleDeleteProject}
@@ -1160,7 +1209,7 @@ export default function App() {
         {/* Main Content Area */}
         {activeConversation.messages.length === 0 ? (
           /* Exact Empty State matching screenshot: Centered "Where should we begin?" (or Temporary Chat) + Input Dock */
-          <div className="flex-1 flex flex-col items-center justify-start pt-10 sm:pt-14 md:pt-16 px-4 w-full max-w-3xl mx-auto overflow-y-auto chat-scroll-area">
+          <div className="flex-1 flex flex-col items-center justify-center sm:justify-start pt-6 sm:pt-14 md:pt-16 px-3 sm:px-4 pb-[max(1rem,env(safe-area-inset-bottom))] w-full max-w-3xl xl:max-w-4xl mx-auto overflow-y-auto chat-scroll-area">
             {isTemporaryChat ? (
               <div className="flex flex-col items-center mb-6 animate-in fade-in text-center select-none">
                 <div className="w-10 h-10 rounded-full border border-amber-500/40 bg-amber-500/10 flex items-center justify-center text-amber-300 mb-3 shadow-[0_0_15px_rgba(245,158,11,0.25)]">
