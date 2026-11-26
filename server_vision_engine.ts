@@ -768,7 +768,17 @@ export function buildPublishedVisionHtml(snapshot: VisionPublishedSnapshot): str
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/`/g, '&#96;');
+
+  const rawMedia = String(snapshot.imageDataUrl || '').trim();
+  const safeMediaUrl =
+    /^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=\s]+$/i.test(rawMedia) ||
+    /^\/api\/vision\/assets\/[a-zA-Z0-9._-]+$/.test(rawMedia) ||
+    /^https:\/\/[^\s"'<>]+$/i.test(rawMedia)
+      ? rawMedia.replace(/\s+/g, '')
+      : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -793,11 +803,11 @@ export function buildPublishedVisionHtml(snapshot: VisionPublishedSnapshot): str
 <body>
   <header>
     <div><strong>RaOne Vision Studio</strong> · Shared Artwork</div>
-    <a class="btn" href="${esc(snapshot.imageDataUrl)}" download="raone-vision-${esc(snapshot.imageId)}.png">Download Render</a>
+    ${safeMediaUrl ? `<a class="btn" href="${esc(safeMediaUrl)}" download="raone-vision-${esc(snapshot.imageId)}.png" rel="noopener noreferrer">Download Render</a>` : ''}
   </header>
   <main>
     <div class="stage">
-      <img src="${esc(snapshot.imageDataUrl)}" alt="${esc(snapshot.title)}" />
+      ${safeMediaUrl ? `<img src="${esc(safeMediaUrl)}" alt="${esc(snapshot.title)}" />` : '<div>Image unavailable</div>'}
     </div>
     <aside class="meta">
       <div><span class="badge">${esc(snapshot.style)} · ${esc(snapshot.resolution)} · ${esc(snapshot.aspectRatio)}</span></div>

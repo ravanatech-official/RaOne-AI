@@ -199,8 +199,13 @@ export function listLocalGgufModels(): GgufModelFile[] {
 
 export function findLlamaServerBinary(): string | null {
   const configured = (process.env.LLAMA_SERVER_BIN || '').trim();
-  if (configured && fs.existsSync(configured)) {
-    return configured;
+  if (configured && !/[;&|`$<>!\n\r\0]/.test(configured)) {
+    try {
+      const st = fs.statSync(configured);
+      if (st.isFile()) return path.resolve(configured);
+    } catch {
+      // fall through
+    }
   }
   const candidates = process.platform === 'win32'
     ? ['llama-server.exe', 'llama-server']
@@ -268,8 +273,9 @@ export async function startManagedLlamaServer(opts: {
     throw new Error('Invalid GGUF model filename.');
   }
 
-  const modelPath = path.join(LOCAL_MODELS_DIR, safeName);
-  if (!fs.existsSync(modelPath)) {
+  const resolvedModelsRoot = path.resolve(LOCAL_MODELS_DIR) + path.sep;
+  const modelPath = path.resolve(LOCAL_MODELS_DIR, safeName);
+  if (!modelPath.startsWith(resolvedModelsRoot) || !fs.existsSync(modelPath)) {
     throw new Error(`GGUF model file "${safeName}" was not found inside ./models/`);
   }
 

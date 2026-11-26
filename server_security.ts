@@ -690,3 +690,255 @@ export function createSlidingWindowLimiter(opts: {
     return next();
   };
 }
+
+// =========================================================================
+// Origin Allowlist, CSRF Guard, HTML Escaping & Binary Magic-Byte Verification
+// =========================================================================
+const PROD_ALLOWED_ORIGINS = [
+  'https://raone-ai.web.app',
+  'https://raone-ai.firebaseapp.com',
+];
+
+const DEV_ONLY_ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
+export function isOriginAllowed(origin: string): boolean {
+  const cleanOrigin = String(origin || '').trim();
+  if (!cleanOrigin) return false;
+  const configured = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const builtin =
+    process.env.NODE_ENV === 'production'
+      ? PROD_ALLOWED_ORIGINS
+      : [...PROD_ALLOWED_ORIGINS, ...DEV_ONLY_ALLOWED_ORIGINS];
+  if (configured.includes(cleanOrigin) || builtin.includes(cleanOrigin)) {
+    return true;
+  }
+  if (/^https:\/\/raone-ai--[a-z0-9-]+\.web\.app$/.test(cleanOrigin)) {
+    return true;
+  }
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.run\.app$/.test(cleanOrigin)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+const CSRF_MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const CSRF_EXEMPT_API_PATHS = new Set(['/api/billing/webhook', '/api/health']);
+
+export function csrfOriginGuard(req: Request, res: Response, next: NextFunction) {
+  if (!CSRF_MUTATING_METHODS.has(req.method)) return next();
+
+  const fullPath = `${req.baseUrl || ''}${req.path || ''}`.replace(/\/+$/, '') || '/';
+  if (CSRF_EXEMPT_API_PATHS.has(fullPath)) {
+    return next();
+  }
+
+  const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  if (originHeader) {
+    const requestHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').trim().toLowerCase();
+    let isSameOriginHost = false;
+    try {
+      const parsedOrigin = new URL(originHeader);
+      isSameOriginHost = Boolean(requestHost && parsedOrigin.host.toLowerCase() === requestHost);
+    } catch {
+      isSameOriginHost = false;
+    }
+
+    if (!isSameOriginHost && !isOriginAllowed(originHeader)) {
+      return sendApiError(
+        req,
+        res,
+        403,
+        'CSRF_ORIGIN_REJECTED',
+        'Cross-origin state-changing requests from untrusted origins are blocked.'
+      );
+    }
+  }
+
+  const secFetchSite = String(req.headers['sec-fetch-site'] || '').trim().toLowerCase();
+  if (secFetchSite === 'cross-site' && (!originHeader || !isOriginAllowed(originHeader))) {
+    return sendApiError(
+      req,
+      res,
+      403,
+      'CSRF_CROSS_SITE_REJECTED',
+      'Cross-site mutating request blocked by origin isolation policy.'
+    );
+  }
+
+  return next();
+}
+
+export function escapeHtml(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;');
+}
+
+export function sanitizeMediaUrlForHtml(rawUrl: string): string {
+  const clean = String(rawUrl || '').trim();
+  if (!clean) return '';
+  if (/^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=\s]+$/i.test(clean)) {
+    return clean.replace(/\s+/g, '');
+  }
+  if (/^\/api\/(vision|motion|audio|documents)\/assets\/[a-zA-Z0-9._-]+$/i.test(clean)) {
+    return clean;
+  }
+  try {
+    const parsed = new URL(clean);
+    if (parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+export function validateBinaryMediaSignature(
+  buffer: Buffer,
+  kind: 'image' | 'video' | 'audio'
+): { ok: true } | { ok: false; reason: string } {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 8) {
+    return { ok: false, reason: 'Uploaded media payload is empty or truncated.' };
+  }
+
+  const headText = buffer.subarray(0, 512).toString('utf8').trimStart().toLowerCase();
+  if (
+    headText.startsWith('<!doctype') ||
+    headText.startsWith('<html') ||
+    headText.startsWith('<script') ||
+    headText.startsWith('<svg') ||
+    headText.startsWith('<?xml') ||
+    headText.includes('<svg') ||
+    headText.includes('<script')
+  ) {
+    return { ok: false, reason: 'Active markup/SVG/script content is strictly blocked in media uploads.' };
+  }
+
+  const b = buffer;
+  if (kind === 'image') {
+    const isPng = b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+    const isJpg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+    const isWebp =
+      b.length >= 12 &&
+      b.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      b.subarray(8, 12).toString('ascii') === 'WEBP';
+    const isGif = b.subarray(0, 4).toString('ascii') === 'GIF8';
+    if (!isPng && !isJpg && !isWebp && !isGif) {
+      return { ok: false, reason: 'Invalid image binary signature (PNG, JPEG, WEBP, or GIF required).' };
+    }
+    return { ok: true };
+  }
+
+  if (kind === 'video') {
+    const isMp4OrMov = b.length >= 12 && b.subarray(4, 8).toString('ascii') === 'ftyp';
+    const isWebmOrMkv = b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3;
+    const isAvi =
+      b.length >= 12 &&
+      b.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      b.subarray(8, 12).toString('ascii') === 'AVI ';
+    const isOgg = b.subarray(0, 4).toString('ascii') === 'OggS';
+    if (!isMp4OrMov && !isWebmOrMkv && !isAvi && !isOgg) {
+      return { ok: false, reason: 'Invalid video container signature (MP4, MOV, WebM, AVI, or OGG required).' };
+    }
+    return { ok: true };
+  }
+
+  // audio
+  const isId3 = b.subarray(0, 3).toString('ascii') === 'ID3';
+  const isMp3Sync = b[0] === 0xff && (b[1] & 0xe0) === 0xe0;
+  const isWav =
+    b.length >= 12 &&
+    b.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    b.subarray(8, 12).toString('ascii') === 'WAVE';
+  const isOgg = b.subarray(0, 4).toString('ascii') === 'OggS';
+  const isFlac = b.subarray(0, 4).toString('ascii') === 'fLaC';
+  const isM4a = b.length >= 12 && b.subarray(4, 8).toString('ascii') === 'ftyp';
+  if (!isId3 && !isMp3Sync && !isWav && !isOgg && !isFlac && !isM4a) {
+    return { ok: false, reason: 'Invalid audio file signature (MP3, WAV, OGG, FLAC, or M4A required).' };
+  }
+  return { ok: true };
+}
+
+export async function validatePublicHttpsMediaDownloadUrl(
+  rawUrl: string
+): Promise<{ ok: true; parsedUrl: URL } | { ok: false; reason: string }> {
+  let parsed: URL;
+  try {
+    parsed = new URL(String(rawUrl || '').trim());
+  } catch {
+    return { ok: false, reason: 'Invalid media download URL.' };
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+    return { ok: false, reason: 'Media download URL must use clean HTTPS.' };
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (!host || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || net.isIP(host) !== 0) {
+    return { ok: false, reason: 'Internal or IP-literal media URLs are blocked.' };
+  }
+  try {
+    const records = await dns.lookup(host, { all: true });
+    if (!records?.length || records.some((r) => isPrivateOrReservedIp(r.address))) {
+      return { ok: false, reason: 'Media download host resolved to a blocked IP.' };
+    }
+  } catch {
+    return { ok: false, reason: 'Failed DNS resolution for media download host.' };
+  }
+  return { ok: true, parsedUrl: parsed };
+}
+
+const FORBIDDEN_CUSTOM_HEADERS = new Set([
+  'host',
+  'content-length',
+  'transfer-encoding',
+  'connection',
+  'cookie',
+  'origin',
+  'referer',
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-real-ip',
+  'upgrade',
+]);
+
+export function validatePluginHeaderName(name: string): { ok: true; value: string } | { ok: false; reason: string } {
+  const clean = String(name || '').trim();
+  if (!/^[a-zA-Z0-9-]{1,64}$/.test(clean) || FORBIDDEN_CUSTOM_HEADERS.has(clean.toLowerCase())) {
+    return {
+      ok: false,
+      reason: 'Custom auth header name contains invalid characters or targets a restricted HTTP header.',
+    };
+  }
+  return { ok: true, value: clean };
+}
+
+export function validatePluginHealthPath(healthPath: string): { ok: true; value: string } | { ok: false; reason: string } {
+  const clean = String(healthPath || '/').trim() || '/';
+  if (
+    clean.length > 200 ||
+    clean.includes('..') ||
+    clean.includes('@') ||
+    /\s/.test(clean) ||
+    !/^\/[a-zA-Z0-9._~!$&'()*+,;=:%\/-]*$/.test(clean)
+  ) {
+    return {
+      ok: false,
+      reason: 'Health path must be a relative path starting with "/" without traversal or whitespace.',
+    };
+  }
+  return { ok: true, value: clean };
+}
+

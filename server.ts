@@ -39,6 +39,10 @@ import {
   isDisposableEmailDomain,
   verifyWebhookHmacSignature,
   resolveWebhookEventAction,
+  isOriginAllowed,
+  csrfOriginGuard,
+  escapeHtml,
+  validateBinaryMediaSignature,
 } from './server_security.ts';
 import {
   getCloudPersistenceHealth,
@@ -265,14 +269,17 @@ app.use((req, res, next) => {
   const allowPreviewFraming = !isApiRoute && !strictFrameDeny;
 
   if (!isDevPreview) {
-    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   }
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('X-Download-Options', 'noopen');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
   if (!allowPreviewFraming) {
     res.setHeader('X-Frame-Options', 'DENY');
   }
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(self), microphone=(self)');
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(self), microphone=(self), payment=(), usb=()');
   res.setHeader('X-XSS-Protection', '0');
   res.setHeader(
     'Content-Security-Policy',
@@ -291,6 +298,9 @@ app.use((req, res, next) => {
       "media-src 'self' data: blob: https:",
       "frame-src 'self' blob: data: https://*.firebaseapp.com https://accounts.google.com",
       "worker-src 'self' blob:",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self' https://checkout.stripe.com https://*.lemonsqueezy.com https://*.polar.sh https://www.payhere.lk https://sandbox.payhere.lk",
       isDevPreview
         ? "connect-src 'self' ws: wss: http: https:"
         : "connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.web.app https://*.firebaseapp.com https://*.google-analytics.com https://*.analytics.google.com",
@@ -304,41 +314,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Strict Origin Allowlist CORS (Never reflects untrusted origins with credentials)
-const PROD_ALLOWED_ORIGINS = [
-  'https://raone-ai.web.app',
-  'https://raone-ai.firebaseapp.com',
-];
-
-const DEV_ONLY_ALLOWED_ORIGINS = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-];
-
-function isOriginAllowed(origin: string): boolean {
-  const configured = (process.env.ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
-  const builtin =
-    process.env.NODE_ENV === 'production'
-      ? PROD_ALLOWED_ORIGINS
-      : [...PROD_ALLOWED_ORIGINS, ...DEV_ONLY_ALLOWED_ORIGINS];
-  if (configured.includes(origin) || builtin.includes(origin)) {
-    return true;
-  }
-  if (/^https:\/\/raone-ai--[a-z0-9-]+\.web\.app$/.test(origin)) {
-    return true;
-  }
-  if (
-    process.env.NODE_ENV !== 'production' &&
-    /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.run\.app$/.test(origin)
-  ) {
-    return true;
-  }
-  return false;
-}
-
+// Strict Origin Allowlist CORS & Cross-Site CSRF Defense (Never reflects untrusted origins)
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && isOriginAllowed(origin)) {
@@ -358,6 +334,8 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+app.use('/api', csrfOriginGuard);
 
 // Payload size guards (tight 2mb default; larger body only on explicit upload extraction, vision, and cinema routes)
 const LARGE_BODY_ROUTES = new Set([
@@ -1141,11 +1119,20 @@ app.post('/api/local-llm/start', async (req, res) => {
     if (!modelFile) {
       return sendApiError(req, res, 400, 'MODEL_FILE_REQUIRED', 'Select a .gguf model file inside ./models/ to start.');
     }
+    const parsedPort = Number(port);
+    const parsedCtx = Number(contextSize);
+    const parsedGpu = gpuLayers !== undefined ? Number(gpuLayers) : undefined;
+    const safePort = Number.isInteger(parsedPort) && parsedPort >= 1024 && parsedPort <= 65535 ? parsedPort : 8081;
+    const safeCtx = Number.isInteger(parsedCtx) && parsedCtx >= 512 && parsedCtx <= 131072 ? parsedCtx : 4096;
+    const safeGpu =
+      parsedGpu !== undefined && Number.isFinite(parsedGpu)
+        ? Math.max(0, Math.min(256, Math.floor(parsedGpu)))
+        : undefined;
     const state = await startManagedLlamaServer({
       modelFile: String(modelFile),
-      port: Number(port) || 8081,
-      contextSize: Number(contextSize) || 4096,
-      gpuLayers: gpuLayers !== undefined ? Number(gpuLayers) : undefined,
+      port: safePort,
+      contextSize: safeCtx,
+      gpuLayers: safeGpu,
     });
     return res.json({ success: true, managedProcess: state });
   } catch (err: any) {
@@ -3541,6 +3528,9 @@ app.post('/api/studio/deploy/github', apiHeavyAiLimiter, async (req, res) => {
     }
 
     const cleanBranch = String(branch || 'main').trim();
+    if (!/^[a-zA-Z0-9._/-]{1,120}$/.test(cleanBranch) || cleanBranch.includes('..') || cleanBranch.startsWith('/')) {
+      return sendApiError(req, res, 400, 'INVALID_GITHUB_BRANCH', 'Branch name contains invalid characters.');
+    }
     const ghHeaders = {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${resolvedToken}`,
@@ -3550,7 +3540,15 @@ app.post('/api/studio/deploy/github', apiHeavyAiLimiter, async (req, res) => {
     };
 
     const fileEntries = Object.entries(currentApp.files as Record<string, string>)
-      .filter(([k, v]) => typeof v === 'string' && v.length > 0 && !k.startsWith('/'))
+      .filter(
+        ([k, v]) =>
+          typeof v === 'string' &&
+          v.length > 0 &&
+          !k.startsWith('/') &&
+          !k.includes('..') &&
+          !/[\0\\]/.test(k) &&
+          /^[a-zA-Z0-9._/@-]+$/.test(k)
+      )
       .slice(0, 40);
 
     const pushedFiles: string[] = [];
@@ -3559,6 +3557,7 @@ app.post('/api/studio/deploy/github', apiHeavyAiLimiter, async (req, res) => {
       let existingSha: string | undefined;
       const getResp = await fetch(`${apiUrl}?ref=${encodeURIComponent(cleanBranch)}`, {
         method: 'GET',
+        redirect: 'error',
         headers: ghHeaders,
       });
       if (getResp.ok) {
@@ -3568,6 +3567,7 @@ app.post('/api/studio/deploy/github', apiHeavyAiLimiter, async (req, res) => {
 
       const putResp = await fetch(apiUrl, {
         method: 'PUT',
+        redirect: 'error',
         headers: ghHeaders,
         body: JSON.stringify({
           message: `${commitMessage} (${filePath})`,
@@ -3821,14 +3821,40 @@ app.get('/api/policies', (_req, res) => {
   res.json(PLATFORM_POLICIES);
 });
 
-function renderPolicyHtml(title: string, subtitle: string, sections: { heading: string; summary: string; items: string[] }[]): string {
+function renderPolicyHtml(
+  canonicalPath: string,
+  title: string,
+  subtitle: string,
+  sections: { heading: string; summary: string; items: string[] }[]
+): string {
+  const canonicalUrl = `https://raone-ai.web.app${canonicalPath}`;
+  const fullTitle = `${title} — RaOne AI Studio by RavanaTec`;
+  const jsonLd = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'WebPage',
+    name: fullTitle,
+    description: subtitle,
+    url: canonicalUrl,
+    inLanguage: 'en',
+    isPartOf: {
+      '@type': 'WebSite',
+      name: 'RaOne AI',
+      url: 'https://raone-ai.web.app/',
+    },
+    publisher: {
+      '@type': 'Organization',
+      name: 'RavanaTec',
+      url: 'https://raone-ai.web.app/',
+    },
+  }).replace(/</g, '\\u003c');
+
   const sectionHtml = sections
     .map(
       (s) => `
       <section class="card">
-        <h2>${s.heading}</h2>
-        <p>${s.summary}</p>
-        <ul>${s.items.map((item) => `<li>${item}</li>`).join('')}</ul>
+        <h2>${escapeHtml(s.heading)}</h2>
+        <p>${escapeHtml(s.summary)}</p>
+        <ul>${s.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
       </section>`
     )
     .join('');
@@ -3837,7 +3863,22 @@ function renderPolicyHtml(title: string, subtitle: string, sections: { heading: 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${title} — RaOne AI Studio</title>
+  <title>${escapeHtml(fullTitle)}</title>
+  <meta name="description" content="${escapeHtml(subtitle)}" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+  <meta property="og:site_name" content="RaOne AI" />
+  <meta property="og:title" content="${escapeHtml(fullTitle)}" />
+  <meta property="og:description" content="${escapeHtml(subtitle)}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="${escapeHtml(canonicalUrl)}" />
+  <meta property="og:image" content="https://raone-ai.web.app/og-banner.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${escapeHtml(fullTitle)}" />
+  <meta name="twitter:description" content="${escapeHtml(subtitle)}" />
+  <meta name="twitter:image" content="https://raone-ai.web.app/og-banner.jpg" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <script type="application/ld+json">${jsonLd}</script>
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #070709; color: #ececec; line-height: 1.65; }
     .wrap { max-width: 820px; margin: 0 auto; padding: 48px 20px; }
@@ -3855,13 +3896,13 @@ function renderPolicyHtml(title: string, subtitle: string, sections: { heading: 
 </head>
 <body>
   <main class="wrap">
-    <span class="badge">RaOne AI by RavanaTec — Effective ${PLATFORM_POLICIES.effectiveDate}</span>
-    <h1>${title}</h1>
-    <div class="sub">${subtitle}</div>
+    <span class="badge">RaOne AI by RavanaTec — Effective ${escapeHtml(PLATFORM_POLICIES.effectiveDate)}</span>
+    <h1>${escapeHtml(title)}</h1>
+    <div class="sub">${escapeHtml(subtitle)}</div>
     ${sectionHtml}
     <footer>
-      <span>Contact: ${PLATFORM_POLICIES.contactEmail}</span>
-      <span><a href="/privacy-policy">Privacy Policy</a> &middot; <a href="/terms-of-service">Terms of Service</a> &middot; <a href="/api/policies">JSON API</a></span>
+      <span>Contact: ${escapeHtml(PLATFORM_POLICIES.contactEmail)}</span>
+      <span><a href="/">Home</a> &middot; <a href="/privacy-policy">Privacy Policy</a> &middot; <a href="/terms-of-service">Terms of Service</a> &middot; <a href="/api/policies">JSON API</a></span>
     </footer>
   </main>
 </body>
@@ -3872,6 +3913,7 @@ app.get('/privacy-policy', (_req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(
     renderPolicyHtml(
+      '/privacy-policy',
       'Privacy Policy',
       'How RaOne AI Studio collects, protects, and lets you control your workspace data.',
       [
@@ -3894,6 +3936,7 @@ app.get('/terms-of-service', (_req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(
     renderPolicyHtml(
+      '/terms-of-service',
       'Terms of Service & AI Safety Policy',
       'Usage terms, intellectual property ownership, and AI runtime honesty standards for RaOne AI Studio.',
       [
@@ -6738,8 +6781,13 @@ app.post('/api/motion/upload', apiHeavyAiLimiter, async (req, res) => {
     if (!rawBuffer || rawBuffer.length === 0) {
       return sendApiError(req, res, 400, 'EMPTY_UPLOAD', 'Video file payload is empty.');
     }
+    const videoSig = validateBinaryMediaSignature(rawBuffer, 'video');
+    if (!videoSig.ok) {
+      return sendApiError(req, res, 400, 'INVALID_VIDEO_SIGNATURE', videoSig.reason);
+    }
 
-    const ext = path.extname(originalName).toLowerCase() || '.mp4';
+    const rawExt = path.extname(originalName).toLowerCase();
+    const ext = ['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v', '.ogg'].includes(rawExt) ? rawExt : '.mp4';
     const rawTmp = path.join(tmpDir, `raw${ext}`);
     const normTmp = path.join(tmpDir, 'normalized.mp4');
     await fs.promises.writeFile(rawTmp, rawBuffer);
@@ -7639,8 +7687,17 @@ app.get('/api/motion/share/:shareId', async (req, res) => {
     const list = await readTenantCollection<CinemaPublishedSnapshot[]>('__public__', 'cinema_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Published video not found.');
-    const safeTitle = snap.title.replace(/[<>&"]/g, '');
-    const safePrompt = snap.prompt.replace(/[<>&"]/g, '');
+    const safeTitle = escapeHtml(snap.title);
+    const safePrompt = escapeHtml(snap.prompt);
+    const safeModel = escapeHtml(snap.model);
+    const safeDims = escapeHtml(snap.dimensions);
+    const safeDuration = escapeHtml(String(snap.duration));
+    const safeFps = escapeHtml(String(snap.fps));
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+    );
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.send(`<!doctype html>
 <html lang="en">
@@ -7651,7 +7708,7 @@ video{width:100%;max-height:70vh;background:#000;display:block;}
 .meta{padding:18px 20px;display:flex;flex-direction:column;gap:8px;font-size:13px;color:#9aa0a6;}
 h1{font-size:15px;color:#fff;margin:0;}</style></head>
 <body><div class="card"><video src="/api/motion/share/${encodeURIComponent(shareId)}/stream" controls autoplay loop playsinline></video>
-<div class="meta"><h1>${safeTitle}</h1><div>${snap.model} · ${snap.dimensions} · ${snap.duration}s · ${snap.fps}fps</div><div style="color:#c4c7c5">${safePrompt}</div></div></div></body></html>`);
+<div class="meta"><h1>${safeTitle}</h1><div>${safeModel} · ${safeDims} · ${safeDuration}s · ${safeFps}fps</div><div style="color:#c4c7c5">${safePrompt}</div></div></div></body></html>`);
   } catch (err: any) {
     return res.status(500).send(err.message);
   }
@@ -7902,8 +7959,13 @@ app.post('/api/audio/upload', async (req, res) => {
     if (!rawBuffer || rawBuffer.length === 0) {
       return sendApiError(req, res, 400, 'AUDIO_UPLOAD_EMPTY', 'Upload a valid MP3, WAV, FLAC, OGG, or M4A audio file.');
     }
+    const audioSig = validateBinaryMediaSignature(rawBuffer, 'audio');
+    if (!audioSig.ok) {
+      return sendApiError(req, res, 400, 'INVALID_AUDIO_SIGNATURE', audioSig.reason);
+    }
 
-    const ext = path.extname(origName).toLowerCase() || '.mp3';
+    const rawExt = path.extname(origName).toLowerCase();
+    const ext = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'].includes(rawExt) ? rawExt : '.mp3';
     const cleanTitle =
       title || path.basename(origName, ext).replace(/[_-]+/g, ' ').trim() || 'Uploaded Track';
     const cfg = normalizeMusicConfig({
@@ -8669,9 +8731,18 @@ app.get('/api/audio/share/:shareId', async (req, res) => {
     const list = await readTenantCollection<MusicPublishedSnapshot[]>('__public__', 'music_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Published audio track not found.');
-    const safeTitle = snap.title.replace(/[<>&"]/g, '');
-    const safePrompt = snap.prompt.replace(/[<>&"]/g, '');
-    const safeLyrics = snap.lyrics.replace(/[<>&"]/g, '');
+    const safeTitle = escapeHtml(snap.title);
+    const safePrompt = escapeHtml(snap.prompt);
+    const safeLyrics = escapeHtml(snap.lyrics);
+    const safeModel = escapeHtml(snap.model);
+    const safeBpm = escapeHtml(String(snap.bpm));
+    const safeKey = escapeHtml(snap.keySignature);
+    const safeDuration = escapeHtml(String(snap.duration));
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+    );
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.send(`<!doctype html>
 <html lang="en">
@@ -8681,7 +8752,7 @@ app.get('/api/audio/share/:shareId', async (req, res) => {
 h1{font-size:20px;color:#fff;margin:0 0 6px;} .sub{font-size:13px;color:#9aa0a6;margin-bottom:18px;}
 audio{width:100%;margin:12px 0 16px;}
 .lyrics{white-space:pre-wrap;font-size:13px;line-height:1.6;color:#c4c7c5;background:#111214;border:1px solid #26282c;border-radius:10px;padding:14px;max-height:260px;overflow:auto;}</style></head>
-<body><div class="card"><h1>${safeTitle}</h1><div class="sub">${snap.model} · ${snap.bpm} BPM · ${snap.keySignature} · ${snap.duration}s</div>
+<body><div class="card"><h1>${safeTitle}</h1><div class="sub">${safeModel} · ${safeBpm} BPM · ${safeKey} · ${safeDuration}s</div>
 <audio src="/api/audio/share/${encodeURIComponent(shareId)}/stream" controls autoplay></audio>
 <div style="font-size:12px;color:#9aa0a6;margin-bottom:12px">${safePrompt}</div>
 ${safeLyrics ? `<div class="lyrics">${safeLyrics}</div>` : ''}</div></body></html>`);
@@ -9383,6 +9454,11 @@ app.get('/api/documents/share/:shareId', async (req, res) => {
     const list = await readTenantCollection<DocumentPublishedSnapshot[]>('__public__', 'documents_published', []);
     const snap = list.find((s) => s.shareId === shareId);
     if (!snap) return res.status(404).send('Published document not found.');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+    );
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.send(buildPublishedDocumentHtml(snap));
   } catch (err: any) {
@@ -9585,6 +9661,10 @@ app.get('/vision/shared/:shareId', async (req, res) => {
     if (!record || !record.imageDataUrl) {
       return res.status(404).send('Shared Vision Studio artwork was not found.');
     }
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; img-src 'self' data: https:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+    );
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.send(buildPublishedVisionHtml(record));

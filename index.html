@@ -4,23 +4,38 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>RaOne AI — One AI for Your World | by RavanaTec</title>
-    <meta name="description" content="RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Intelligent multi-faceted AI platform with 'Hey RaOne' voice activation." />
-    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="RaOne AI Studio" />
+    <meta name="description" content="RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Enterprise developer & multimodal AI studio for Chat, Code Synthesis, Vision, Cinema, Music, and Executive Documents." />
+    <meta name="keywords" content="RaOne AI, RavanaTec, AI Developer Studio, AI Code Studio, AI Vision Studio, AI Cinema Studio, AI Music Studio, AI Document Studio, Hey RaOne Voice AI, Sinhala AI Platform" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
     <meta name="author" content="RavanaTec" />
+    <meta name="publisher" content="RavanaTec" />
     <meta name="theme-color" content="#000000" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="RaOne AI" />
     <link rel="canonical" href="https://raone-ai.web.app/" />
+    <link rel="alternate" hreflang="en" href="https://raone-ai.web.app/" />
+    <link rel="alternate" hreflang="si" href="https://raone-ai.web.app/" />
+    <link rel="alternate" hreflang="x-default" href="https://raone-ai.web.app/" />
     <meta property="og:site_name" content="RaOne AI" />
     <meta property="og:title" content="RaOne AI — One AI for Your World | by RavanaTec" />
-    <meta property="og:description" content="RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Intelligent multi-faceted AI platform with 'Hey RaOne' voice activation." />
+    <meta property="og:description" content="RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Enterprise developer & multimodal AI studio for Chat, Code Synthesis, Vision, Cinema, Music, and Executive Documents." />
     <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="si_LK" />
     <meta property="og:url" content="https://raone-ai.web.app/" />
     <meta property="og:image" content="https://raone-ai.web.app/og-banner.jpg" />
     <meta property="og:image:width" content="1376" />
     <meta property="og:image:height" content="768" />
     <meta property="og:image:alt" content="RaOne AI by RavanaTec — One AI for Your World" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:domain" content="raone-ai.web.app" />
+    <meta name="twitter:url" content="https://raone-ai.web.app/" />
     <meta name="twitter:title" content="RaOne AI — One AI for Your World | by RavanaTec" />
-    <meta name="twitter:description" content="RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Intelligent multi-faceted AI platform with 'Hey RaOne' voice activation." />
+    <meta name="twitter:description" content="RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Enterprise developer & multimodal AI studio for Chat, Code Synthesis, Vision, Cinema, Music, and Executive Documents." />
     <meta name="twitter:image" content="https://raone-ai.web.app/og-banner.jpg" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/assets/aistudio/RaOne_Logo_c8b49006.png" />
@@ -33,21 +48,59 @@
         "@context": "https://schema.org",
         "@graph": [
           {
-            "@type": "WebApplication",
-            "name": "RaOne AI",
+            "@type": "Organization",
+            "@id": "https://raone-ai.web.app/#organization",
+            "name": "RavanaTec",
             "url": "https://raone-ai.web.app/",
-            "applicationCategory": "BusinessApplication",
-            "operatingSystem": "All",
-            "description": "RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Multi-studio AI workspace for chat, code synthesis, image generation, cinema video, music mastering, and executive documents.",
-            "creator": {
-              "@type": "Organization",
-              "name": "RavanaTec",
-              "url": "https://raone-ai.web.app/"
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://raone-ai.web.app/assets/aistudio/RaOne_Logo_c8b49006.png"
             },
+            "contactPoint": {
+              "@type": "ContactPoint",
+              "email": "info.ravanatech@gmail.com",
+              "contactType": "customer support",
+              "availableLanguage": ["English", "Sinhala"]
+            }
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://raone-ai.web.app/#website",
+            "name": "RaOne AI",
+            "alternateName": "RaOne AI Studio",
+            "url": "https://raone-ai.web.app/",
+            "publisher": { "@id": "https://raone-ai.web.app/#organization" },
+            "inLanguage": ["en", "si"]
+          },
+          {
+            "@type": "WebApplication",
+            "@id": "https://raone-ai.web.app/#webapp",
+            "name": "RaOne AI Studio",
+            "url": "https://raone-ai.web.app/",
+            "applicationCategory": "DeveloperApplication",
+            "applicationSubCategory": "Multimodal AI Studio",
+            "operatingSystem": "All",
+            "browserRequirements": "Requires JavaScript and WebGL/Audio support",
+            "softwareVersion": "2026.11",
+            "inLanguage": ["en", "si"],
+            "description": "RaOne AI by RavanaTec — One AI for Your World. Think. Create. Act. Enterprise multi-studio AI developer workspace for conversational reasoning, live Code Studio synthesis, Vision imaging, Cinema video, Music mastering, and Executive Documents.",
+            "screenshot": "https://raone-ai.web.app/og-banner.jpg",
+            "featureList": [
+              "Conversational AI with Web & Maps Grounding",
+              "RaOne Code Studio with Live Sandboxed Preview & GitHub Deploy",
+              "RaOne Vision Studio Photoreal Image Synthesis",
+              "RaOne Cinema Studio Motion & Video Pipeline",
+              "RaOne Music Studio Audio Mastering & Stem Isolation",
+              "RaOne Document Studio DOCX/PPTX/XLSX/PDF Publishing",
+              "AES-256-GCM Encrypted BYOK Plugin Vault"
+            ],
+            "creator": { "@id": "https://raone-ai.web.app/#organization" },
+            "publisher": { "@id": "https://raone-ai.web.app/#organization" },
             "offers": {
               "@type": "Offer",
               "price": "0",
-              "priceCurrency": "USD"
+              "priceCurrency": "USD",
+              "availability": "https://schema.org/OnlineOnly"
             }
           }
         ]

@@ -13,6 +13,7 @@ import {
   mutateTenantCollection,
   readTenantCollection,
 } from './server_tenant_store.ts';
+import { validateBinaryMediaSignature } from './server_security.ts';
 import {
   deleteTenantVisionAsset,
   readTenantVisionAssetBuffer,
@@ -1111,13 +1112,33 @@ export async function uploadExternalFileToVault(opts: {
     ? parsed.buffer
     : Buffer.from(rawBase64, 'base64');
   const lower = filename.toLowerCase();
+  const cleanMime = String(mimeType || '').toLowerCase().trim();
+  if (
+    cleanMime.includes('svg') ||
+    cleanMime.includes('html') ||
+    cleanMime.includes('xml') ||
+    lower.endsWith('.svg') ||
+    lower.endsWith('.svgz')
+  ) {
+    throw new Error('SVG, HTML, and XML payloads are blocked from binary media vault ingestion.');
+  }
+  if (!rawBuffer || rawBuffer.length === 0) {
+    throw new Error('Uploaded file payload is empty.');
+  }
+  if (rawBuffer.length > 60 * 1024 * 1024) {
+    throw new Error('Uploaded file exceeds maximum 60 MB vault size limit.');
+  }
   const title = filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Uploaded Asset';
 
-  // 1. Image upload -> Vision Studio
-  if (mimeType.startsWith('image/') || /\.(png|jpe?g|webp)$/.test(lower)) {
+  // 1. Image upload -> Vision Studio (verify magic bytes before saving)
+  if (cleanMime.startsWith('image/') || /\.(png|jpe?g|webp)$/.test(lower)) {
+    const sigCheck = validateBinaryMediaSignature(rawBuffer, 'image');
+    if (!sigCheck.ok) {
+      throw new Error(sigCheck.reason);
+    }
     const id = `vis_up_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const imgMime = mimeType.startsWith('image/')
-      ? mimeType
+    const imgMime = cleanMime.startsWith('image/')
+      ? cleanMime
       : lower.endsWith('.webp')
       ? 'image/webp'
       : lower.endsWith('.png')
@@ -1139,8 +1160,12 @@ export async function uploadExternalFileToVault(opts: {
     return { studio: 'vision', rawId: id };
   }
 
-  // 2. Video upload -> Cinema Studio
-  if (mimeType.startsWith('video/') || /\.(mp4|webm|mov)$/.test(lower)) {
+  // 2. Video upload -> Cinema Studio (verify magic bytes)
+  if (cleanMime.startsWith('video/') || /\.(mp4|webm|mov)$/.test(lower)) {
+    const sigCheck = validateBinaryMediaSignature(rawBuffer, 'video');
+    if (!sigCheck.ok) {
+      throw new Error(sigCheck.reason);
+    }
     const id = `mov_up_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const saved = await saveTenantCinemaAssetBuffer(tenantId, id, 'mp4', rawBuffer);
     const record = {
@@ -1160,8 +1185,12 @@ export async function uploadExternalFileToVault(opts: {
     return { studio: 'cinema', rawId: id };
   }
 
-  // 3. Audio upload -> Music Studio
-  if (mimeType.startsWith('audio/') || /\.(mp3|wav|ogg|m4a)$/.test(lower)) {
+  // 3. Audio upload -> Music Studio (verify magic bytes)
+  if (cleanMime.startsWith('audio/') || /\.(mp3|wav|ogg|m4a)$/.test(lower)) {
+    const sigCheck = validateBinaryMediaSignature(rawBuffer, 'audio');
+    if (!sigCheck.ok) {
+      throw new Error(sigCheck.reason);
+    }
     const id = `aud_up_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const ext = lower.endsWith('.wav') ? 'wav' : 'mp3';
     const saved = await saveTenantMusicAssetBuffer(tenantId, id, ext, rawBuffer);

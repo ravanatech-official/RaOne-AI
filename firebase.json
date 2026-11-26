@@ -4,6 +4,9 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
+  "storage": {
+    "rules": "storage.rules"
+  },
   "hosting": {
     "site": "raone-ai",
     "public": "dist",
@@ -31,10 +34,18 @@
       {
         "source": "**",
         "headers": [
+          { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains; preload" },
           { "key": "X-Content-Type-Options", "value": "nosniff" },
           { "key": "X-Frame-Options", "value": "DENY" },
+          { "key": "X-XSS-Protection", "value": "0" },
+          { "key": "X-Permitted-Cross-Domain-Policies", "value": "none" },
+          { "key": "Cross-Origin-Opener-Policy", "value": "same-origin-allow-popups" },
           { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-          { "key": "Permissions-Policy", "value": "camera=(), geolocation=(self), microphone=(self), payment=(), usb=()" }
+          { "key": "Permissions-Policy", "value": "camera=(), geolocation=(self), microphone=(self), payment=(), usb=()" },
+          {
+            "key": "Content-Security-Policy",
+            "value": "default-src 'self'; script-src 'self' 'unsafe-inline' blob: https://apis.google.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; frame-src 'self' blob: data: https://*.firebaseapp.com https://accounts.google.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self' https://checkout.stripe.com https://*.lemonsqueezy.com https://*.polar.sh https://www.payhere.lk https://sandbox.payhere.lk; connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.web.app https://*.firebaseapp.com https://*.google-analytics.com https://*.analytics.google.com; frame-ancestors 'none'"
+          }
         ]
       },
       {

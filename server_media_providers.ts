@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { Modality, type GoogleGenAI } from '@google/genai';
 import type { ByokKeyMap } from './server_tenant_store.ts';
 import type { PlanId } from './src/lib/pricingCatalog.ts';
+import { validatePublicHttpsMediaDownloadUrl } from './server_security.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -244,7 +245,12 @@ export async function generateMultiProviderImage(params: {
         const json: any = await falRes.json();
         const imgUrl = json?.images?.[0]?.url;
         if (imgUrl) {
-          const imgDownload = await fetch(imgUrl, { signal: AbortSignal.timeout(30000) });
+          const urlCheck = await validatePublicHttpsMediaDownloadUrl(imgUrl);
+          if (!urlCheck.ok) throw new Error(urlCheck.reason);
+          const imgDownload = await fetch(urlCheck.parsedUrl.toString(), {
+            redirect: 'error',
+            signal: AbortSignal.timeout(30000),
+          });
           if (imgDownload.ok) {
             const arrBuf = await imgDownload.arrayBuffer();
             const mime = imgDownload.headers.get('content-type') || 'image/jpeg';
@@ -528,7 +534,12 @@ export async function generateMultiProviderMusic(params: {
         const json: any = await falRes.json();
         const audioUrl = json?.audio?.url || json?.audio_file?.url;
         if (audioUrl) {
-          const dl = await fetch(audioUrl, { signal: AbortSignal.timeout(30000) });
+          const urlCheck = await validatePublicHttpsMediaDownloadUrl(audioUrl);
+          if (!urlCheck.ok) throw new Error(urlCheck.reason);
+          const dl = await fetch(urlCheck.parsedUrl.toString(), {
+            redirect: 'error',
+            signal: AbortSignal.timeout(30000),
+          });
           if (dl.ok) {
             const buf = Buffer.from(await dl.arrayBuffer());
             if (buf.length > 1000) {
@@ -739,7 +750,12 @@ export async function generateMultiProviderVideo(params: {
         const json: any = await falRes.json();
         const vidUrl = json?.video?.url;
         if (vidUrl) {
-          const dl = await fetch(vidUrl, { signal: AbortSignal.timeout(60000) });
+          const urlCheck = await validatePublicHttpsMediaDownloadUrl(vidUrl);
+          if (!urlCheck.ok) throw new Error(urlCheck.reason);
+          const dl = await fetch(urlCheck.parsedUrl.toString(), {
+            redirect: 'error',
+            signal: AbortSignal.timeout(60000),
+          });
           if (dl.ok) {
             const buf = Buffer.from(await dl.arrayBuffer());
             if (buf.length > 5000) {

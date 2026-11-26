@@ -353,6 +353,49 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Dynamic Enterprise SEO Metadata Sync across Studios & Workspaces
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    let routeTitle = 'RaOne AI — One AI for Your World | by RavanaTec';
+    let routePath = '/';
+    if (isGoogleAIStudioOpen) {
+      routeTitle = 'RaOne Code Studio — Live Full-Stack AI Builder | RaOne AI';
+      routePath = '/#code-studio';
+    } else if (isVisionStudioOpen) {
+      routeTitle = 'RaOne Vision Studio — AI Image Synthesis | RaOne AI';
+      routePath = '/#vision-studio';
+    } else if (isMotionStudioOpen) {
+      routeTitle = 'RaOne Cinema Studio — AI Motion & Video | RaOne AI';
+      routePath = '/#cinema-studio';
+    } else if (isAudioStudioOpen) {
+      routeTitle = 'RaOne Music Studio — AI Audio Mastering | RaOne AI';
+      routePath = '/#music-studio';
+    } else if (isDocumentStudioOpen) {
+      routeTitle = 'RaOne Document Studio — Executive Publishing | RaOne AI';
+      routePath = '/#document-studio';
+    } else if (isLibraryOpen) {
+      routeTitle = 'RaOne Files Library — Unified Cloud Vault | RaOne AI';
+      routePath = '/#files-library';
+    } else if (isPluginsOpen) {
+      routeTitle = 'RaOne Plugins Library — Encrypted API & MCP Vault | RaOne AI';
+      routePath = '/#plugins';
+    }
+    document.title = routeTitle;
+    const canonicalHref = `https://raone-ai.web.app${routePath === '/' ? '/' : ''}`;
+    const canonicalEl = document.querySelector('link[rel="canonical"]');
+    if (canonicalEl) canonicalEl.setAttribute('href', canonicalHref);
+    const ogUrlEl = document.querySelector('meta[property="og:url"]');
+    if (ogUrlEl) ogUrlEl.setAttribute('content', `https://raone-ai.web.app${routePath}`);
+  }, [
+    isGoogleAIStudioOpen,
+    isVisionStudioOpen,
+    isMotionStudioOpen,
+    isAudioStudioOpen,
+    isDocumentStudioOpen,
+    isLibraryOpen,
+    isPluginsOpen,
+  ]);
+
   // Universal Settings jump events & live broadcast synchronization
   useEffect(() => {
     const onOpenSettingsEvent = (e: Event) => {

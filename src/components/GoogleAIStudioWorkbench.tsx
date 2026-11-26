@@ -340,8 +340,11 @@ export const GoogleAIStudioWorkbench: React.FC<GoogleAIStudioWorkbenchProps> = (
   useEffect(() => {
     if (!isOpen) return;
     const handleMessage = (ev: MessageEvent) => {
+      const iframeWin = iframeRef.current?.contentWindow;
+      if (iframeWin && ev.source !== iframeWin) return;
+      if (ev.origin !== 'null' && ev.origin !== window.location.origin) return;
       const data = ev?.data;
-      if (!data || data.source !== 'raone-preview') return;
+      if (!data || typeof data !== 'object' || data.source !== 'raone-preview') return;
 
       if (data.type === 'runtime_error' || data.type === 'console_error') {
         const msg = String(data.message || 'Unknown preview runtime error').trim();

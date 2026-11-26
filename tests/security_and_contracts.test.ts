@@ -1326,3 +1326,161 @@ test('Free-tier music cover art skips paid Gemini client, documentAudio daily qu
   assert.ok(dockerfile.includes('npm prune --omit=dev'));
   assert.ok(dockerfile.includes('CMD ["node", "server.ts"]'));
 });
+
+test('Enterprise Security Hardening: CSRF guard, SVG/script binary block, plugin header/path validation, share XSS defense, and FAANG SEO contracts hold', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const {
+    csrfOriginGuard,
+    escapeHtml,
+    validateBinaryMediaSignature,
+    validatePublicHttpsMediaDownloadUrl,
+    validatePluginHeaderName,
+    validatePluginHealthPath,
+  } = await import('../server_security.ts');
+  const { buildPublishedVisionHtml } = await import('../server_vision_engine.ts');
+  const { uploadExternalFileToVault } = await import('../server_library_engine.ts');
+  const { purgeAllTenantData } = await import('../server_tenant_store.ts');
+
+  // 1. CSRF origin guard rejects untrusted cross-origin POST and permits allowed origins + webhook HMAC route
+  const invokeCsrf = (opts: { method: string; path: string; headers?: Record<string, string> }) =>
+    new Promise<{ allowed: boolean; status: number; code?: string }>((resolve) => {
+      let status = 200;
+      const req: any = {
+        method: opts.method,
+        baseUrl: '',
+        path: opts.path,
+        headers: opts.headers || {},
+        requestId: 'csrf_test_1',
+      };
+      const res: any = {
+        status: (s: number) => {
+          status = s;
+          return res;
+        },
+        json: (body: any) => {
+          resolve({ allowed: false, status, code: body?.code });
+          return res;
+        },
+      };
+      csrfOriginGuard(req, res, () => resolve({ allowed: true, status: 200 }));
+    });
+
+  const evilOriginPost = await invokeCsrf({
+    method: 'POST',
+    path: '/api/user/settings',
+    headers: { host: 'raone-ai.web.app', origin: 'https://evil-attacker.example' },
+  });
+  assert.equal(evilOriginPost.allowed, false);
+  assert.equal(evilOriginPost.status, 403);
+  assert.equal(evilOriginPost.code, 'CSRF_ORIGIN_REJECTED');
+
+  const crossSiteFetchPost = await invokeCsrf({
+    method: 'POST',
+    path: '/api/projects',
+    headers: { host: 'raone-ai.web.app', 'sec-fetch-site': 'cross-site' },
+  });
+  assert.equal(crossSiteFetchPost.allowed, false);
+  assert.equal(crossSiteFetchPost.status, 403);
+
+  const trustedPost = await invokeCsrf({
+    method: 'POST',
+    path: '/api/projects',
+    headers: { host: 'raone-ai.web.app', origin: 'https://raone-ai.web.app' },
+  });
+  assert.equal(trustedPost.allowed, true);
+
+  const webhookCrossOrigin = await invokeCsrf({
+    method: 'POST',
+    path: '/api/billing/webhook',
+    headers: { origin: 'https://lemonsqueezy.com', 'sec-fetch-site': 'cross-site' },
+  });
+  assert.equal(webhookCrossOrigin.allowed, true);
+
+  // 2. Magic-byte verification blocks SVG/HTML masquerading as PNG/MP4/MP3
+  const svgAttackBuf = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>', 'utf-8');
+  assert.equal(validateBinaryMediaSignature(svgAttackBuf, 'image').ok, false);
+  assert.equal(validateBinaryMediaSignature(Buffer.from('<html><script>alert(1)</script></html>'), 'video').ok, false);
+  assert.equal(validateBinaryMediaSignature(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), 'image').ok, true);
+  assert.equal(validateBinaryMediaSignature(Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00]), 'audio').ok, true);
+
+  const testTenant = `test_svg_${crypto.randomUUID().slice(0, 8)}`;
+  try {
+    await assert.rejects(
+      () =>
+        uploadExternalFileToVault({
+          tenantId: testTenant,
+          filename: 'payload.png',
+          mimeType: 'image/png',
+          base64Data: svgAttackBuf.toString('base64'),
+          geminiClient: null,
+        }),
+      /blocked|signature/i
+    );
+  } finally {
+    await purgeAllTenantData(testTenant);
+  }
+
+  // 3. Plugin header & health path validators block header smuggling and traversal
+  assert.equal(validatePluginHeaderName('Authorization').ok, true);
+  assert.equal(validatePluginHeaderName('X-Api-Key').ok, true);
+  assert.equal(validatePluginHeaderName('Host').ok, false);
+  assert.equal(validatePluginHeaderName('Cookie').ok, false);
+  assert.equal(validatePluginHeaderName('X-Bad\r\nInjected').ok, false);
+
+  assert.equal(validatePluginHealthPath('/v1/health').ok, true);
+  assert.equal(validatePluginHealthPath('/../../etc/passwd').ok, false);
+  assert.equal(validatePluginHealthPath('@169.254.169.254').ok, false);
+
+  // 4. Media download validator blocks private/internal SSRF targets
+  assert.equal((await validatePublicHttpsMediaDownloadUrl('http://fal.media/clip.mp4')).ok, false);
+  assert.equal((await validatePublicHttpsMediaDownloadUrl('https://169.254.169.254/latest/meta-data')).ok, false);
+  assert.equal((await validatePublicHttpsMediaDownloadUrl('https://metadata.google.internal/computeMetadata')).ok, false);
+
+  // 5. HTML escaping and Vision Share HTML sanitization block javascript: & script attributes
+  assert.equal(escapeHtml(`"a'b\`<c>`), '&quot;a&#39;b&#96;&lt;c&gt;');
+  const maliciousVisionHtml = buildPublishedVisionHtml({
+    shareId: 'vis_xss_1',
+    tenantId: 't1',
+    imageId: 'img1',
+    title: `Evil' onclick="alert(1)`,
+    prompt: '<script>alert(1)</script>',
+    compiledPrompt: '<script>alert(1)</script>',
+    negativePrompt: '',
+    model: 'Flux',
+    style: 'Raw',
+    aspectRatio: '1:1',
+    resolution: '1K',
+    dimensions: '1024x1024',
+    seed: 1,
+    imageDataUrl: 'javascript:alert(document.domain)',
+    publishedAt: new Date().toISOString(),
+  });
+  assert.equal(maliciousVisionHtml.includes('javascript:alert'), false);
+  assert.equal(maliciousVisionHtml.includes('<script>alert'), false);
+  assert.ok(maliciousVisionHtml.includes('&#39;'));
+
+  // 6. FAANG SEO + Production Hosting Security Headers contract check
+  const indexHtml = fs.readFileSync(path.join(process.cwd(), 'index.html'), 'utf-8');
+  assert.ok(indexHtml.includes('"@type": "Organization"'));
+  assert.ok(indexHtml.includes('"@type": "WebSite"'));
+  assert.ok(indexHtml.includes('"@type": "WebApplication"'));
+  assert.ok(indexHtml.includes('hreflang="si"'));
+
+  const firebaseJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase.json'), 'utf-8'));
+  const globalHeaders: Array<{ key: string; value: string }> = firebaseJson?.hosting?.headers?.[0]?.headers || [];
+  const headerKeys = new Set(globalHeaders.map((h) => h.key));
+  for (const reqHeader of [
+    'Strict-Transport-Security',
+    'X-Content-Type-Options',
+    'X-Frame-Options',
+    'Cross-Origin-Opener-Policy',
+    'X-Permitted-Cross-Domain-Policies',
+    'Content-Security-Policy',
+  ]) {
+    assert.ok(headerKeys.has(reqHeader), `firebase.json missing production header ${reqHeader}`);
+  }
+  assert.equal(firebaseJson?.storage?.rules, 'storage.rules');
+  assert.ok(fs.existsSync(path.join(process.cwd(), 'storage.rules')));
+});
+

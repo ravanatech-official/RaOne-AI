@@ -493,7 +493,9 @@ export function generateTrueHtmlDocument(input: ExportDocumentInput): string {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/`/g, '&#96;');
 
   const escapeInline = (s: string) =>
     safe(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');

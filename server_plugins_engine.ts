@@ -4,6 +4,8 @@ import net from 'net';
 import {
   encryptSecret,
   decryptSecret,
+  validatePluginHeaderName,
+  validatePluginHealthPath,
 } from './server_security.ts';
 import {
   readTenantCollection,
@@ -1516,14 +1518,23 @@ export async function saveCustomPluginDefinition(opts: {
       ? opts.id
       : `custom_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 28)}_${crypto.randomUUID().slice(0, 6)}`;
 
+  const healthPathCheck = validatePluginHealthPath(opts.healthPath || '/');
+  if (!healthPathCheck.ok) {
+    throw new Error(healthPathCheck.reason);
+  }
+  const authHeaderCheck = validatePluginHeaderName(opts.authHeaderName || 'Authorization');
+  if (!authHeaderCheck.ok) {
+    throw new Error(authHeaderCheck.reason);
+  }
+
   const now = new Date().toISOString();
   const newDef: CustomPluginDefinition = {
     id: cleanId,
     name,
     provider: String(opts.provider || 'Custom REST / MCP').trim(),
     baseUrl,
-    healthPath: String(opts.healthPath || '/').trim() || '/',
-    authHeaderName: String(opts.authHeaderName || 'Authorization').trim() || 'Authorization',
+    healthPath: healthPathCheck.value,
+    authHeaderName: authHeaderCheck.value,
     authScheme: opts.authScheme || 'Bearer',
     description: String(opts.description || `Custom API bridge to ${urlCheck.parsedUrl.hostname}`).trim(),
     studios:
@@ -1614,7 +1625,7 @@ async function timedFetchJson(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetch(url, { ...init, redirect: 'error', signal: controller.signal });
     const latencyMs = Date.now() - startedAt;
     const text = await res.text();
     let json: any = null;
@@ -2085,7 +2096,13 @@ export async function testPluginConnectionServer(opts: {
         if (!webhookUrl) throw new Error('Webhook URL is required.');
         const check = await validatePluginOutboundUrl(webhookUrl);
         if (!check.ok) throw new Error(check.reason);
-        if (check.parsedUrl.hostname.includes('discord.com') || check.parsedUrl.hostname.includes('discordapp.com')) {
+        const webhookHost = check.parsedUrl.hostname.toLowerCase();
+        const isDiscordHost =
+          webhookHost === 'discord.com' ||
+          webhookHost.endsWith('.discord.com') ||
+          webhookHost === 'discordapp.com' ||
+          webhookHost.endsWith('.discordapp.com');
+        if (isDiscordHost) {
           const r = await timedFetchJson(check.parsedUrl.toString(), { method: 'GET' });
           latencyMs = r.latencyMs;
           if (r.ok && r.json?.id) {
@@ -2210,8 +2227,8 @@ export async function testPluginConnectionServer(opts: {
         } catch {
           throw new Error('Invalid database connection URI format.');
         }
-        const host = parsed.hostname;
-        if (!host || host === 'localhost' || net.isIP(host) !== 0) {
+        const host = parsed.hostname.toLowerCase();
+        if (!host || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || net.isIP(host) !== 0) {
           throw new Error('Public database hostname required for cloud vault URI.');
         }
         const recs = await dns.lookup(host, { all: true });
@@ -2248,8 +2265,10 @@ export async function testPluginConnectionServer(opts: {
         // Custom plugin health probe
         if (resolved.customDef) {
           const def = resolved.customDef;
-          const targetBase = (fields.baseUrlOverride || def.baseUrl).replace(/\/+$/, '');
-          const healthPath = def.healthPath.startsWith('/') ? def.healthPath : `/${def.healthPath}`;
+          const targetBase = String(fields.baseUrlOverride || def.baseUrl || '').trim().replace(/\/+$/, '');
+          const healthCheck = validatePluginHealthPath(def.healthPath || '/');
+          if (!healthCheck.ok) throw new Error(healthCheck.reason);
+          const healthPath = healthCheck.value;
           const targetUrl = `${targetBase}${healthPath === '/' ? '' : healthPath}`;
           const check = await validatePluginOutboundUrl(targetUrl);
           if (!check.ok) throw new Error(check.reason);
@@ -2257,7 +2276,9 @@ export async function testPluginConnectionServer(opts: {
           const headers: Record<string, string> = {};
           const secret = fields.apiKey || '';
           if (def.authScheme !== 'None' && secret) {
-            headers[def.authHeaderName || 'Authorization'] =
+            const headerCheck = validatePluginHeaderName(def.authHeaderName || 'Authorization');
+            if (!headerCheck.ok) throw new Error(headerCheck.reason);
+            headers[headerCheck.value] =
               def.authScheme === 'Bearer' ? `Bearer ${secret}` : secret;
           }
           const r = await timedFetchJson(check.parsedUrl.toString(), {
@@ -2329,9 +2350,12 @@ export async function dispatchPluginWebhook(opts: {
   const check = await validatePluginOutboundUrl(webhookUrl);
   if (!check.ok) throw new Error(check.reason);
 
+  const webhookHost = check.parsedUrl.hostname.toLowerCase();
   const isDiscord =
-    check.parsedUrl.hostname.includes('discord.com') ||
-    check.parsedUrl.hostname.includes('discordapp.com');
+    webhookHost === 'discord.com' ||
+    webhookHost.endsWith('.discord.com') ||
+    webhookHost === 'discordapp.com' ||
+    webhookHost.endsWith('.discordapp.com');
 
   const payload = isDiscord
     ? {
