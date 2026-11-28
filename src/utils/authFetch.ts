@@ -1,4 +1,5 @@
 import { auth } from '../lib/firebase.ts';
+import { getDemoAccessToken, clearDemoSession } from '../lib/demoSession.ts';
 import { getApiBaseUrl } from './api.ts';
 
 let installed = false;
@@ -6,8 +7,8 @@ let installed = false;
 /**
  * Installs a global fetch wrapper for `/api/*` requests that:
  * 1. Rewrites relative `/api/*` paths to `VITE_API_BASE_URL` when deployed separately.
- * 2. Attaches the active Firebase ID token (`Authorization: Bearer <idToken>`)
- *    whenever the user is authenticated and no explicit Authorization header was passed.
+ * 2. Attaches the active Firebase ID token (`Authorization: Bearer <idToken>`) or
+ *    in-memory signed Demo Session token whenever authenticated.
  */
 export function installAuthenticatedApiFetch(): void {
   if (installed || typeof window === 'undefined') return;
@@ -64,23 +65,33 @@ export function installAuthenticatedApiFetch(): void {
       init?.headers ?? (targetInput instanceof Request ? targetInput.headers : undefined)
     );
 
-    if (!headers.has('Authorization') && auth) {
-      try {
-        const authAny = auth as any;
-        if (typeof authAny.authStateReady === 'function') {
-          await Promise.race([
-            authAny.authStateReady(),
-            new Promise<void>((resolve) => setTimeout(resolve, 2500)),
-          ]);
-        }
-        if (auth.currentUser) {
-          const token = await auth.currentUser.getIdToken();
-          if (token) {
-            headers.set('Authorization', `Bearer ${token}`);
+    let usedDemoToken = false;
+    if (!headers.has('Authorization')) {
+      if (auth) {
+        try {
+          const authAny = auth as any;
+          if (typeof authAny.authStateReady === 'function') {
+            await Promise.race([
+              authAny.authStateReady(),
+              new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+            ]);
           }
+          if (auth.currentUser) {
+            const token = await auth.currentUser.getIdToken();
+            if (token) {
+              headers.set('Authorization', `Bearer ${token}`);
+            }
+          }
+        } catch {
+          // Proceed to check demo token if Firebase refresh transiently fails
         }
-      } catch {
-        // Proceed without token if SDK refresh transiently fails
+      }
+      if (!headers.has('Authorization')) {
+        const demoToken = getDemoAccessToken();
+        if (demoToken) {
+          headers.set('Authorization', `Bearer ${demoToken}`);
+          usedDemoToken = true;
+        }
       }
     }
 
@@ -89,7 +100,11 @@ export function installAuthenticatedApiFetch(): void {
       headers,
     };
 
-    return originalFetch(targetInput, nextInit);
+    const response = await originalFetch(targetInput, nextInit);
+    if (usedDemoToken && response.status === 401) {
+      clearDemoSession();
+    }
+    return response;
   };
 
   try {

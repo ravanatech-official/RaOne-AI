@@ -36,7 +36,7 @@ interface SidebarProps {
   selectedModel: string;
   onSelectModel: (model: string) => void;
   currentUser?: any;
-  onOpenAuth?: (mode?: 'signin' | 'signup') => void;
+  onOpenAuth?: (mode?: 'signin' | 'signup' | 'demo') => void;
   onOpenStudioHub?: (tab?: 'image' | 'music' | 'video' | 'transcribe') => void;
   searchTrigger?: number;
   onOpenShortcuts?: () => void;
@@ -499,12 +499,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Unauthenticated Sign In / Sign Up Card */}
+      {/* Unauthenticated Sign In / Sign Up / Demo Card */}
       {!currentUser && onOpenAuth && (
         <div className="px-3 pb-2 pt-1 shrink-0 bg-[#000000]">
           <div className="p-2.5 rounded-xl bg-[#111111] border border-[#242424] space-y-2">
             <div className="text-[11px] text-[#9E9E9E] leading-tight">
-              Sign in or create an account to save workspaces & media in the cloud.
+              Sign in, create an account, or use Demo Passcode for unlimited testing.
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -522,6 +522,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span>Sign up</span>
               </button>
             </div>
+            <button
+              onClick={() => onOpenAuth('demo')}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border border-purple-500/40 bg-purple-950/35 hover:bg-purple-900/50 text-xs font-semibold text-purple-200 transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-300" />
+              <span>Demo Tester Login</span>
+            </button>
           </div>
         </div>
       )}
@@ -558,6 +565,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="flex items-center gap-1.5 mt-0.5">
               <span className="text-[11px] capitalize text-[#8e8e8e]">{currentPlan}</span>
+              {currentUser?.isDemo && (
+                <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold tracking-wide">
+                  DEMO
+                </span>
+              )}
               {currentPlan === 'plus' && (
                 <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40 font-semibold tracking-wide">
                   PLUS

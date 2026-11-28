@@ -31,6 +31,7 @@ import {
   attachRequestId,
   resolveActorMiddleware,
   requireVerifiedAuth,
+  requireFirebaseJwtOnly,
   sendApiError,
   validateSafeHttpsEgress,
   createSlidingWindowLimiter,
@@ -43,6 +44,14 @@ import {
   csrfOriginGuard,
   escapeHtml,
   validateBinaryMediaSignature,
+  hashDemoPasscodeScrypt,
+  verifyDemoPasscodeScrypt,
+  verifyEnvDemoPasscode,
+  createSignedDemoSessionToken,
+  attachMediaSessionCookie,
+  clearMediaSessionCookie,
+  isAdminEmail,
+  sanitizePrototypeKeysDeep,
 } from './server_security.ts';
 import {
   getCloudPersistenceHealth,
@@ -423,6 +432,14 @@ app.use((req, res, next) => {
 });
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
+// Strip prototype-pollution keys (__proto__, constructor, prototype) from every JSON request body
+app.use((req, _res, next) => {
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    req.body = sanitizePrototypeKeysDeep(req.body);
+  }
+  next();
+});
+
 // Central Default-Deny Auth & Tenant Binding + True Sliding-Window Rate Limiters
 const apiStandardLimiter = createSlidingWindowLimiter({
   windowMs: 60 * 1000,
@@ -433,6 +450,11 @@ const apiHeavyAiLimiter = createSlidingWindowLimiter({
   windowMs: 60 * 1000,
   maxRequests: 30,
   keyPrefix: 'api_ai',
+});
+const apiAuthAttemptLimiter = createSlidingWindowLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 8,
+  keyPrefix: 'api_auth_demo',
 });
 
 app.use('/api', (req, res, next) => {
@@ -447,6 +469,286 @@ app.use('/api', (req, res, next) => {
 
 const getReqTenant = (req: express.Request): string =>
   req.actor?.tenantId || 'guest_workspace';
+
+function isDemoActor(req: express.Request): boolean {
+  return Boolean(req.actor?.isAuthenticated && req.actor.isDemo && req.actor.authSource === 'demo_passcode');
+}
+
+async function getEffectiveTenantPlan(req: express.Request, tenantId: string): Promise<PlanState> {
+  if (isDemoActor(req)) {
+    return {
+      plan: 'ultimate',
+      billingCycle: 'monthly',
+      status: 'active',
+      monthlyAllowance: 999999,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return getTenantPlan(tenantId);
+}
+
+async function reserveActorCredits(
+  req: express.Request,
+  tenantId: string,
+  cost: number,
+  action: string,
+  referenceId: string
+): Promise<{ ok: true; balance: number } | { ok: false; balance: number }> {
+  if (isDemoActor(req)) {
+    return { ok: true, balance: 999999 };
+  }
+  return reserveCredits(tenantId, cost, action, referenceId);
+}
+
+async function refundActorCredits(
+  req: express.Request,
+  tenantId: string,
+  cost: number,
+  action: string,
+  referenceId: string
+): Promise<number> {
+  if (isDemoActor(req)) {
+    return 999999;
+  }
+  return refundCredits(tenantId, cost, action, referenceId);
+}
+
+interface StoredDemoAuthConfig {
+  saltHex: string;
+  hashHex: string;
+  createdAt: string;
+  updatedAt: string;
+  revokedBeforeMs: number;
+  createdBy?: string | null;
+}
+
+// =========================================================================
+// Secure Demo Sandbox Authentication (Scrypt Passcode + Isolated Demo Tenant)
+// =========================================================================
+app.get('/api/auth/demo-status', async (req, res) => {
+  try {
+    const envPass = String(process.env.DEMO_ACCESS_PASSCODE || '').trim();
+    const stored = await readSharedCollection<StoredDemoAuthConfig | null>('demo_auth_config', null);
+    const hasStoredHash = Boolean(stored?.saltHex && stored?.hashHex);
+    const isAdminSignedIn = Boolean(
+      req.actor?.isAuthenticated && req.actor.authSource === 'firebase_jwt' && isAdminEmail(req.actor.email)
+    );
+    return res.json({
+      demoEnabled: true,
+      configuredViaEnv: Boolean(envPass),
+      requiresFirstRunSetup: !envPass && !hasStoredHash,
+      isAdminSignedIn,
+    });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'DEMO_STATUS_ERROR', err?.message || 'Failed to inspect demo configuration.');
+  }
+});
+
+app.post('/api/auth/demo-setup', apiAuthAttemptLimiter, async (req, res) => {
+  try {
+    const envPass = String(process.env.DEMO_ACCESS_PASSCODE || '').trim();
+    if (envPass) {
+      return sendApiError(
+        req,
+        res,
+        409,
+        'SETUP_LOCKED_BY_ENV',
+        'Demo passcode is already configured via server environment secrets.'
+      );
+    }
+    const rawPasscode = String(req.body?.passcode || '').trim();
+    const displayName = String(req.body?.displayName || 'Demo Owner').trim().slice(0, 60) || 'Demo Owner';
+    if (rawPasscode.length < 8 || rawPasscode.length > 128) {
+      return sendApiError(
+        req,
+        res,
+        400,
+        'INVALID_PASSCODE',
+        'Demo passcode must be between 8 and 128 characters.'
+      );
+    }
+
+    let claimed = false;
+    await mutateSharedCollection<StoredDemoAuthConfig | null>('demo_auth_config', null, (current) => {
+      if (current?.hashHex && current?.saltHex) {
+        return current;
+      }
+      claimed = true;
+      const { saltHex, hashHex } = hashDemoPasscodeScrypt(rawPasscode);
+      const nowIso = new Date().toISOString();
+      return {
+        saltHex,
+        hashHex,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        revokedBeforeMs: 0,
+        createdBy: req.actor?.email || 'first_run_setup',
+      };
+    });
+
+    if (!claimed) {
+      return sendApiError(
+        req,
+        res,
+        409,
+        'SETUP_ALREADY_CLAIMED',
+        'Demo invite passcode has already been claimed. Enter the passcode on the Demo Login tab.'
+      );
+    }
+
+    logCloudEvent('info', 'demo_setup_claimed', {
+      requestId: req.requestId,
+      actorEmail: req.actor?.email || null,
+    });
+
+    const demoId = `demo_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    const issued = createSignedDemoSessionToken({
+      uid: demoId,
+      tenantId: demoId,
+      displayName,
+      ttlSec: 12 * 3600,
+    });
+    attachMediaSessionCookie(req, res, demoId, demoId);
+
+    return res.json({
+      success: true,
+      token: issued.token,
+      expiresAt: issued.expiresAt,
+      plan: 'ultimate',
+      user: {
+        uid: demoId,
+        tenantId: demoId,
+        displayName,
+        email: 'demo-tester@raone.ai',
+        isDemo: true,
+      },
+    });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'DEMO_SETUP_ERROR', err?.message || 'Failed to initialize demo passcode.');
+  }
+});
+
+app.post('/api/auth/demo-login', apiAuthAttemptLimiter, async (req, res) => {
+  try {
+    const rawPasscode = String(req.body?.passcode || '').trim();
+    const displayName =
+      String(req.body?.displayName || 'Demo Tester')
+        .replace(/[^a-zA-Z0-9 _.-]/g, '')
+        .trim()
+        .slice(0, 48) || 'Demo Tester';
+
+    if (!rawPasscode || rawPasscode.length > 128) {
+      return sendApiError(req, res, 400, 'PASSCODE_REQUIRED', 'Please enter your Demo Invite Passcode.');
+    }
+
+    const envPass = String(process.env.DEMO_ACCESS_PASSCODE || '').trim();
+    let valid = false;
+    if (envPass) {
+      valid = verifyEnvDemoPasscode(rawPasscode, envPass);
+    } else {
+      const stored = await readSharedCollection<StoredDemoAuthConfig | null>('demo_auth_config', null);
+      if (!stored?.saltHex || !stored?.hashHex) {
+        return sendApiError(
+          req,
+          res,
+          412,
+          'DEMO_SETUP_REQUIRED',
+          'Demo invite passcode has not been initialized yet. Complete First-Time Setup first.'
+        );
+      }
+      valid = verifyDemoPasscodeScrypt(rawPasscode, stored.saltHex, stored.hashHex);
+    }
+
+    if (!valid) {
+      logCloudEvent('warn', 'demo_login_failed', {
+        requestId: req.requestId,
+        ip: req.ip,
+      });
+      return sendApiError(req, res, 401, 'INVALID_DEMO_PASSCODE', 'Invalid Demo Invite Passcode.');
+    }
+
+    const demoId = `demo_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    const issued = createSignedDemoSessionToken({
+      uid: demoId,
+      tenantId: demoId,
+      displayName,
+      ttlSec: 12 * 3600,
+    });
+    attachMediaSessionCookie(req, res, demoId, demoId);
+
+    logCloudEvent('info', 'demo_login_success', {
+      requestId: req.requestId,
+      demoId,
+      displayName,
+    });
+
+    return res.json({
+      success: true,
+      token: issued.token,
+      expiresAt: issued.expiresAt,
+      plan: 'ultimate',
+      user: {
+        uid: demoId,
+        tenantId: demoId,
+        displayName,
+        email: 'demo-tester@raone.ai',
+        isDemo: true,
+      },
+    });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'DEMO_LOGIN_ERROR', err?.message || 'Demo authentication failed.');
+  }
+});
+
+app.post('/api/auth/demo-rotate', requireFirebaseJwtOnly, apiAuthAttemptLimiter, async (req, res) => {
+  try {
+    if (!isAdminEmail(req.actor?.email)) {
+      return sendApiError(req, res, 403, 'ADMIN_REQUIRED', 'Only the platform owner can rotate the Demo Invite Passcode.');
+    }
+    const envPass = String(process.env.DEMO_ACCESS_PASSCODE || '').trim();
+    if (envPass) {
+      return sendApiError(
+        req,
+        res,
+        409,
+        'ENV_PASSCODE_ACTIVE',
+        'DEMO_ACCESS_PASSCODE is managed via environment secrets. Update it in Cloud Run / Secret Manager.'
+      );
+    }
+    const nextPasscode = String(req.body?.passcode || '').trim();
+    if (nextPasscode.length < 8 || nextPasscode.length > 128) {
+      return sendApiError(req, res, 400, 'INVALID_PASSCODE', 'New demo passcode must be 8–128 characters.');
+    }
+    const { saltHex, hashHex } = hashDemoPasscodeScrypt(nextPasscode);
+    const nowIso = new Date().toISOString();
+    const revokeMs = Date.now();
+    await mutateSharedCollection<StoredDemoAuthConfig | null>('demo_auth_config', null, () => ({
+      saltHex,
+      hashHex,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      revokedBeforeMs: revokeMs,
+      createdBy: req.actor?.email || 'admin',
+    }));
+
+    logCloudEvent('info', 'demo_passcode_rotated', {
+      requestId: req.requestId,
+      adminEmail: req.actor?.email,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Demo Invite Passcode rotated and all previous demo tokens revoked.',
+    });
+  } catch (err: any) {
+    return sendApiError(req, res, 500, 'DEMO_ROTATE_ERROR', err?.message || 'Failed to rotate demo passcode.');
+  }
+});
+
+app.post('/api/auth/demo-logout', (req, res) => {
+  clearMediaSessionCookie(req, res);
+  return res.json({ success: true });
+});
 
 async function getTenantGeminiClient(req: express.Request): Promise<{
   client: GoogleGenAI | null;
@@ -1113,7 +1415,7 @@ app.get('/api/local-llm/status', async (req, res) => {
   }
 });
 
-app.post('/api/local-llm/start', async (req, res) => {
+app.post('/api/local-llm/start', requireFirebaseJwtOnly, async (req, res) => {
   try {
     const { modelFile, port = 8081, contextSize = 4096, gpuLayers } = req.body || {};
     if (!modelFile) {
@@ -1140,7 +1442,7 @@ app.post('/api/local-llm/start', async (req, res) => {
   }
 });
 
-app.post('/api/local-llm/stop', async (req, res) => {
+app.post('/api/local-llm/stop', requireFirebaseJwtOnly, async (req, res) => {
   try {
     const state = await stopManagedLlamaServer();
     return res.json({ success: true, managedProcess: state });
@@ -1201,8 +1503,18 @@ app.post('/api/uploads/extract', apiHeavyAiLimiter, async (req, res) => {
 app.get('/api/user/plan', async (req, res) => {
   try {
     const tenantId = getReqTenant(req);
+    if (isDemoActor(req)) {
+      const demoPlan = await getEffectiveTenantPlan(req, tenantId);
+      return res.json({
+        ...demoPlan,
+        isDemo: true,
+        demoDisplayName: req.actor?.displayName || 'Demo Tester',
+        creditsBalance: 999999,
+        recentLedger: [],
+      });
+    }
     const [planData, creditInfo] = await Promise.all([
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
       getTenantCreditBalance(tenantId),
     ]);
     res.json({
@@ -1215,7 +1527,7 @@ app.get('/api/user/plan', async (req, res) => {
   }
 });
 
-app.post('/api/user/plan', requireVerifiedAuth, async (req, res) => {
+app.post('/api/user/plan', requireFirebaseJwtOnly, async (req, res) => {
   try {
     const tenantId = getReqTenant(req);
     const { plan, billingCycle = 'monthly' } = req.body || {};
@@ -1258,7 +1570,7 @@ app.post('/api/user/plan', requireVerifiedAuth, async (req, res) => {
   }
 });
 
-app.post('/api/user/plan/cancel', requireVerifiedAuth, async (req, res) => {
+app.post('/api/user/plan/cancel', requireFirebaseJwtOnly, async (req, res) => {
   try {
     const tenantId = getReqTenant(req);
     const freePlan: PlanState = {
@@ -1292,7 +1604,7 @@ app.get('/api/billing/catalog', (_req, res) => {
   });
 });
 
-app.post('/api/billing/checkout', requireVerifiedAuth, async (req, res) => {
+app.post('/api/billing/checkout', requireFirebaseJwtOnly, async (req, res) => {
   try {
     if (isDisposableEmailDomain(req.actor?.email)) {
       return sendApiError(
@@ -1553,7 +1865,7 @@ app.get('/api/user/settings/export-data', requireVerifiedAuth, async (req, res) 
   }
 });
 
-app.post('/api/user/settings/delete-account', requireVerifiedAuth, async (req, res) => {
+app.post('/api/user/settings/delete-account', requireFirebaseJwtOnly, async (req, res) => {
   try {
     const tenantId = getReqTenant(req);
     await purgeAllTenantData(tenantId);
@@ -2487,9 +2799,16 @@ app.post('/api/studio/apps/:id/publish', async (req, res) => {
       return sendApiError(req, res, 404, 'APP_NOT_FOUND', 'Application not found to publish.');
     }
 
-    const shareId =
-      targetApp.publishMeta?.shareId ||
-      `ra_${crypto.createHash('sha256').update(`${tenantId}:${id}`).digest('hex').slice(0, 10)}`;
+    const deterministicShareId = `ra_${crypto.createHash('sha256').update(`${tenantId}:${id}`).digest('hex').slice(0, 12)}`;
+    const existingSharedMap = await readSharedCollection<Record<string, PublishedSnapshotRecord>>('studio_published', {});
+    const candidateShareId =
+      typeof targetApp.publishMeta?.shareId === 'string' &&
+      /^ra_[a-zA-Z0-9_-]{6,32}$/.test(targetApp.publishMeta.shareId) &&
+      (!existingSharedMap[targetApp.publishMeta.shareId] ||
+        existingSharedMap[targetApp.publishMeta.shareId].tenantId === tenantId)
+        ? targetApp.publishMeta.shareId
+        : deterministicShareId;
+    const shareId = candidateShareId;
     const now = new Date().toISOString();
     const compiledCode = targetApp.files
       ? compileFilesIntoHtmlBundle(targetApp.files)
@@ -2511,10 +2830,15 @@ app.post('/api/studio/apps/:id/publish', async (req, res) => {
     await mutateSharedCollection<Record<string, PublishedSnapshotRecord>>(
       'studio_published',
       {},
-      (map) => ({
-        ...map,
-        [shareId]: snapshot,
-      })
+      (map) => {
+        if (map[shareId] && map[shareId].tenantId !== tenantId) {
+          throw new Error('Published share ID ownership conflict.');
+        }
+        return {
+          ...map,
+          [shareId]: snapshot,
+        };
+      }
     );
 
     const publishMeta = {
@@ -2610,7 +2934,7 @@ async function resolveStudioAiContext(req: express.Request, bodyApiKey?: string)
   const tenantId = getReqTenant(req);
   const [{ client: tenantGeminiClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
   const providedKey = typeof bodyApiKey === 'string' ? bodyApiKey.trim() : '';
   const scopedGeminiClient =
@@ -4740,7 +5064,7 @@ app.post('/api/chat', apiHeavyAiLimiter, async (req, res) => {
     const [storedSettings, tenantCtx, tenantPlan] = await Promise.all([
       getStoredUserSettings(tenantId),
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const tenantClient = tenantCtx.client;
     const byok = tenantCtx.byok;
@@ -5291,7 +5615,7 @@ app.post('/api/chat/stream', apiHeavyAiLimiter, async (req, res) => {
     const [storedSettings, tenantCtx, tenantPlan] = await Promise.all([
       getStoredUserSettings(tenantId),
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const tenantClient = tenantCtx.client;
     const byok = tenantCtx.byok;
@@ -5676,7 +6000,7 @@ app.post('/api/ai/image', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
 
     const resTier: VisionResolutionTier =
@@ -5757,7 +6081,7 @@ app.post('/api/ai/music', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const targetModel = model === 'lyria-3-pro-preview' ? 'lyria-3-pro-preview' : 'lyria-3-clip-preview';
     const musicOut = await generateMultiProviderMusic({
@@ -5797,7 +6121,7 @@ app.post('/api/ai/video', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
 
     const parsedDuration = Math.min(15, Math.max(4, parseInt(String(duration), 10) || 6));
@@ -5851,7 +6175,7 @@ app.post('/api/ai/transcribe', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     if (!tenantClient && !activeGroqKey) {
@@ -5991,7 +6315,7 @@ app.post('/api/vision/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const result = await enhanceVisionPromptServer({
       prompt: String(prompt),
@@ -6044,7 +6368,7 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
 
   const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
 
   const userHasImageByok = Boolean(
@@ -6087,7 +6411,7 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
 
   let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
   if (creditCost > 0) {
-    const reservation = await reserveCredits(
+    const reservation = await reserveActorCredits(req, 
       tenantId,
       creditCost,
       'vision_generate',
@@ -6217,7 +6541,7 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
     }
 
     if (generatedItems.length === 0) {
-      await refundCredits(tenantId, creditCost, 'vision_generate_empty', req.requestId || `vis_ref_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'vision_generate_empty', req.requestId || `vis_ref_${Date.now()}`);
       return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', 'Upstream image model produced no output. Credits refunded.');
     }
 
@@ -6234,7 +6558,7 @@ app.post('/api/vision/generate', apiHeavyAiLimiter, async (req, res) => {
     });
   } catch (err: any) {
     if (creditCost > 0) {
-      await refundCredits(tenantId, creditCost, 'vision_generate_failed', req.requestId || `vis_err_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'vision_generate_failed', req.requestId || `vis_err_${Date.now()}`);
     }
     console.error('Vision Generation Error:', err);
     return sendApiError(req, res, 503, 'VISION_PROVIDER_UNAVAILABLE', err?.message || 'Image synthesis failed. Credits refunded.');
@@ -6271,7 +6595,7 @@ app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
 
   const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
 
   const userHasImageByok = Boolean(
@@ -6307,7 +6631,7 @@ app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
 
   let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
   if (creditCost > 0) {
-    const reservation = await reserveCredits(tenantId, creditCost, 'vision_edit', req.requestId || `vised_${Date.now()}`);
+    const reservation = await reserveActorCredits(req, tenantId, creditCost, 'vision_edit', req.requestId || `vised_${Date.now()}`);
     if (!reservation.ok) {
       return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for image editing (required: ${creditCost}, remaining: ${reservation.balance}).`);
     }
@@ -6422,7 +6746,7 @@ app.post('/api/vision/edit', apiHeavyAiLimiter, async (req, res) => {
     });
   } catch (err: any) {
     if (creditCost > 0) {
-      await refundCredits(tenantId, creditCost, 'vision_edit_failed', req.requestId || `vised_err_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'vision_edit_failed', req.requestId || `vised_err_${Date.now()}`);
     }
     console.error('Vision Edit Error:', err);
     return sendApiError(req, res, 503, 'VISION_EDIT_FAILED', err?.message || 'Image edit failed. Credits refunded.');
@@ -6435,7 +6759,7 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
 
   const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
 
   const userHasImageByok = Boolean(
@@ -6472,7 +6796,7 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
 
   let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
   if (creditCost > 0) {
-    const reservation = await reserveCredits(tenantId, creditCost, 'vision_upscale', req.requestId || `visup_${Date.now()}`);
+    const reservation = await reserveActorCredits(req, tenantId, creditCost, 'vision_upscale', req.requestId || `visup_${Date.now()}`);
     if (!reservation.ok) {
       return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for ${resTier} upscale.`);
     }
@@ -6558,7 +6882,7 @@ app.post('/api/vision/upscale', apiHeavyAiLimiter, async (req, res) => {
     });
   } catch (err: any) {
     if (creditCost > 0) {
-      await refundCredits(tenantId, creditCost, 'vision_upscale_failed', req.requestId || `visup_err_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'vision_upscale_failed', req.requestId || `visup_err_${Date.now()}`);
     }
     return sendApiError(req, res, 503, 'VISION_UPSCALE_FAILED', err?.message || 'Upscale failed. Credits refunded.');
   }
@@ -6576,9 +6900,15 @@ app.post('/api/vision/publish', async (req, res) => {
 
     const inline = await resolveImageInputToInlinePart(tenantId, String(item.imageUrl || ''));
     const imageDataUrl = inline ? `data:${inline.mimeType};base64,${inline.data}` : String(item.imageUrl || '');
+    const deterministicShareId = `vis_${crypto.createHash('sha256').update(`${tenantId}:${id}`).digest('hex').slice(0, 12)}`;
+    const existingVisionMap = await readSharedCollection<Record<string, VisionPublishedSnapshot>>('vision_published', {});
     const shareId =
-      item.publishMeta?.shareId ||
-      `vis_${crypto.createHash('sha256').update(`${tenantId}:${id}`).digest('hex').slice(0, 10)}`;
+      typeof item.publishMeta?.shareId === 'string' &&
+      /^vis_[a-zA-Z0-9_-]{6,32}$/.test(item.publishMeta.shareId) &&
+      (!existingVisionMap[item.publishMeta.shareId] ||
+        existingVisionMap[item.publishMeta.shareId].tenantId === tenantId)
+        ? item.publishMeta.shareId
+        : deterministicShareId;
     const now = new Date().toISOString();
 
     const snapshot: VisionPublishedSnapshot = {
@@ -6603,7 +6933,12 @@ app.post('/api/vision/publish', async (req, res) => {
     await mutateSharedCollection<Record<string, VisionPublishedSnapshot>>(
       'vision_published',
       {},
-      (map) => ({ ...map, [shareId]: snapshot })
+      (map) => {
+        if (map[shareId] && map[shareId].tenantId !== tenantId) {
+          throw new Error('Vision share ID ownership conflict.');
+        }
+        return { ...map, [shareId]: snapshot };
+      }
     );
 
     const publishMeta = {
@@ -6731,7 +7066,7 @@ app.post('/api/motion/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const result = await enhanceCinemaPromptServer({
       prompt: String(prompt),
@@ -6857,7 +7192,7 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
 
   const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
 
   const userHasVideoByok = Boolean(byok.geminiApiKey || byok.falApiKey);
@@ -6911,7 +7246,7 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
 
   let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
   if (creditCost > 0) {
-    const reservation = await reserveCredits(
+    const reservation = await reserveActorCredits(req, 
       tenantId,
       creditCost,
       'motion_generate',
@@ -7069,7 +7404,7 @@ app.post('/api/motion/generate', apiHeavyAiLimiter, async (req, res) => {
     });
   } catch (err: any) {
     if (creditCost > 0) {
-      await refundCredits(tenantId, creditCost, 'motion_generate_failed', req.requestId || `mot_err_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'motion_generate_failed', req.requestId || `mot_err_${Date.now()}`);
     }
     console.error('Motion Generate Error:', err);
     return sendApiError(
@@ -7110,7 +7445,7 @@ app.post('/api/motion/edit', apiHeavyAiLimiter, async (req, res) => {
   }
 
   const creditCost = 5;
-  const reservation = await reserveCredits(
+  const reservation = await reserveActorCredits(req, 
     tenantId,
     creditCost,
     'motion_edit',
@@ -7203,7 +7538,7 @@ app.post('/api/motion/edit', apiHeavyAiLimiter, async (req, res) => {
       creditsBalance: reservation.balance,
     });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'motion_edit_failed', req.requestId || `moted_err_${Date.now()}`);
+    await refundActorCredits(req, tenantId, creditCost, 'motion_edit_failed', req.requestId || `moted_err_${Date.now()}`);
     console.error('Motion Edit Error:', err);
     return sendApiError(req, res, 503, 'VIDEO_EDIT_FAILED', err?.message || 'Text-to-Video edit failed. Credits refunded.');
   } finally {
@@ -7227,7 +7562,7 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
   }
 
   const creditCost = 5;
-  const reservation = await reserveCredits(tenantId, creditCost, 'motion_extend', req.requestId || `motext_${Date.now()}`);
+  const reservation = await reserveActorCredits(req, tenantId, creditCost, 'motion_extend', req.requestId || `motext_${Date.now()}`);
   if (!reservation.ok) {
     return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for video extension (required: ${creditCost}).`);
   }
@@ -7291,7 +7626,7 @@ app.post('/api/motion/extend', apiHeavyAiLimiter, async (req, res) => {
 
     return res.json({ success: true, video: extendedRecord, item: extendedRecord, creditsBalance: reservation.balance });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'motion_extend_failed', req.requestId || `motext_err_${Date.now()}`);
+    await refundActorCredits(req, tenantId, creditCost, 'motion_extend_failed', req.requestId || `motext_err_${Date.now()}`);
     return sendApiError(req, res, 503, 'VIDEO_EXTEND_FAILED', err?.message || 'Video extension failed. Credits refunded.');
   } finally {
     await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -7469,7 +7804,7 @@ app.post('/api/motion/motion-brush', apiHeavyAiLimiter, async (req, res) => {
   }
 
   const creditCost = 5;
-  const reservation = await reserveCredits(tenantId, creditCost, 'motion_brush', req.requestId || `motmb_${Date.now()}`);
+  const reservation = await reserveActorCredits(req, tenantId, creditCost, 'motion_brush', req.requestId || `motmb_${Date.now()}`);
   if (!reservation.ok) {
     return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for Motion Brush (required: ${creditCost}).`);
   }
@@ -7528,7 +7863,7 @@ app.post('/api/motion/motion-brush', apiHeavyAiLimiter, async (req, res) => {
     ]);
     return res.json({ success: true, video: brushed, item: brushed, creditsBalance: reservation.balance });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'motion_brush_failed', req.requestId || `motmb_err_${Date.now()}`);
+    await refundActorCredits(req, tenantId, creditCost, 'motion_brush_failed', req.requestId || `motmb_err_${Date.now()}`);
     return sendApiError(req, res, 503, 'MOTION_BRUSH_FAILED', err?.message || 'Motion Brush synthesis failed.');
   } finally {
     await fs.promises.rm(brushTmpDir, { recursive: true, force: true }).catch(() => {});
@@ -7561,7 +7896,7 @@ app.post('/api/motion/audio-sync', apiHeavyAiLimiter, async (req, res) => {
     } else {
       const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
         getTenantGeminiClient(req),
-        getTenantPlan(tenantId),
+        getEffectiveTenantPlan(req, tenantId),
       ]);
       const promptText = String(audioPrompt || `Cinematic soundtrack and foley soundscape matching: ${sourceItem.prompt}`).trim();
       const scoreOut = await generateMultiProviderMusic({
@@ -7833,7 +8168,7 @@ app.post('/api/audio/enhance-prompt', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const enhanced = await enhanceMusicPromptServer({
       prompt: String(prompt),
@@ -7860,7 +8195,7 @@ app.post('/api/audio/enhance-lyrics', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const preferFreeLyricsFirst = tenantPlan.plan === 'free' && !byok.geminiApiKey;
@@ -8021,7 +8356,7 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
 
   const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
 
   const userHasAudioByok = Boolean(byok.geminiApiKey || byok.falApiKey || byok.hfApiToken);
@@ -8051,7 +8386,7 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
   const creditCost = computeEffectiveCreditCost(baseAudioCost, userHasAudioByok);
   let remainingBalance = (await getTenantCreditBalance(tenantId)).balance;
   if (creditCost > 0) {
-    const reservation = await reserveCredits(tenantId, creditCost, 'music_generate', req.requestId || `mus_${Date.now()}`);
+    const reservation = await reserveActorCredits(req, tenantId, creditCost, 'music_generate', req.requestId || `mus_${Date.now()}`);
     if (!reservation.ok) {
       return sendApiError(
         req,
@@ -8166,7 +8501,7 @@ app.post('/api/audio/generate', apiHeavyAiLimiter, async (req, res) => {
     return res.json({ success: true, track: record, item: record, creditsBalance: remainingBalance });
   } catch (err: any) {
     if (creditCost > 0) {
-      await refundCredits(tenantId, creditCost, 'music_generate_failed', req.requestId || `mus_err_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'music_generate_failed', req.requestId || `mus_err_${Date.now()}`);
     }
     console.error('Music Generate Error:', err);
     return sendApiError(
@@ -8273,14 +8608,14 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
     // 2. AI Music-to-Music Re-Imagine / Style Transfer via Gemini Audio Understanding + Lyria 3
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     if (!tenantClient) {
       return sendApiError(req, res, 503, 'AUDIO_PROVIDER_NOT_CONFIGURED', 'Gemini API key is required for AI Music Remixing.');
     }
 
     const creditCost = 4;
-    const reservation = await reserveCredits(tenantId, creditCost, 'music_ai_edit', req.requestId || `mused_${Date.now()}`);
+    const reservation = await reserveActorCredits(req, tenantId, creditCost, 'music_ai_edit', req.requestId || `mused_${Date.now()}`);
     if (!reservation.ok) {
       return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for AI Music Edit (required: ${creditCost}).`);
     }
@@ -8329,7 +8664,7 @@ app.post('/api/audio/edit', apiHeavyAiLimiter, async (req, res) => {
       await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [remixRecord, ...existing]);
       return res.json({ success: true, track: remixRecord, item: remixRecord, creditsBalance: reservation.balance });
     } catch (err: any) {
-      await refundCredits(tenantId, creditCost, 'music_ai_edit_failed', req.requestId || `mused_err_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'music_ai_edit_failed', req.requestId || `mused_err_${Date.now()}`);
       return sendApiError(req, res, 503, 'AUDIO_EDIT_FAILED', err?.message || 'AI music edit failed. Credits refunded.');
     }
   } finally {
@@ -8473,7 +8808,7 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
   }
 
   const creditCost = 3;
-  const reservation = await reserveCredits(tenantId, creditCost, 'music_extend', req.requestId || `musext_${Date.now()}`);
+  const reservation = await reserveActorCredits(req, tenantId, creditCost, 'music_extend', req.requestId || `musext_${Date.now()}`);
   if (!reservation.ok) {
     return sendApiError(req, res, 402, 'INSUFFICIENT_CREDITS', `Insufficient credits for track extension (required: ${creditCost}).`);
   }
@@ -8482,7 +8817,7 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
   try {
     const sourcePath = await materializeMusicAssetToTemp(tenantId, sourceItem.assetFilename, tmpDir);
     if (!sourcePath || !fs.existsSync(sourcePath)) {
-      await refundCredits(tenantId, creditCost, 'music_extend_missing', req.requestId || `musext_miss_${Date.now()}`);
+      await refundActorCredits(req, tenantId, creditCost, 'music_extend_missing', req.requestId || `musext_miss_${Date.now()}`);
       return sendApiError(req, res, 404, 'AUDIO_FILE_MISSING', 'Source audio file is missing.');
     }
     const cfg = normalizeMusicConfig(sourceItem.configSnapshot);
@@ -8525,7 +8860,7 @@ app.post('/api/audio/extend', apiHeavyAiLimiter, async (req, res) => {
     await mutateTenantCollection<any[]>(tenantId, 'audio_tracks', [], (existing) => [extRecord, ...existing]);
     return res.json({ success: true, track: extRecord, item: extRecord, creditsBalance: reservation.balance });
   } catch (err: any) {
-    await refundCredits(tenantId, creditCost, 'music_extend_failed', req.requestId || `musext_err_${Date.now()}`);
+    await refundActorCredits(req, tenantId, creditCost, 'music_extend_failed', req.requestId || `musext_err_${Date.now()}`);
     return sendApiError(req, res, 503, 'AUDIO_EXTEND_FAILED', err?.message || 'Track extension failed. Credits refunded.');
   } finally {
     await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -8600,7 +8935,7 @@ app.post('/api/audio/producer-tag', apiHeavyAiLimiter, async (req, res) => {
 
   const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
     getTenantGeminiClient(req),
-    getTenantPlan(tenantId),
+    getEffectiveTenantPlan(req, tenantId),
   ]);
   const hasSpeechProvider = Boolean(
     tenantClient || byok.groqApiKey || GROQ_API_KEY || byok.openAiApiKey || OPENAI_API_KEY
@@ -8871,7 +9206,7 @@ app.post('/api/documents/enhance-prompt', apiHeavyAiLimiter, async (req, res) =>
     const tenantId = getReqTenant(req);
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const enhanced = await enhanceDocumentPromptServer({
       prompt: String(prompt),
@@ -8960,7 +9295,7 @@ app.post('/api/documents/generate', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
@@ -9102,7 +9437,7 @@ app.post('/api/documents/edit', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);
@@ -9251,7 +9586,7 @@ app.post('/api/documents/audio-overview', apiHeavyAiLimiter, async (req, res) =>
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
 
     const userHasSpeechByok = Boolean(byok.geminiApiKey || byok.groqApiKey || byok.openAiApiKey);
@@ -9327,7 +9662,7 @@ app.post('/api/documents/audit', apiHeavyAiLimiter, async (req, res) => {
 
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const audit = await auditDocumentQuality({
       doc,
@@ -9364,7 +9699,7 @@ app.post('/api/documents/analyze', apiHeavyAiLimiter, async (req, res) => {
     const tenantId = getReqTenant(req);
     const [{ client: tenantClient, byok }, tenantPlan] = await Promise.all([
       getTenantGeminiClient(req),
-      getTenantPlan(tenantId),
+      getEffectiveTenantPlan(req, tenantId),
     ]);
     const activeGroqKey = byok.groqApiKey || GROQ_API_KEY;
     const localCfg = getActiveLocalEndpointConfig(byok);

@@ -20,7 +20,7 @@ interface ChatHeaderProps {
   currentPlan?: 'free' | 'plus' | 'ultimate';
   onOpenUpgrade?: () => void;
   currentUser?: any;
-  onOpenAuth?: (mode?: 'signin' | 'signup') => void;
+  onOpenAuth?: (mode?: 'signin' | 'signup' | 'demo') => void;
 }
 
 export const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -146,6 +146,14 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
         {onOpenAuth && !currentUser && (
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
+              onClick={() => onOpenAuth('demo')}
+              className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg border border-purple-500/40 bg-purple-950/35 hover:bg-purple-900/50 text-[11px] sm:text-xs font-semibold text-purple-200 transition-colors whitespace-nowrap"
+              title="Demo Login — Full unrestricted testing workspace"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+              <span>Demo</span>
+            </button>
+            <button
               onClick={() => onOpenAuth('signin')}
               className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg border border-white/15 bg-[#111111] hover:bg-[#1e1e1e] text-[11px] sm:text-xs font-medium text-white transition-colors whitespace-nowrap"
               title="Sign in to your RaOne AI account"
@@ -166,9 +174,9 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
 
         {onOpenAuth && currentUser && (
           <button
-            onClick={() => onOpenAuth('signin')}
+            onClick={() => onOpenAuth(currentUser.isDemo ? 'demo' : 'signin')}
             className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg border border-white/10 bg-[#141414] hover:bg-[#1f1f1f] text-xs font-medium text-[#ECECEC] transition-colors shrink-0"
-            title={currentUser.email || 'Manage RaOne Account'}
+            title={currentUser.isDemo ? 'Manage Demo Tester Session' : currentUser.email || 'Manage RaOne Account'}
           >
             {currentUser.photoURL ? (
               <img
@@ -177,11 +185,16 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
                 className="w-4 h-4 rounded-full object-cover shrink-0"
               />
             ) : (
-              <User className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <User className={`w-3.5 h-3.5 shrink-0 ${currentUser.isDemo ? 'text-purple-400' : 'text-amber-400'}`} />
             )}
             <span className="hidden sm:inline max-w-[110px] truncate">
               {currentUser.displayName || currentUser.email?.split('@')[0] || 'Account'}
             </span>
+            {currentUser.isDemo && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/40 text-purple-300 font-bold">
+                DEMO
+              </span>
+            )}
           </button>
         )}
       </div>

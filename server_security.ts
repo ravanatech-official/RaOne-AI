@@ -6,6 +6,7 @@ import {
   getFirebaseAdminAuth,
   getFirebaseProjectIdFromEnv,
   getStorageBackendMode,
+  getStructuredPersistenceProvider,
   isCloudRunEnvironment,
   logCloudEvent,
 } from './server_cloud_persistence.ts';
@@ -14,9 +15,25 @@ export interface VerifiedActor {
   uid: string;
   tenantId: string;
   email: string | null;
+  displayName?: string | null;
   emailVerified: boolean;
   isAuthenticated: boolean;
-  authSource: 'firebase_jwt' | 'firebase_media_cookie' | 'guest_workspace';
+  isDemo?: boolean;
+  authSource: 'firebase_jwt' | 'firebase_media_cookie' | 'demo_passcode' | 'guest_workspace';
+}
+
+const EPHEMERAL_RUNTIME_SIGNING_SECRET = crypto.randomBytes(32).toString('hex');
+
+const DEFAULT_ADMIN_EMAILS = ['ai5.plaasssilva@gmail.com'];
+
+export function isAdminEmail(email: string | null | undefined): boolean {
+  if (!email || typeof email !== 'string') return false;
+  const clean = email.trim().toLowerCase();
+  const configured = (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return DEFAULT_ADMIN_EMAILS.includes(clean) || configured.includes(clean);
 }
 
 declare global {
@@ -120,6 +137,10 @@ const PUBLIC_UNAUTHENTICATED_ROUTES = new Set<string>([
   '/api/policies',
   '/api/billing/webhook',
   '/api/local-llm/status',
+  '/api/auth/demo-status',
+  '/api/auth/demo-setup',
+  '/api/auth/demo-login',
+  '/api/auth/demo-logout',
 ]);
 
 function isPublicShareGetRoute(method: string, fullPath: string): boolean {
@@ -143,10 +164,11 @@ function isMediaDownloadGetRoute(method: string, fullPath: string): boolean {
 }
 
 // =========================================================================
-// Signed HttpOnly Media Session Cookie (for native <img>/<video>/<audio> tags)
+// Signed HttpOnly Media Session Cookie & Scrypt/HMAC Demo Passcode Tokens
 // =========================================================================
 const MEDIA_COOKIE_NAME = '__session';
 const LEGACY_MEDIA_COOKIE_NAME = 'raone_media_session';
+const DEMO_TOKEN_PREFIX = 'raone_demo_v1.';
 
 function getMediaCookieSigningKey(): Buffer {
   const secret =
@@ -154,8 +176,129 @@ function getMediaCookieSigningKey(): Buffer {
     process.env.BYOK_ENCRYPTION_KEY ||
     process.env.SESSION_SECRET ||
     process.env.GEMINI_API_KEY ||
-    'raone-local-dev-ephemeral-key-do-not-use-without-env';
+    EPHEMERAL_RUNTIME_SIGNING_SECRET;
   return crypto.scryptSync(secret, 'raone-media-session-cookie-v1', 32);
+}
+
+function getDemoTokenSigningKey(): Buffer {
+  const secret =
+    process.env.TENANT_ENCRYPTION_SECRET ||
+    process.env.BYOK_ENCRYPTION_KEY ||
+    process.env.SESSION_SECRET ||
+    process.env.GEMINI_API_KEY ||
+    EPHEMERAL_RUNTIME_SIGNING_SECRET;
+  return crypto.scryptSync(secret, 'raone-demo-bearer-session-v1', 32);
+}
+
+export function hashDemoPasscodeScrypt(passcode: string): { saltHex: string; hashHex: string } {
+  const saltHex = crypto.randomBytes(16).toString('hex');
+  const hashHex = crypto.scryptSync(passcode, saltHex, 64).toString('hex');
+  return { saltHex, hashHex };
+}
+
+export function verifyDemoPasscodeScrypt(passcode: string, saltHex: string, hashHex: string): boolean {
+  if (!passcode || !saltHex || !hashHex) return false;
+  try {
+    const derived = crypto.scryptSync(passcode, saltHex, 64);
+    const stored = Buffer.from(hashHex, 'hex');
+    if (derived.length !== stored.length) return false;
+    return crypto.timingSafeEqual(derived, stored);
+  } catch {
+    return false;
+  }
+}
+
+export function verifyEnvDemoPasscode(candidate: string, expectedEnvPasscode: string): boolean {
+  const cleanCandidate = String(candidate || '');
+  const cleanExpected = String(expectedEnvPasscode || '');
+  if (!cleanCandidate || !cleanExpected) return false;
+  const a = crypto.createHash('sha256').update(cleanCandidate, 'utf8').digest();
+  const b = crypto.createHash('sha256').update(cleanExpected, 'utf8').digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+export interface DemoTokenClaims {
+  typ: 'raone_demo_v1';
+  uid: string;
+  tenantId: string;
+  displayName: string;
+  jti: string;
+  iat: number;
+  exp: number;
+}
+
+export function createSignedDemoSessionToken(opts: {
+  uid: string;
+  tenantId: string;
+  displayName: string;
+  ttlSec?: number;
+}): { token: string; expiresAt: string } {
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + (opts.ttlSec || 12 * 3600);
+  const claims: DemoTokenClaims = {
+    typ: 'raone_demo_v1',
+    uid: opts.uid,
+    tenantId: opts.tenantId,
+    displayName: String(opts.displayName || 'Demo Tester').slice(0, 60),
+    jti: crypto.randomUUID(),
+    iat,
+    exp,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
+  const sigB64 = crypto
+    .createHmac('sha256', getDemoTokenSigningKey())
+    .update(payloadB64)
+    .digest('base64url');
+  return {
+    token: `${DEMO_TOKEN_PREFIX}${payloadB64}.${sigB64}`,
+    expiresAt: new Date(exp * 1000).toISOString(),
+  };
+}
+
+export function verifySignedDemoSessionToken(
+  token: string,
+  revokedBeforeMs = 0
+): DemoTokenClaims | null {
+  const clean = String(token || '').trim();
+  if (!clean.startsWith(DEMO_TOKEN_PREFIX)) return null;
+  const rest = clean.slice(DEMO_TOKEN_PREFIX.length);
+  const parts = rest.split('.');
+  if (parts.length !== 2) return null;
+  const [payloadB64, sigB64] = parts;
+  if (!payloadB64 || !sigB64) return null;
+
+  const expectedSigB64 = crypto
+    .createHmac('sha256', getDemoTokenSigningKey())
+    .update(payloadB64)
+    .digest('base64url');
+  const a = Buffer.from(sigB64, 'utf8');
+  const b = Buffer.from(expectedSigB64, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (
+      parsed?.typ !== 'raone_demo_v1' ||
+      typeof parsed?.uid !== 'string' ||
+      !/^demo_[a-zA-Z0-9_-]{8,32}$/.test(parsed.uid) ||
+      typeof parsed?.tenantId !== 'string' ||
+      parsed.tenantId !== parsed.uid ||
+      typeof parsed?.iat !== 'number' ||
+      typeof parsed?.exp !== 'number' ||
+      parsed.exp <= nowSec
+    ) {
+      return null;
+    }
+    if (revokedBeforeMs > 0 && parsed.iat * 1000 < revokedBeforeMs) {
+      return null;
+    }
+    return parsed as DemoTokenClaims;
+  } catch {
+    return null;
+  }
 }
 
 function createSignedMediaSessionToken(uid: string, tenantId: string, ttlSec = 3600): string {
@@ -213,28 +356,45 @@ function parseCookieValue(cookieHeader: string | undefined, name: string): strin
   return null;
 }
 
-function attachMediaSessionCookie(req: Request, res: Response, uid: string, tenantId: string): void {
+export function attachMediaSessionCookie(req: Request, res: Response, uid: string, tenantId: string): void {
   const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
   const token = createSignedMediaSessionToken(uid, tenantId, 3600);
   const parts = [
     `${MEDIA_COOKIE_NAME}=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    isHttps ? 'SameSite=None' : 'SameSite=Lax',
     'Max-Age=3600',
   ];
   if (isHttps) {
     parts.push('Secure');
+    parts.push('Partitioned');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
+export function clearMediaSessionCookie(req: Request, res: Response): void {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const parts = [
+    `${MEDIA_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    isHttps ? 'SameSite=None' : 'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (isHttps) {
+    parts.push('Secure');
+    parts.push('Partitioned');
   }
   res.append('Set-Cookie', parts.join('; '));
 }
 
 /**
  * Default-deny API authentication & tenant binding middleware:
- * - Always verifies any supplied Bearer token via Firebase Admin SDK.
- * - Derives server-authoritative `tenantId = user_${uid}` (never trusting client tenant IDs).
+ * - Always verifies any supplied Bearer token via Firebase Admin SDK OR HMAC-signed Demo Session token.
+ * - Derives server-authoritative `tenantId = user_${uid}` or `demo_${id}` (never trusting client tenant IDs).
  * - If REQUIRE_FIREBASE_AUTH=true (or Cloud Run production default), rejects ALL protected routes without valid auth (401).
- * - Preserves public share GET endpoints (by opaque shareId) and local/dev guest_workspace when auth is optional.
+ * - Preserves public share GET endpoints (by opaque shareId) and explicit demo auth handshake endpoints.
  */
 export async function resolveActorMiddleware(req: Request, res: Response, next: NextFunction) {
   const fullPath = `${req.baseUrl || ''}${req.path || ''}`.replace(/\/+$/, '') || '/';
@@ -250,6 +410,62 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
       return sendApiError(req, res, 401, 'INVALID_AUTH_HEADER', 'Authorization header must use Bearer token format.');
     }
     const token = authHeader.slice(7).trim();
+
+    if (token.startsWith(DEMO_TOKEN_PREFIX)) {
+      let revokedBeforeMs = 0;
+      try {
+        const cfg = await getStructuredPersistenceProvider().readSharedCollection<{
+          revokedBeforeMs?: number;
+        } | null>('demo_auth_config', null);
+        if (cfg && typeof cfg.revokedBeforeMs === 'number') {
+          revokedBeforeMs = cfg.revokedBeforeMs;
+        }
+      } catch {
+        // Default 0 if store has no config yet
+      }
+
+      const demoClaims = verifySignedDemoSessionToken(token, revokedBeforeMs);
+      if (!demoClaims) {
+        logCloudEvent('warn', 'demo_token_rejected', {
+          path: fullPath,
+          requestId: req.requestId,
+        });
+        return sendApiError(
+          req,
+          res,
+          401,
+          'TOKEN_VERIFICATION_FAILED',
+          'Demo session token is invalid, expired, or has been revoked.'
+        );
+      }
+
+      req.actor = {
+        uid: demoClaims.uid,
+        tenantId: demoClaims.tenantId,
+        email: null,
+        displayName: demoClaims.displayName,
+        emailVerified: true,
+        isAuthenticated: true,
+        isDemo: true,
+        authSource: 'demo_passcode',
+      };
+
+      const existingCookie =
+        parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME) ||
+        parseCookieValue(req.headers.cookie, LEGACY_MEDIA_COOKIE_NAME);
+      const decodedCookie = existingCookie ? verifySignedMediaSessionToken(existingCookie) : null;
+      const hasPrimarySessionCookie = Boolean(parseCookieValue(req.headers.cookie, MEDIA_COOKIE_NAME));
+      if (
+        !hasPrimarySessionCookie ||
+        !decodedCookie ||
+        decodedCookie.uid !== demoClaims.uid ||
+        decodedCookie.exp - Math.floor(Date.now() / 1000) < 900
+      ) {
+        attachMediaSessionCookie(req, res, demoClaims.uid, demoClaims.tenantId);
+      }
+      return next();
+    }
+
     if (!token || token.split('.').length !== 3) {
       return sendApiError(req, res, 401, 'INVALID_JWT', 'Malformed or non-JWT Bearer token rejected.');
     }
@@ -262,6 +478,7 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
         email: verified.email,
         emailVerified: verified.emailVerified,
         isAuthenticated: true,
+        isDemo: false,
         authSource: 'firebase_jwt',
       };
       // Keep signed HttpOnly __session cookie refreshed for native <img>/<video>/<audio> requests
@@ -348,7 +565,11 @@ export async function resolveActorMiddleware(req: Request, res: Response, next: 
 }
 
 export function requireVerifiedAuth(req: Request, res: Response, next: NextFunction) {
-  if (!req.actor?.isAuthenticated || req.actor.authSource === 'guest_workspace') {
+  if (
+    !req.actor?.isAuthenticated ||
+    req.actor.authSource === 'guest_workspace' ||
+    req.actor.authSource === 'firebase_media_cookie'
+  ) {
     return sendApiError(
       req,
       res,
@@ -360,18 +581,56 @@ export function requireVerifiedAuth(req: Request, res: Response, next: NextFunct
   return next();
 }
 
+export function requireFirebaseJwtOnly(req: Request, res: Response, next: NextFunction) {
+  if (!req.actor?.isAuthenticated || req.actor.authSource === 'guest_workspace') {
+    return sendApiError(
+      req,
+      res,
+      401,
+      'VERIFIED_AUTH_REQUIRED',
+      'This administrative or billing operation requires signing in with your verified account.'
+    );
+  }
+  if (req.actor.authSource !== 'firebase_jwt' || req.actor.isDemo) {
+    return sendApiError(
+      req,
+      res,
+      403,
+      'DEMO_RESTRICTED_ACTION',
+      'Account billing, host process control, and permanent deletion are disabled in Demo Sandbox mode.'
+    );
+  }
+  return next();
+}
+
+const PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+export function sanitizePrototypeKeysDeep<T>(input: T, depth = 0): T {
+  if (depth > 25 || input === null || typeof input !== 'object') {
+    return input;
+  }
+  if (Array.isArray(input)) {
+    return input.map((item) => sanitizePrototypeKeysDeep(item, depth + 1)) as unknown as T;
+  }
+  if (Buffer.isBuffer(input)) return input;
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (PROTOTYPE_POLLUTION_KEYS.has(k)) continue;
+    clean[k] = sanitizePrototypeKeysDeep(v, depth + 1);
+  }
+  return clean as T;
+}
+
 // =========================================================================
 // AES-256-GCM Encryption for Tenant BYOK Secrets (v1 backward-compatible)
 // =========================================================================
-const DEFAULT_DEV_FALLBACK_SECRET = 'raone-local-dev-ephemeral-key-do-not-use-without-env';
-
 function getConfiguredEncryptionSecret(): string {
   return (
     process.env.TENANT_ENCRYPTION_SECRET ||
     process.env.BYOK_ENCRYPTION_KEY ||
     process.env.SESSION_SECRET ||
     process.env.GEMINI_API_KEY ||
-    DEFAULT_DEV_FALLBACK_SECRET
+    EPHEMERAL_RUNTIME_SIGNING_SECRET
   );
 }
 

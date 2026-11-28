@@ -56,6 +56,7 @@ import {
 } from '../utils/settingsClient.ts';
 import { SettingsStudioPanels } from './SettingsStudioPanels.tsx';
 import { PRICING_PLANS } from '../lib/pricingCatalog.ts';
+import { getDemoSession } from '../lib/demoSession.ts';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -73,7 +74,8 @@ interface SettingsModalProps {
   onClearAllChats?: () => void;
   onOpenPlugins?: () => void;
   onOpenLibrary?: () => void;
-  onOpenAuth?: (mode?: 'signin' | 'signup') => void;
+  onOpenAuth?: (mode?: 'signin' | 'signup' | 'demo') => void;
+  currentUser?: any;
 }
 
 type NavGroupItem = {
@@ -139,6 +141,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onOpenPlugins,
   onOpenLibrary,
   onOpenAuth,
+  currentUser: currentUserProp,
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsSectionId>(initialSection);
   const [sectionSearch, setSectionSearch] = useState<string>('');
@@ -2512,62 +2515,82 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div className="p-4 rounded-2xl bg-[#1c1c1c] border border-[#2a2a2a] space-y-3">
-                  <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
-                    <span className="text-[#8e8e8e]">Account Name</span>
-                    <span className="text-white font-medium">
-                      {auth?.currentUser?.displayName || (auth?.currentUser ? 'Authenticated User' : 'Guest Session')}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
-                    <span className="text-[#8e8e8e]">Email Address</span>
-                    <span className="text-white font-mono">
-                      {auth?.currentUser?.email || 'Sign in to link account'}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
-                    <span className="text-[#8e8e8e]">Platform Provider</span>
-                    <span className="text-amber-400 font-semibold">RaOne AI by RavanaTec</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs pb-3 border-b border-[#262626]">
-                    <span className="text-[#8e8e8e]">Encryption Architecture</span>
-                    <span className="text-emerald-400">AES-256-GCM Per-Tenant Vault</span>
-                  </div>
-                  {onOpenAuth && (
-                    <div className="flex items-center justify-end gap-2 pt-1">
-                      {auth?.currentUser ? (
-                        <button
-                          onClick={() => {
-                            onClose();
-                            onOpenAuth('signin');
-                          }}
-                          className="px-3.5 py-2 rounded-xl bg-[#262626] hover:bg-[#333333] border border-[#3a3a3a] text-white text-xs font-medium transition-colors"
-                        >
-                          Manage Account / Sign Out
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => {
-                              onClose();
-                              onOpenAuth('signin');
-                            }}
-                            className="px-3.5 py-2 rounded-xl bg-[#262626] hover:bg-[#333333] border border-[#3a3a3a] text-white text-xs font-medium transition-colors"
-                          >
-                            Sign In
-                          </button>
-                          <button
-                            onClick={() => {
-                              onClose();
-                              onOpenAuth('signup');
-                            }}
-                            className="px-3.5 py-2 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-semibold transition-colors"
-                          >
-                            Create Account (Sign Up)
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
+                  {(() => {
+                    const demoUser = getDemoSession();
+                    const activeUser = currentUserProp || auth?.currentUser || demoUser;
+                    const isDemo = Boolean(activeUser?.isDemo);
+                    return (
+                      <>
+                        <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
+                          <span className="text-[#8e8e8e]">Account Name</span>
+                          <span className="text-white font-medium">
+                            {activeUser?.displayName || (activeUser ? 'Authenticated User' : 'Guest Session')}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
+                          <span className="text-[#8e8e8e]">{isDemo ? 'Session Mode' : 'Email Address'}</span>
+                          <span className="text-white font-mono">
+                            {isDemo
+                              ? 'Unrestricted Demo Sandbox (Isolated)'
+                              : activeUser?.email || 'Sign in to link account'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs pb-2 border-b border-[#262626]">
+                          <span className="text-[#8e8e8e]">Platform Provider</span>
+                          <span className="text-amber-400 font-semibold">RaOne AI by RavanaTec</span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs pb-3 border-b border-[#262626]">
+                          <span className="text-[#8e8e8e]">Encryption Architecture</span>
+                          <span className="text-emerald-400">AES-256-GCM Per-Tenant Vault</span>
+                        </div>
+                        {onOpenAuth && (
+                          <div className="flex items-center justify-end gap-2 pt-1">
+                            {activeUser ? (
+                              <button
+                                onClick={() => {
+                                  onClose();
+                                  onOpenAuth(isDemo ? 'demo' : 'signin');
+                                }}
+                                className="px-3.5 py-2 rounded-xl bg-[#262626] hover:bg-[#333333] border border-[#3a3a3a] text-white text-xs font-medium transition-colors"
+                              >
+                                {isDemo ? 'Manage Demo / Sign Out' : 'Manage Account / Sign Out'}
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    onClose();
+                                    onOpenAuth('demo');
+                                  }}
+                                  className="px-3.5 py-2 rounded-xl bg-purple-950/50 hover:bg-purple-900/60 border border-purple-500/40 text-purple-200 text-xs font-semibold transition-colors"
+                                >
+                                  Demo Login
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    onClose();
+                                    onOpenAuth('signin');
+                                  }}
+                                  className="px-3.5 py-2 rounded-xl bg-[#262626] hover:bg-[#333333] border border-[#3a3a3a] text-white text-xs font-medium transition-colors"
+                                >
+                                  Sign In
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    onClose();
+                                    onOpenAuth('signup');
+                                  }}
+                                  className="px-3.5 py-2 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-semibold transition-colors"
+                                >
+                                  Create Account (Sign Up)
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             )}

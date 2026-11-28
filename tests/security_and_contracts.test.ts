@@ -6,6 +6,16 @@ import {
   encryptSecret,
   decryptSecret,
   validateSafeHttpsEgress,
+  hashDemoPasscodeScrypt,
+  verifyDemoPasscodeScrypt,
+  verifyEnvDemoPasscode,
+  createSignedDemoSessionToken,
+  verifySignedDemoSessionToken,
+  resolveActorMiddleware,
+  requireVerifiedAuth,
+  requireFirebaseJwtOnly,
+  sanitizePrototypeKeysDeep,
+  isAdminEmail,
 } from '../server_security.ts';
 import {
   sanitizeSpreadsheetCell,
@@ -1483,4 +1493,115 @@ test('Enterprise Security Hardening: CSRF guard, SVG/script binary block, plugin
   assert.equal(firebaseJson?.storage?.rules, 'storage.rules');
   assert.ok(fs.existsSync(path.join(process.cwd(), 'storage.rules')));
 });
+
+test('Demo Passcode scrypt/timingSafeEqual verification, HMAC token lifecycle, revocation & sandbox isolation', async () => {
+  // 1. Scrypt passcode hashing + constant-time verification
+  const { saltHex, hashHex } = hashDemoPasscodeScrypt('RaOne-Demo-2026!');
+  assert.ok(saltHex.length >= 32);
+  assert.ok(hashHex.length >= 128);
+  assert.equal(verifyDemoPasscodeScrypt('RaOne-Demo-2026!', saltHex, hashHex), true);
+  assert.equal(verifyDemoPasscodeScrypt('Wrong-Passcode-99', saltHex, hashHex), false);
+  assert.equal(verifyDemoPasscodeScrypt('', saltHex, hashHex), false);
+
+  // 2. Env passcode constant-time SHA-256 verification
+  assert.equal(verifyEnvDemoPasscode('RavanaSecret!88', 'RavanaSecret!88'), true);
+  assert.equal(verifyEnvDemoPasscode('RavanaSecret!89', 'RavanaSecret!88'), false);
+  assert.equal(verifyEnvDemoPasscode('', 'RavanaSecret!88'), false);
+
+  // 3. Signed Demo Session Token creation, verification, tamper rejection, & revocation
+  const issued = createSignedDemoSessionToken({
+    uid: 'demo_1234567890abcdef',
+    tenantId: 'demo_1234567890abcdef',
+    displayName: 'Friend Tester',
+    ttlSec: 3600,
+  });
+  assert.ok(issued.token.startsWith('raone_demo_v1.'));
+  const verifiedClaims = verifySignedDemoSessionToken(issued.token, 0);
+  assert.ok(verifiedClaims);
+  assert.equal(verifiedClaims?.uid, 'demo_1234567890abcdef');
+  assert.equal(verifiedClaims?.tenantId, 'demo_1234567890abcdef');
+
+  // Tampered payload/signature rejected
+  const tampered = issued.token.slice(0, -4) + 'AAAA';
+  assert.equal(verifySignedDemoSessionToken(tampered, 0), null);
+
+  // Revocation timestamp strictly invalidates earlier tokens
+  const futureRevokeMs = Date.now() + 60_000;
+  assert.equal(verifySignedDemoSessionToken(issued.token, futureRevokeMs), null);
+
+  // Non-demo tenantId or uid pattern rejected even if properly signed
+  const invalidUidToken = createSignedDemoSessionToken({
+    uid: 'user_realOwnerUid',
+    tenantId: 'user_realOwnerUid',
+    displayName: 'Attacker',
+  });
+  assert.equal(verifySignedDemoSessionToken(invalidUidToken.token, 0), null);
+
+  // 4. resolveActorMiddleware authenticates demo token into isolated demo_* tenant,
+  //    passes requireVerifiedAuth, and blocks requireFirebaseJwtOnly with 403 DEMO_RESTRICTED_ACTION
+  const mockReq: any = {
+    baseUrl: '',
+    path: '/api/user/plan',
+    method: 'GET',
+    headers: {
+      authorization: `Bearer ${issued.token}`,
+    },
+    secure: true,
+  };
+  const cookieHeaders: string[] = [];
+  let statusCode = 200;
+  let jsonBody: any = null;
+  const mockRes: any = {
+    append(_k: string, v: string) {
+      cookieHeaders.push(v);
+    },
+    status(code: number) {
+      statusCode = code;
+      return this;
+    },
+    json(body: any) {
+      jsonBody = body;
+      return this;
+    },
+  };
+
+  let nextCalled = false;
+  await resolveActorMiddleware(mockReq, mockRes, () => {
+    nextCalled = true;
+  });
+  assert.equal(nextCalled, true);
+  assert.equal(mockReq.actor?.tenantId, 'demo_1234567890abcdef');
+  assert.equal(mockReq.actor?.isDemo, true);
+  assert.equal(mockReq.actor?.authSource, 'demo_passcode');
+  assert.ok(cookieHeaders.some((c) => c.includes('__session=') && c.includes('SameSite=None') && c.includes('Partitioned')));
+
+  let verifiedAllowed = false;
+  requireVerifiedAuth(mockReq, mockRes, () => {
+    verifiedAllowed = true;
+  });
+  assert.equal(verifiedAllowed, true);
+
+  let jwtOnlyAllowed = false;
+  requireFirebaseJwtOnly(mockReq, mockRes, () => {
+    jwtOnlyAllowed = true;
+  });
+  assert.equal(jwtOnlyAllowed, false);
+  assert.equal(statusCode, 403);
+  assert.equal(jsonBody?.code, 'DEMO_RESTRICTED_ACTION');
+
+  // 5. Prototype pollution key sanitizer & admin allowlist check
+  const rawAttack = JSON.parse(
+    '{"safe":"ok","__proto__":{"polluted":"yes"},"nested":{"constructor":{"prototype":{"evil":1}},"keep":42}}'
+  );
+  const sanitized = sanitizePrototypeKeysDeep(rawAttack) as any;
+  assert.equal(sanitized.safe, 'ok');
+  assert.equal(Object.prototype.hasOwnProperty.call(sanitized, '__proto__'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(sanitized.nested, 'constructor'), false);
+  assert.equal(sanitized.nested.keep, 42);
+  assert.equal(({} as any).polluted, undefined);
+
+  assert.equal(isAdminEmail('ai5.plaasssilva@gmail.com'), true);
+  assert.equal(isAdminEmail('random.attacker@evil.com'), false);
+});
+
 

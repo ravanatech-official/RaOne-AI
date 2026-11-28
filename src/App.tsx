@@ -16,6 +16,7 @@ import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal.tsx'
 import { useRaOneVoice } from './hooks/useRaOneVoice.ts';
 import { Conversation, ChatMessage, ProjectItem } from './types/index.ts';
 import { subscribeToAuth } from './lib/firebase.ts';
+import { subscribeToDemoSession, type DemoSessionState } from './lib/demoSession.ts';
 import {
   readLocalLlmConfig,
   streamLocalLlmFromBrowser,
@@ -132,8 +133,9 @@ export default function App() {
   const [showScrollDown, setShowScrollDown] = useState<boolean>(false);
   const [shareCopied, setShareCopied] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [demoSession, setDemoSession] = useState<DemoSessionState | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
-  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup' | 'demo'>('signin');
   const [isStudioHubOpen, setIsStudioHubOpen] = useState<boolean>(false);
   const [studioHubTab, setStudioHubTab] = useState<'image' | 'music' | 'video' | 'transcribe'>('image');
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
@@ -248,7 +250,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [isAuthModalOpen, isSettingsOpen, isShortcutsOpen, isStudioHubOpen, isVoiceModalOpen, isUpgradeModalOpen, isGoogleAIStudioOpen]);
 
-  const activeUid = currentUser?.uid || null;
+  const effectiveUser = currentUser || demoSession;
+  const activeUid = effectiveUser?.uid || null;
 
   // Hydrate tenant workspace data from backend whenever the authenticated user changes
   useEffect(() => {
@@ -345,12 +348,18 @@ export default function App() {
     }
   }, [conversations, activeUid]);
 
-  // Auth subscription
+  // Auth & Demo Sandbox subscriptions
   useEffect(() => {
     const unsubscribe = subscribeToAuth((user) => {
       setCurrentUser(user);
     });
-    return () => unsubscribe();
+    const unsubDemo = subscribeToDemoSession((session) => {
+      setDemoSession(session);
+    });
+    return () => {
+      unsubscribe();
+      unsubDemo();
+    };
   }, []);
 
   // Dynamic Enterprise SEO Metadata Sync across Studios & Workspaces
@@ -1123,7 +1132,7 @@ export default function App() {
         }}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
-        currentUser={currentUser}
+        currentUser={effectiveUser}
         onOpenAuth={(mode = 'signin') => {
           setAuthModalMode(mode);
           setIsAuthModalOpen(true);
@@ -1235,7 +1244,7 @@ export default function App() {
           onToggleTemporaryChat={handleToggleTemporaryChat}
           currentPlan={currentPlan}
           onOpenUpgrade={() => setIsUpgradeModalOpen(true)}
-          currentUser={currentUser}
+          currentUser={effectiveUser}
           onOpenAuth={(mode = 'signin') => {
             setAuthModalMode(mode);
             setIsAuthModalOpen(true);
@@ -1415,6 +1424,7 @@ export default function App() {
             isContinuousWakeListening={voice.isContinuousWakeListening}
             onToggleContinuousWake={voice.toggleContinuousWakeListening}
             currentPlan={currentPlan}
+            currentUser={effectiveUser}
             onOpenUpgrade={() => {
               setIsSettingsOpen(false);
               setIsUpgradeModalOpen(true);
@@ -1470,7 +1480,7 @@ export default function App() {
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
-        currentUser={currentUser}
+        currentUser={effectiveUser}
         initialMode={authModalMode}
       />
 
